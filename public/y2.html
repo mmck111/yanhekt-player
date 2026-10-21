@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>延河课堂 · 在线播放器</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--line:#2a2f3a;--fg:#e8eaed;--dim:#9aa3b2;--accent:#5b9cff;--err:#ff6b6b;--ok:#7ee0a8;--warn:#ffc46b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,"Segoe UI",system-ui,"Microsoft YaHei",sans-serif}
+  .wrap{display:grid;grid-template-columns:340px 1fr;height:100vh}
+  aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  .hd{padding:12px 14px 10px;border-bottom:1px solid var(--line)}
+  .hd h1{margin:0 0 8px;font-size:13px;color:var(--dim);font-weight:600;display:flex;align-items:center;gap:8px}
+  .hd h1 .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .hd h1 .dot.off{background:#6b4a4a;box-shadow:none}
+  .search{display:flex;gap:6px}
+  .search input{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:7px 10px;font-size:13px;outline:none}
+  .search input:focus{border-color:var(--accent)}
+  .search button{background:var(--accent);border:none;color:#06101f;font-weight:600;border-radius:7px;padding:7px 12px;cursor:pointer;font-size:13px}
+  .search button.ghost{background:var(--panel2);color:var(--dim);border:1px solid var(--line);font-weight:500}
+  .filters{display:flex;gap:6px;margin-top:6px}
+  .filters select{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 8px;font-size:12px;outline:none}
+  .filters select:focus{border-color:var(--accent)}
+  .fmeta{font-size:11px;color:#6f7889;margin-top:6px;min-height:14px}
+  .list{overflow:auto;padding:8px;flex:1}
+  .item{padding:9px 11px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
+  .item:hover{background:var(--panel2)}
+  .item.on{background:#1b2740;border-color:#2f4a7a}
+  .item.dead{opacity:.45}
+  .item.dead:hover{background:transparent}
+  .item .d{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis}
+  .item .m{font-size:11px;color:var(--dim);margin-top:3px;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .badge{font-size:10px;line-height:1.5;padding:0 5px;border-radius:4px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+  .badge.live{color:#ffb3b3;border-color:#5e3535;background:#2a1a1a}
+  .badge.rec{color:#a9d4ff;border-color:#2f4a7a;background:#16233a}
+  .badge.now{color:#0d1b12;background:var(--ok);border-color:var(--ok);font-weight:700}
+  main{display:flex;flex-direction:column;min-width:0;min-height:0;position:relative}
+  .bar{display:flex;gap:8px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--line);background:var(--panel);min-height:48px}
+  .bar .t{font-weight:600;margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tab{padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--dim);cursor:pointer;font-size:12px}
+  .tab.on{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:600}
+  .tab:disabled{opacity:.3;cursor:not-allowed}
+  .stage{flex:1;min-height:0;background:#000;display:flex}
+  .stage video{width:100%;height:100%;object-fit:contain;background:#000}
+  .ctrl{display:flex;align-items:center;gap:10px;padding:8px 16px;border-top:1px solid var(--line);background:var(--panel);font-size:12px;color:var(--dim)}
+  .ctrl .time{font-variant-numeric:tabular-nums}
+  .ctrl input[type=range]{flex:1;min-width:100px;accent-color:var(--accent)}
+  .ctrl button{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px}
+  .splash{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:var(--dim);height:100%}
+  .splash b{color:var(--fg);font-size:15px}
+  /* 登录/提示浮层：盖住播放区，不挤侧栏 */
+  .overlay{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;
+    background:rgba(15,17,21,.97);padding:24px;overflow:auto;z-index:5}
+  .login{width:min(620px,94vw);text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px 18px}
+  .login h2{margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px}
+  .login .sub{margin:0 0 14px;font-size:12.5px;color:var(--dim)}
+  .steps{list-style:none;margin:0;padding:0;counter-reset:s}
+  .steps li{position:relative;padding:10px 0 10px 34px;border-top:1px solid var(--line);font-size:13px}
+  .steps li:first-child{border-top:none}
+  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:12px;width:21px;height:21px;border-radius:50%;
+    background:var(--accent);color:#06101f;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .steps b{display:block;margin-bottom:6px}
+  .btn2{display:inline-block;background:var(--accent);color:#06101f;text-decoration:none;font-weight:700;border-radius:8px;padding:8px 16px;font-size:13px}
+  .btn2:hover{filter:brightness(1.08)}
+  .dragrow{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:6px 0}
+  .bmbtn{display:inline-block;background:var(--panel2);border:1px dashed var(--accent);color:var(--fg);border-radius:8px;padding:8px 16px;
+    text-decoration:none;font-size:13px;font-weight:600;cursor:grab;user-select:none}
+  .bmbtn:active{cursor:grabbing}
+  .pic{width:100%;max-width:420px;height:auto}
+  .hint{font-size:11.5px;color:#7d869a;margin-top:4px}
+  kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font:11px/1.6 ui-monospace,Consolas,monospace;color:var(--fg)}
+  .login code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font:11.5px/1.6 ui-monospace,Consolas,monospace}
+  .alt{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+  .alt>summary{cursor:pointer;font-size:12.5px;color:var(--dim);outline:none}
+  .alt>summary:hover{color:var(--fg)}
+  .altbody{font-size:12px;color:var(--dim);padding:6px 0 0}
+  .altbody p{margin:6px 0}
+  .copyrow{display:flex;gap:8px;align-items:center;margin:6px 0}
+  .copyrow>.val{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--panel2);
+    border:1px solid var(--line);border-radius:7px;padding:6px 9px;font:11.5px ui-monospace,Consolas,monospace;color:#9fb6d6}
+  .login button.copy{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 12px;cursor:pointer;font-size:12px}
+  .login button.copy:hover{border-color:var(--accent)}
+  .login button.primary{margin-top:10px;background:var(--accent);border:none;color:#06101f;font-weight:600;border-radius:8px;padding:8px 18px;cursor:pointer;font-size:13px}
+  .login textarea{width:100%;height:62px;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:9px 11px;font:12px/1.5 ui-monospace,Consolas,monospace;outline:none;margin-top:6px}
+  .msg{font-size:12px;margin-top:8px;min-height:16px}
+  .msg.err{color:var(--err)} .msg.ok{color:var(--ok)}
+  .tiny{font-size:11.5px;color:#7d869a}
+  .toast{position:fixed;right:18px;top:60px;background:rgba(20,24,32,.93);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:12px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9}
+  .toast.on{opacity:1}
+  .back{position:fixed;left:8px;bottom:6px;font-size:11px}
+  .back a{color:#5c6678}
+</style>
+</head>
+<body>
+<script src="/hls.min.js"></script>
+<div class="toast" id="toast"></div>
+<div class="wrap">
+  <aside>
+    <div class="hd">
+      <h1><span class="dot off" id="sdot"></span>新版平台 · 在线播放（快 3~5 倍）</h1>
+      <div class="search">
+        <input id="q" placeholder="课程名，如 数值分析" spellcheck="false">
+        <button id="go">查找</button>
+      </div>
+      <div class="filters">
+        <select id="term" title="按学期筛选"><option value="">全部学期</option></select>
+      </div>
+      <div class="fmeta" id="fmeta"></div>
+      <div class="fmeta" style="margin-top:2px"><a id="oldlink" href="/" style="color:#5b9cff">← 回老平台（全部学期，2004 年至今）</a></div>
+    </div>
+    <div class="list" id="list"></div>
+  </aside>
+  <main>
+    <div class="bar">
+      <span class="t" id="now">—</span>
+      <button class="tab on" data-k="camera">教师画面</button>
+      <button class="tab" data-k="screen">课件画面</button>
+      <button class="tab" data-k="room">教室画面</button>
+    </div>
+    <div class="stage"><video id="v" controls playsinline preload="metadata"></video></div>
+    <div class="ctrl">
+      <button id="pp">播放/暂停</button>
+      <span class="time" id="time">00:00 / 00:00</span>
+      <input type="range" id="seek" min="0" max="1000" value="0" step="1">
+      <select id="rate" style="background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:4px;font-size:12px">
+        <option value="1" selected>1×</option><option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option><option value="2">2×</option>
+      </select>
+      <button id="dl" title="把当前这一路画面下载成 mp4（新版本来就是 MP4，直接存）">下载</button>
+    </div>
+    <div class="overlay" id="overlay"></div>
+  </main>
+</div>
+<div class="back"><a href="/">← 回课程库（全量课程 / 老平台播放）</a></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const v = $('#v');
+let hls = null, info = null, kind = 'camera', curCourse = null, curQuery = '';
+
+const fmt = t => { if(!isFinite(t)||t<0) t=0; const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=Math.floor(t%60);
+  return (h?h+':':'')+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); };
+const b64 = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function toast(m, ms){ const t=$('#toast'); t.textContent=m; t.classList.add('on'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('on'), ms||2200); }
+
+async function jget(url, opts){
+  const r = await fetch(url, opts);
+  if (r.status === 401) { showLogin('登录已过期，重新点一下书签即可'); throw new Error('need login'); }
+  return r.json();
+}
+
+// ---------------- 登录 ----------------
+// 在延河的页面里跑：把登录态带回来（书签 / 控制台 都用这段）
+function loginScript(){
+  const origin = location.origin;
+  return "(()=>{"
+    + "const J=/eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]+/;let t='';"
+    + "const c=document.cookie.match(/(?:^|;\\s*)_token=([^;]+)/);"
+    + "if(c){const d=J.exec(decodeURIComponent(c[1]));if(d)t=d[0];}"
+    + "if(!t){const d=J.exec(document.cookie);if(d)t=d[0];}"
+    + "if(!t){const scan=(st)=>{try{for(let i=0;i<st.length;i++){const v=st.getItem(st.key(i))||'';const d=J.exec(v);if(d)return d[0];}}catch(e){}return '';};"
+    + "t=scan(localStorage)||scan(sessionStorage);}"
+    + "if(!t){alert('没在这个页面找到登录态。\\n\\n请先确认：①已经登录成功（能看到课程列表）②这个标签页的地址是 aita.yanhekt.cn\\n\\n还不行就在播放器里展开「手动粘贴 _token」。');return;}"
+    + "location.href='" + origin + "/#t='+encodeURIComponent(t);"
+    + "})()";
+}
+const bookmarkletUrl = () => 'javascript:' + loginScript();
+
+function showLogin(msg){
+  const ov = $('#overlay');
+  ov.style.display = 'flex';
+  $('#sdot').classList.add('off');
+  ov.innerHTML = `<div class="login">
+    <h2>登录延河课堂</h2>
+    <p class="sub">只用设置一次。登录一次能撑 24 小时，过期后回来再点一下书签就行。不用把账号密码给我。</p>
+    <ol class="steps">
+      <li>
+        <b>打开延河课堂，正常登录</b>
+        <a class="btn2" href="https://aita.yanhekt.cn/" target="_blank" rel="noopener">在浏览器打开 aita.yanhekt.cn ↗</a>
+        <div class="hint">用学校统一身份登录，登到能看见课程列表为止，然后<strong>别关这个标签页</strong>。</div>
+      </li>
+      <li>
+        <b>把下面这个「一键登录」拖进浏览器的书签栏</b>
+        <div class="dragrow">
+          <a id="bm" class="bmbtn" href="#">一键登录</a>
+          <svg class="pic" viewBox="0 0 420 116" aria-label="书签栏位置示意">
+            <rect x="1" y="1" width="418" height="114" rx="8" fill="#12151c" stroke="#2a2f3a"/>
+            <rect x="12" y="9" width="104" height="17" rx="5" fill="#1e222b"/>
+            <text x="22" y="21" font-size="10.5" fill="#9aa3b2">延河课堂</text>
+            <rect x="12" y="32" width="336" height="19" rx="6" fill="#1e222b" stroke="#2a2f3a"/>
+            <text x="21" y="45" font-size="10.5" fill="#7d869a">aita.yanhekt.cn</text>
+            <text x="356" y="46" font-size="11" fill="#7d869a">☆</text>
+            <rect x="12" y="59" width="396" height="27" rx="6" fill="#16233a" stroke="#5b9cff" stroke-dasharray="5 4"/>
+            <rect x="20" y="64" width="74" height="17" rx="4" fill="#5b9cff"/>
+            <text x="57" y="76" font-size="10.5" fill="#06101f" text-anchor="middle" font-weight="700">一键登录</text>
+            <text x="104" y="76" font-size="10.5" fill="#8fb4e8">← 把左边的「一键登录」拖到这条栏里</text>
+            <text x="12" y="104" font-size="10.5" fill="#7d869a">这就是书签栏。看不到它？按 Ctrl+Shift+B 让它出来。</text>
+          </svg>
+        </div>
+        <div class="hint">拖拽时鼠标按住不放，拖到浏览器顶部那条空白栏再松手。</div>
+      </li>
+      <li>
+        <b>回到延河那个标签页，点一下书签栏里的「一键登录」</b>
+        <div class="hint">页面会自动跳回这里并登录好，然后自动打开你上次看的那节课。</div>
+      </li>
+    </ol>
+
+    <details class="alt">
+      <summary>拖不动 / 根本找不到书签栏 → 两种替代办法</summary>
+      <div class="altbody">
+        <p><b>办法 A：右键书签栏 → 「添加网页…」</b>（没有书签栏先按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>）<br>
+        名称填 <code>一键登录</code>，网址粘贴下面这段：</p>
+        <div class="copyrow"><span class="val" id="jsval"></span><button class="copy" data-copy="jsval">复制</button></div>
+        <p class="tiny">如果粘贴时开头的 <code>javascript:</code> 被浏览器吞掉了，保存后进书签管理器把它补回去即可。</p>
+        <p><b>办法 B：直接控制台粘一行</b> —— 在延河页面按 <kbd>F12</kbd> → 选 <code>Console</code> → 粘贴 → 回车：</p>
+        <div class="copyrow"><span class="val" id="codeval"></span><button class="copy" data-copy="codeval">复制</button></div>
+        <p class="tiny">Chrome 第一次粘代码可能要先手打 <code>allow pasting</code> 再回车，之后再粘贴就正常了。</p>
+      </div>
+    </details>
+
+    <details class="alt">
+      <summary>上面都不行 → 手动粘贴一次 _token</summary>
+      <div class="altbody">
+        <p>延河页面按 <kbd>F12</kbd> → <code>Application</code>（或「存储」）→ <code>Cookies</code> → <code>https://aita.yanhekt.cn</code> → 找到 <code>_token</code> → 复制整段值粘到下面。</p>
+        <textarea id="tk" placeholder="粘贴 _token 的值（很长的一串，含 eyJ 开头即可）" spellcheck="false"></textarea>
+        <button class="primary" id="go2">用这个登录</button>
+      </div>
+    </details>
+
+    <div class="msg ${msg?'err':''}" id="m">${esc(msg||'')}</div>
+  </div>`;
+  $('#list').innerHTML = '<div class="splash"><span style="font-size:12px">登录后这里显示课程</span></div>';
+  $('#now').textContent = '—';
+
+  const bm = ov.querySelector('#bm');
+  if (bm) bm.href = bookmarkletUrl();
+  const jv = ov.querySelector('#jsval'); if (jv) jv.textContent = bookmarkletUrl();
+  const cv = ov.querySelector('#codeval'); if (cv) cv.textContent = loginScript();
+  ov.querySelectorAll('button[data-copy]').forEach(b => {
+    b.onclick = async () => {
+      const el = document.getElementById(b.dataset.copy);
+      try { await navigator.clipboard.writeText(el.textContent); b.textContent='已复制'; }
+      catch(e){ const ta=document.createElement('textarea'); ta.value=el.textContent; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); b.textContent='已复制'; }
+      setTimeout(()=>{ b.textContent='复制'; }, 1600);
+    };
+  });
+  const g2 = ov.querySelector('#go2'); if (g2) g2.onclick = () => doLogin();
+}
+
+function hideOverlay(){ const ov = $('#overlay'); ov.style.display = 'none'; ov.innerHTML = ''; }
+
+async function doLogin(tokenFromHash){
+  const ta = document.querySelector('#tk');
+  const tk = (tokenFromHash || (ta ? ta.value : '')).trim();
+  const m = document.querySelector('#m');
+  if (m) { m.className='msg'; m.textContent='验证中…'; }
+  try{
+    const j = await jget('/api/y2/login', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ jwt: tk }) });
+    if(!j.ok){ if (m) { m.className='msg err'; m.textContent = j.error||'登录失败'; } else toast(j.error||'登录失败', 4000); return; }
+    hideOverlay();
+    $('#sdot').classList.remove('off');
+    await loadTerms();
+    await resumeLast();
+  }catch(e){ if (m) { m.className='msg err'; m.textContent=e.message; } else toast(e.message, 4000); }
+}
+
+// ---------------- 筛选条件 ----------------
+let termsLoaded = false;
+async function loadTerms(){
+  if (termsLoaded) return;
+  try{
+    const j = await jget('/api/y2/terms');
+    if (j.ok && j.terms && j.terms.length){
+      const sel = $('#term');
+      for (const t of j.terms){
+        const o = document.createElement('option');
+        o.value = t.id; o.textContent = t.name;
+        sel.appendChild(o);
+      }
+      termsLoaded = true;
+    }
+    if (j.warn) console.warn('学期列表不可用：', j.warn);
+  }catch(e){}
+  // 再把内置课程库里那 38 个学期补进来（新版平台只有最近几个学期）
+  try{
+    const d = await (await fetch('/api/db/terms')).json();
+    if (d.ok && d.terms && d.terms.length){
+      const sel = $('#term');
+      const have = new Set([...sel.options].map(o => o.textContent));
+      for (const name of d.terms){
+        if (have.has(name)) continue;
+        const o = document.createElement('option');
+        o.value = 'old:' + name;
+        o.textContent = name;
+        sel.appendChild(o);
+      }
+      if (d.meta && d.meta.count) $('#q').placeholder = `课程名，如 理论力学（库 ${d.meta.count} 门）`;
+    }
+  }catch(e){}
+}
+
+const curTerm = () => $('#term').value;
+const termName = id => { const o=[...$('#term').options].find(x=>x.value===id); return o?o.textContent:''; };
+const diagHint = notes => (notes && notes.length)
+  ? ' · <a href="/diag" target="_blank" style="color:#5b9cff">接口自检</a>' : '';
+
+// ---- 自动续上：记住上次搜的课，登录后直接列讲次并选中最新一节 ----
+function remember(course, query){
+  try { localStorage.setItem('y2_last', JSON.stringify({ course, query, term:curTerm() })); } catch(e) {}
+}
+function lastSaved(){
+  try { return JSON.parse(localStorage.getItem('y2_last') || 'null'); } catch(e) { return null; }
+}
+async function resumeLast(){
+  hideOverlay();
+  const s = lastSaved();
+  if (!s || !s.course) {
+    $('#list').innerHTML = '<div class="splash"><span style="font-size:12px">上面输入课程名开始，例如「数值分析」<br><span class="tiny">课程名不用输全，几个字就行</span></span></div>';
+    $('#now').textContent = '—';
+    $('#q').focus();
+    return;
+  }
+  if (s.term && [...$('#term').options].some(o => o.value === s.term)) $('#term').value = s.term;
+  $('#q').value = s.query || s.course.title || '';
+  await loadSessions(s.course, null, { autoLatest: true });
+}
+
+// ---------------- 查找课程 ----------------
+async function doFind(){
+  const q = $('#q').value.trim();
+  if(!q){ toast('先输个课程名，比如 数值分析', 2600); return; }
+  curQuery = q;
+  const term = curTerm();
+  const isOldTerm = term.indexOf('old:') === 0;
+  const oldTermName = isOldTerm ? term.slice(4) : '';
+  $('#list').innerHTML = '<div class="splash"><span>正在检索…<br><span class="tiny">新版那边要扫课表确认录像，约 3~8 秒；内置课程库是本地秒查</span></span></div>';
+  $('#fmeta').textContent = '';
+  const ol = $('#oldlink'); if (ol) ol.href = '/old?s=' + encodeURIComponent(q);
+  try{
+    // 新版接口 + 内置课程库，两个一起查
+    const [j, db] = await Promise.all([
+      (term && !isOldTerm)
+        ? jget('/api/y2/search?q=' + encodeURIComponent(q) + '&term=' + encodeURIComponent(term)).catch(e => ({ ok:false, error:e.message, courses:[] }))
+        : Promise.resolve({ ok:true, courses:[], hidden:0, unverified:0, source:'skipped', notes:[] }),
+      fetch('/api/db/search?q=' + encodeURIComponent(q)
+        + (oldTermName ? '&term=' + encodeURIComponent(oldTermName) : '')
+        + '&probe=1&limit=' + (isOldTerm ? 80 : 20))
+        .then(r => r.json()).catch(() => ({ ok:false, courses:[], total:0 })),
+    ]);
+    const newOnes = (j.ok && j.courses) ? j.courses : [];
+    const oldOnes = (db.ok && db.courses) ? db.courses : [];
+    if(!j.ok && j.error) $('#fmeta').textContent = '新版检索失败：' + j.error;
+
+    const list = $('#list'); list.innerHTML='';
+    if(!newOnes.length && !oldOnes.length){
+      list.innerHTML = '<div class="splash"><b>没找到</b><span>课程库里没有含「'+esc(q)+'」的课</span>'
+        + '<span class="tiny">换个说法，或把学期改成「全部学期」</span></div>';
+      return;
+    }
+
+    const bits = [];
+    if (newOnes.length) bits.push('新版 ' + newOnes.length + ' 门');
+    if (oldOnes.length) bits.push('老平台课程库 ' + db.total + ' 门');
+    if (j.hidden) bits.push('新版已隐藏 ' + j.hidden + ' 门无录像');
+    if (j.unverified) bits.push(j.unverified + ' 门「未确认」');
+    $('#fmeta').innerHTML = esc(bits.join(' · ')) + diagHint(j.notes);
+
+    const section = (title) => {
+      const h = document.createElement('div');
+      h.className = 'fmeta';
+      h.style.padding = '8px 4px 4px';
+      h.textContent = title;
+      list.appendChild(h);
+    };
+
+    if (newOnes.length) {
+      section('新版平台（播放快，拖动秒定位）');
+      newOnes.forEach(c=>{
+        const el = document.createElement('div');
+        el.className='item';
+        const tn = c.termName || (c.termId ? termName(c.termId) : '');
+        el.innerHTML = '<div class="d">' + esc(c.title || '（未命名课程）') + '</div>'
+          + '<div class="m">'
+          + (tn ? '<span class="badge">' + esc(tn) + '</span>' : '')
+          + (c.teacher ? '<span>' + esc(c.teacher) + '</span>' : '')
+          + '</div>'
+          + '<div class="m">'
+          + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
+          + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲</span>' : '')
+          + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'这个学期的课表没扫到讲次，接口也没给') + '">未确认</span>' : '')
+          + '</div>';
+        el.onclick = ()=>loadSessions(c, el);
+        list.appendChild(el);
+      });
+    }
+
+    if (oldOnes.length) {
+      section('老平台课程库（含往届学期，点开走老平台）');
+      oldOnes.forEach(c=>{
+        const el = document.createElement('div');
+        el.className='item';
+        el.innerHTML = '<div class="d">' + esc(c.name) + '<span class="badge" style="margin-left:6px">课号 ' + esc(c.id) + '</span></div>'
+          + '<div class="m">'
+          + (c.term ? '<span class="badge">' + esc(c.term) + '</span>' : '')
+          + (c.teacher ? '<span>' + esc(c.teacher) + '</span>' : '')
+          + '</div>'
+          + '<div class="m">'
+          + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
+          + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>' : '')
+          + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'没探到') + '">未确认</span>' : '')
+          + '</div>';
+        el.onclick = ()=>{ location.href = '/old?course=' + encodeURIComponent(c.id); };
+        list.appendChild(el);
+      });
+    }
+  }catch(e){ $('#list').innerHTML = '<div class="splash"><b>出错</b><span>'+ esc(e.message) +'</span></div>'; }
+}
+
+// ---------------- 讲次 ----------------
+async function loadSessions(c, el, opts){
+  curCourse = c;
+  if (el) document.querySelectorAll('.item').forEach(x=>x.classList.toggle('on', x===el));
+  remember(c, curQuery);
+  $('#now').textContent = c.title || '';
+  $('#list').innerHTML = '<div class="splash"><span>正在取讲次…<br><span class="tiny">新版接口直接列全量；拿不到时退回扫课表，约 2~15 秒</span></span></div>';
+  try{
+    const url = '/api/y2/sessions?courseId=' + encodeURIComponent(c.courseId)
+      + '&q=' + encodeURIComponent(curQuery)
+      + '&termName=' + encodeURIComponent(c.termName || '')
+      + (curTerm() ? '&term=' + encodeURIComponent(curTerm()) : '');
+    const j = await jget(url);
+    if(!j.ok){ $('#list').innerHTML = '<div class="splash"><b>取讲次失败</b><span>'+ esc(j.error||'') +'</span></div>'; return; }
+    const list = $('#list'); list.innerHTML='';
+    if(!j.sessions.length){
+      list.innerHTML = '<div class="splash"><b>没有可看的讲次</b><span>这门课在 ' + (curTerm()?'这个学期':'任何学期') + ' 都没有录像</span>'
+        + (j.hidden ? '<span class="tiny">' + j.hidden + ' 讲里没有一节有录像</span>' : '')
+        + (j.notes && j.notes.length ? '<span class="tiny">' + esc(j.notes.join('；')) + '</span>' + diagHint(j.notes) : '')
+        + (curTerm() ? '<span class="tiny">把学期改成「全部学期」再看一眼</span>' : '') + '</div>';
+      return;
+    }
+    if (j.source === 'schedule') $('#fmeta').textContent = '讲次来自扫课表（' + j.sessions.length + ' 节有录像）';
+    else $('#fmeta').textContent = j.sessions.length + ' 讲有录像' + (j.hidden > 0 ? '（另有 ' + j.hidden + ' 讲没有录像，已隐藏）' : '');
+    let firstPlayable = null;
+    j.sessions.forEach(s=>{
+      const el2 = document.createElement('div');
+      el2.className = 'item';
+      const dur = s.duration ? Math.round(s.duration/60) + ' 分钟' : '';
+      const tn = s.termName || '';
+      el2.innerHTML = '<div class="d">' + esc((s.date||'—') + (s.period ? ' ' + s.period : '') + (s.title && s.title !== s.period ? ' · ' + s.title : '')) + '</div>'
+        + '<div class="m">'
+        + (dur ? '<span>' + dur + '</span>' : '')
+        + (s.room ? '<span>' + esc(s.room) + '</span>' : '')
+        + (tn ? '<span>' + esc(tn) + '</span>' : '')
+        + '</div>';
+      el2.onclick = ()=>play(s, el2);
+      if (!firstPlayable) firstPlayable = { s, el2 };
+      list.appendChild(el2);
+    });
+    // 自动化：直接选中最新一节并尝试播放
+    if (opts && opts.autoLatest && firstPlayable) {
+      firstPlayable.el2.classList.add('on');
+      play(firstPlayable.s, firstPlayable.el2);
+    }
+  }catch(e){ $('#list').innerHTML = '<div class="splash"><b>出错</b><span>'+ esc(e.message) +'</span></div>'; }
+}
+
+async function play(s, el){
+  document.querySelectorAll('.item').forEach(x=>x.classList.toggle('on', x===el));
+  const t0 = performance.now();
+  kind = 'camera';
+  curSub = s;
+  try{
+    const j = await jget(`/api/y2/sub?courseId=${encodeURIComponent(curCourse.courseId)}&subId=${encodeURIComponent(s.subId)}`);
+    if(!j.ok){ toast('读取失败：'+(j.error||''), 4000); return; }
+    info = j.info;
+    updateTabs();
+    pick(t0);
+  }catch(e){ toast('出错：'+e.message, 4000); }
+}
+
+// 下载当前这一路画面（新版是 MP4，服务端直接整份转发）
+$('#dl').onclick = () => {
+  if (!curCourse || !curSub || !info) { toast('先点一讲再看', 2600); return; }
+  const label = kind === 'screen' ? '课件' : kind === 'room' ? '教室' : '教师画面';
+  const title = (curCourse.title || '课程') + '_' + ((curSub.date || '').slice(0, 10)) + '_' + label;
+  const url = '/y2dl?c=' + encodeURIComponent(curCourse.courseId)
+    + '&s=' + encodeURIComponent(curSub.subId)
+    + '&k=' + encodeURIComponent(kind)
+    + '&title=' + encodeURIComponent(title);
+  window.open(url, '_blank');
+  toast('开始下载' + label + '，先别关这个页面', 6000);
+};
+
+function updateTabs(){
+  const have = new Set(((info&&info.streams)||[]).map(x=>x.type));
+  document.querySelectorAll('.tab').forEach(b=>{
+    b.disabled = !have.has(b.dataset.k);
+    b.classList.toggle('on', b.dataset.k===kind);
+  });
+}
+
+function detach(){
+  if(hls){ try{hls.destroy();}catch(e){} hls=null; }
+  v.removeAttribute('src'); try{v.load();}catch(e){}
+}
+
+function pick(t0){
+  if(!info) return;
+  let st = (info.streams||[]).find(x=>x.type===kind);
+  if(!st) st = (info.streams||[])[0];
+  if(!st){ toast('这一讲没有可播放画面'); return; }
+  kind = st.type;
+  updateTabs();
+  detach();
+  const url = '/y2play?u=' + b64(st.url);
+  if(st.format === 'hls' && window.Hls && Hls.isSupported()){
+    hls = new Hls({ maxBufferLength: 20, liveDurationInfinity: true });
+    hls.loadSource(url); hls.attachMedia(v);
+  } else {
+    v.src = url;
+  }
+  v.play().catch(()=>{});
+  const names = { camera:'教师画面', screen:'课件画面', room:'教室画面' };
+  const tag = info.kind === 'live' ? '直播回放' : '';
+  $('#now').textContent = `${info.title} ${info.subTitle||''} · ${names[kind]||kind}${tag?' · '+tag:''}`;
+
+  if(t0){
+    const onPlay = ()=>{
+      v.removeEventListener('playing', onPlay);
+      toast(`起播 ${((performance.now()-t0)/1000).toFixed(2)}s`);
+    };
+    v.addEventListener('playing', onPlay);
+  }
+}
+
+// 控件
+$('#go').onclick = doFind;
+$('#q').addEventListener('keydown', e=>{ if(e.key==='Enter') doFind(); });
+$('#term').onchange = ()=>{ if($('#q').value.trim()) doFind(); else if(curCourse) loadSessions(curCourse, null); };
+$('#pp').onclick = ()=> v.paused ? v.play() : v.pause();
+$('#seek').addEventListener('input', e=>{ const d=v.duration; if(d&&isFinite(d)) v.currentTime = d*e.target.value/1000; });
+$('#rate').onchange = e=>{ v.playbackRate = Number(e.target.value); };
+document.querySelectorAll('.tab').forEach(b=> b.onclick = ()=>{ kind=b.dataset.k; pick(performance.now()); });
+v.addEventListener('timeupdate', ()=>{
+  const d = v.duration;
+  if(d && isFinite(d)){
+    $('#seek').value = Math.round(v.currentTime/d*1000);
+    $('#time').textContent = fmt(v.currentTime)+' / '+fmt(d);
+  }
+});
+v.addEventListener('seeking', ()=>{ window.__seekAt = performance.now(); });
+v.addEventListener('seeked', ()=>{
+  if(!window.__seekAt) return;
+  const s = (performance.now()-window.__seekAt)/1000;
+  window.__seekAt = 0;
+  toast(`拖动定位 ${s.toFixed(2)}s`);
+});
+
+(async function init(){
+  // 一键登录书签跳回来时 token 在 #t= 里
+  const ht = (location.hash.match(/^#t=(.+)$/) || [])[1];
+  if (ht) {
+    const token = decodeURIComponent(ht);
+    history.replaceState(null, '', location.pathname);
+    await doLogin(token);
+    return;
+  }
+  // 从默认页点「新版平台」跳过来，带着课程名：自动搜一次
+  const sp = new URLSearchParams(location.search);
+  const q0 = (sp.get('q') || '').trim();
+  const directId = sp.get('course');
+  if (!directId && q0) {
+    try{
+      const st = await (await fetch('/api/y2/status')).json();
+      $('#q').value = q0;
+      if (!st.loggedIn) { showLogin('新版平台上播放更快 —— 先登录新版（老平台那套不影响，两边各登一次）'); return; }
+      $('#sdot').classList.remove('off');
+      await loadTerms();
+      await doFind();
+      return;
+    }catch(e){ showLogin(e.message); return; }
+  }
+  if (directId) {
+    try{
+      const st = await (await fetch('/api/y2/status')).json();
+      if (!st.loggedIn) { showLogin('这门课在新版平台上更快，先登录新版（老平台那套照旧用）'); return; }
+      $('#sdot').classList.remove('off');
+      await loadTerms();
+      await loadSessions({
+        courseId: directId,
+        title: sp.get('title') || ('课程 ' + directId),
+        termName: sp.get('term') || '',
+        termId: '',
+      }, null, { autoLatest: true });
+      return;
+    }catch(e){ showLogin(e.message); return; }
+  }
+  try{
+    const j = await (await fetch('/api/y2/status')).json();
+    if(j.loggedIn){ $('#sdot').classList.remove('off'); await loadTerms(); await resumeLast(); }
+    else showLogin();
+  }catch(e){ showLogin(e.message); }
+})();
+</script>
+</body>
+</html>

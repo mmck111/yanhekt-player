@@ -1,0 +1,18 @@
+# 构建产物（体积大，别提交；用 GitHub Releases 分发）
+dist/*.exe
+dist/sea-prep.blob
+dist/app.js
+dist/sea-config.json
+
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 本地运行时产生的东西
+token.txt
+*.log
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
