@@ -208,7 +208,7 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		// 没登录也能搜本地课程库：先把课找出来，点播放时再让用户登录
 		if q != "" {
 			if cat := y2CatalogLoad(); cat != nil {
-				if hits := y2CatalogSearch(cat, q, 40); len(hits) > 0 {
+				if hits, matched := y2CatalogSearch(cat, q, 40); len(hits) > 0 {
 					out := make([]y2Course, 0, len(hits))
 					for _, h := range hits {
 						c := y2CatRowCourse(h)
@@ -216,9 +216,9 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 						out = append(out, c)
 					}
 					writeJSON(w, 200, map[string]any{
-						"ok": true, "courses": out, "total": len(out), "shown": len(out),
+						"ok": true, "courses": out, "total": matched, "shown": len(out),
 						"hidden": 0, "unverified": 0, "source": "local",
-						"notes": []string{"未登录：仅在本地课程库里匹配，登录后才能看录像"},
+						"notes": []string{fmt.Sprintf("未登录：本地课程库命中 %d 门，登录后才能看录像", matched)},
 					})
 					return
 				}
@@ -236,21 +236,24 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 
 	// 0) 本地课程库优先：库里搜是本地匹配，包含/归一化/序号写法都能对上，
 	//    也不吃上游的限流。库里没命中再走线上检索。
-	localHits := 0
+	//    注意 limit=20：同一位老师同一学期可能有好几个教学班（孙新的数值分析就有 2 个），
+	//    以前去重 + 限 12 条会把它们吃掉。
+	localHits, localMatched := 0, 0
 	if q != "" {
 		if cat := y2CatalogLoad(); cat != nil && len(cat.Rows) > 0 {
-			hits := y2CatalogSearch(cat, q, 12)
+			hits, matched := y2CatalogSearch(cat, q, 20)
 			for _, h := range hits {
 				courses = append(courses, y2CatRowCourse(h))
 			}
 			if len(hits) > 0 {
-				localHits = len(hits)
-				total = len(hits)
+				localHits, localMatched = len(hits), matched
+				total = matched
 				source = "local"
-				notes = append(notes, fmt.Sprintf("本地课程库命中 %d 门（库存 %d 门）", len(hits), len(cat.Rows)))
+				notes = append(notes, fmt.Sprintf("本地课程库命中 %d 门，显示前 %d 门（库存 %d 门）", matched, len(hits), len(cat.Rows)))
 			}
 		}
 	}
+	_ = localMatched
 
 	if localHits == 0 {
 		if r0, err := y2SearchCourses(jwt, q, term, page, 20); err == nil {
@@ -461,13 +464,13 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 把"没有录像"的课筛掉（这一步会顺带拿到教室名）。
-	// 本地课程库命中时不扫课表：库里已经有课号，扫课表只是白白多发几百个请求。
+	// 本地课程库命中时只扫当前学期：库里已经有课号，扫整张课表只是白白多发几百个请求。
 	if len(courses) > 0 {
-		tv := time.Now()
+		tv, toVerify := time.Now(), len(courses)
 		if kept, h, u, _, err := y2Verify(jwt, id, courses, q, localHits > 0); err == nil {
 			courses = kept
 			hidden, unverified = h, u
-			notes = append(notes, fmt.Sprintf("验录像 %d 门 %dms", total, time.Since(tv).Milliseconds()))
+			notes = append(notes, fmt.Sprintf("验录像 %d 门 %dms", toVerify, time.Since(tv).Milliseconds()))
 		} else {
 			notes = append(notes, "录像校验："+err.Error())
 		}

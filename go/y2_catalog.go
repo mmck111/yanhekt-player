@@ -387,64 +387,87 @@ func y2CatYear(r y2CatRow) int {
 	return 0
 }
 
-// y2CatalogSearch 本地匹配：每个词都要命中（课名 / 老师 / 课程号 / 课号），
+// y2TitleLevelMark 课名以查询词开头时，后面紧跟的是不是"课程级别/编号"标记
+// （A / B / 2 / Ⅱ / 空格 + 这类字符），用来把「大学物理AⅡ」排在「大学物理实验」前面。
+func y2TitleLevelMark(norm, prefix string) bool {
+	if len(norm) <= len(prefix) {
+		return false
+	}
+	r, _ := utf8DecodeRuneInString(norm[len(prefix):])
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+		return true
+	}
+	if r >= 0x2160 && r <= 0x217F { // Ⅰ Ⅱ Ⅲ ⅰ ⅱ …
+		return true
+	}
+	return false
+}
+
+// utf8DecodeRuneInString 取第一个字符（归一化后的串只含 ASCII 与中文，用 range 即可）
+func utf8DecodeRuneInString(s string) (rune, int) {
+	for _, r := range s {
+		return r, len(string(r))
+	}
+	return 0, 0
+}
+
+// y2CatalogSearch 本地匹配：每个词都要命中（课名 / 老师 / 课程编号 / 课号），
 // 归一化后比较（Ⅱ=II=2、全角半角、空格、括号）。
 //
-// 同一门课在不同学期会有多条记录，这里按「课名+老师」去重，只留最新学期那条，
-// 免得搜一次出来几十条一模一样的课。
-func y2CatalogSearch(cat *y2Catalog, q string, limit int) []y2CatRow {
+// 返回排好序的课程行和"命中总数"（总数可能大于返回条数，用于显示"共 N 门 / 显示前 M 门"）。
+//
+// 注意：**不能**按"课名+老师"去重 —— 同一位老师同一学期可能带两个教学班
+// （孙新的「数值分析」这学期就有 2 个），去重会把其中一个吃掉。
+// 只有课程 id 相同才算同一门课（爬取时已经按 id 去过重）。
+func y2CatalogSearch(cat *y2Catalog, q string, limit int) ([]y2CatRow, int) {
 	if cat == nil || len(cat.Rows) == 0 {
-		return nil
+		return nil, 0
 	}
 	tokens := strings.Fields(q)
 	if len(tokens) == 0 {
-		return nil
+		return nil, 0
 	}
 	if limit <= 0 {
 		limit = 60
 	}
 	qn := y2NormText(q)
 
-	// 1) 过滤 + 去重（同课名同老师只留学期最新的）
 	type hit struct {
 		row  y2CatRow
-		norm string
 		rank int
 	}
-	best := map[string]hit{}
-	order := []string{}
+	hits := make([]hit, 0, 64)
 	for _, r := range cat.Rows {
 		hay := r.Title + " " + r.Teacher + " " + r.Code + " " + r.ID
 		if !y2FuzzyAll(hay, tokens) {
 			continue
 		}
 		norm := y2NormText(r.Title)
-		rank := 2 // 包含
+		rank := 3 // 只是包含
 		switch {
 		case norm == qn:
 			rank = 0
 		case strings.HasPrefix(norm, qn):
-			rank = 1
+			// 「大学物理」后面紧跟 A / Ⅱ / 2 这类"课程级别"标记的，比
+			// 「大学物理实验」这种另一个课名更接近用户想找的课。
+			if y2TitleLevelMark(norm, qn) {
+				rank = 1
+			} else {
+				rank = 2
+			}
 		case y2FuzzyHas(r.Teacher, q):
-			rank = 3 // 只命中老师
+			rank = 4 // 只命中老师
 		}
-		key := norm + "|" + y2NormText(r.Teacher)
-		h := hit{row: r, norm: norm, rank: rank}
-		if old, ok := best[key]; !ok {
-			best[key] = h
-			order = append(order, key)
-		} else if y2CatYear(r) > y2CatYear(old.row) {
-			best[key] = h
-		}
+		hits = append(hits, hit{row: r, rank: rank})
 	}
-
-	hits := make([]hit, 0, len(order))
-	for _, k := range order {
-		hits = append(hits, best[k])
+	matched := len(hits)
+	if matched == 0 {
+		return nil, 0
 	}
-	// 2) 排序：匹配方式 → 学年新的 → 节次多的 → 课名短的。
-	// 学年必须排在课名长度前面：搜「大学物理」时「大学物理AⅡ」（本学期）要压过
-	// 「大学物理E」（上一学年），否则用户要找的那门课会被一堆旧课挤下去。
+	// 排序：匹配方式 → 学年新的 → 课名短的 → 老师名（让同一位老师的教学班挨在一起）→ id
 	sort.SliceStable(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
 		if a.rank != b.rank {
@@ -456,27 +479,20 @@ func y2CatalogSearch(cat *y2Catalog, q string, limit int) []y2CatRow {
 		if li, lj := len([]rune(a.row.Title)), len([]rune(b.row.Title)); li != lj {
 			return li < lj
 		}
-		if a.row.Subs != b.row.Subs {
-			return a.row.Subs > b.row.Subs
+		if ta, tb := y2NormText(a.row.Teacher), y2NormText(b.row.Teacher); ta != tb {
+			return ta < tb
 		}
 		return a.row.ID < b.row.ID
 	})
-	out := make([]y2CatRow, 0, limit)
-	// 同一种课名最多占 4 个位置：搜「大学物理」时不能 12 条全是「大学物理AⅡ」，
-	// 得让「大学物理AⅠ / E / 实验」也露脸，用户才知道还有别的写法可选。
-	perTitle := map[string]int{}
-	for _, h := range hits {
-		if len(out) >= limit {
-			break
-		}
-		k := y2NormText(h.row.Title)
-		if perTitle[k] >= 4 {
-			continue
-		}
-		perTitle[k]++
-		out = append(out, h.row)
+	n := limit
+	if n > len(hits) {
+		n = len(hits)
 	}
-	return out
+	out := make([]y2CatRow, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, hits[i].row)
+	}
+	return out, matched
 }
 
 // y2TermYear 从「2026-2027 第一学期」里取 2026；认不出来给 0
