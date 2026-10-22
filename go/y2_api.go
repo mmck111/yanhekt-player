@@ -735,8 +735,7 @@ func y2SearchByTeacher(jwt, name, term string) []y2Course {
 		r := y2ParseCourseList(body)
 		hit := []y2Course{}
 		for _, c := range r.courses {
-			hay := strings.ToLower(jstr(c["title"]) + " " + jstr(c["teacher"]))
-			if strings.Contains(hay, key) {
+			if y2FuzzyHas(jstr(c["title"])+" "+jstr(c["teacher"]), name) {
 				hit = append(hit, c)
 			}
 		}
@@ -747,6 +746,14 @@ func y2SearchByTeacher(jwt, name, term string) []y2Course {
 	return nil
 }
 
+// y2SearchCourses 按课程名检索（覆盖平台上所有学期，不只是"我的课程"）。
+//
+// 上游几种写法都试一遍，但**不能"有返回就当命中"**：
+//   - like_title 如果被忽略，接口会甩一整页无关课程回来；
+//   - title 是精确/前缀匹配，搜「大学物理」时只回「大学物理」本身。
+//
+// 所以每种写法都先在本地按词过滤（Ⅱ/II/2、全角/半角、空格做归一化），
+// 过滤后还有剩才算这条写法可用；全都不行才返回空，交给上层用课程库展开。
 func y2SearchCourses(jwt, q, term string, page, perPage int) (*y2SearchResult, error) {
 	base := func(extra ...y2Param) y2Params {
 		p := y2Params{
@@ -758,16 +765,31 @@ func y2SearchCourses(jwt, q, term string, page, perPage int) (*y2SearchResult, e
 		return append(p, extra...)
 	}
 	tries := []y2Try{
+		// 先试包含匹配：上游要是认这个参数，一次就能把「大学物理AⅡ」带出来
+		{name: "like_title", path: y2CourseListPath, params: base(y2P("like_title", q))},
 		{name: "title", path: y2CourseListPath, params: base(
 			y2P("title", q), y2P("order", ""), y2P("publish", ""), y2P("struc_ids", []any{}))},
 		{name: "title-plain", path: y2CourseListPath, params: base(y2P("title", q))},
-		{name: "like_title", path: y2CourseListPath, params: base(y2P("like_title", q))},
 		{name: "title-no-term", path: y2CourseListPath, params: y2Params{
 			y2P("page", page), y2P("per_page", perPage), y2P("tenant", y2Tenant), y2P("title", q)}},
 	}
+	tokens := strings.Fields(q)
 	got, _, err := y2Probe(jwt, tries, func(body any) (*y2SearchResult, bool) {
 		r := y2ParseCourseList(body)
-		return r, len(r.courses) > 0
+		if len(r.courses) == 0 {
+			return r, false
+		}
+		kept := []y2Course{}
+		for _, c := range r.courses {
+			if y2FuzzyAll(jstr(c["title"])+" "+jstr(c["teacher"]), tokens) {
+				kept = append(kept, c)
+			}
+		}
+		if len(kept) == 0 {
+			return r, false // 上游忽略了关键词（或只给了不相干的课）→ 换下一种写法
+		}
+		r.courses, r.total = kept, len(kept)
+		return r, true
 	})
 	if err != nil {
 		return nil, err

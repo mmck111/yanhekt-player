@@ -139,6 +139,9 @@ type y2VideosData struct {
 	videoCount    int
 	totalSessions int
 	termName      string
+	// detailOK 讲次详情接口真的返回了数据（哪怕 0 讲）。
+	// 只有它为 true 时，"0 讲次"才能当作"这门课没有录像"的证据。
+	detailOK bool
 }
 
 func y2Remember(key string, data *y2VideosData) *y2VideosData {
@@ -528,6 +531,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 		source: "none", verified: false, note: strings.Join(notes, "；"),
 		sessions: []y2Session{}, room: "",
 		videoCount: 0, totalSessions: total, termName: "",
+		detailOK: detail != nil,
 	}), nil
 }
 
@@ -793,6 +797,22 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 				}
 				if v.totalSessions > 0 {
 					results[i] = judged{hidden: true} // 有讲次，但一讲能播的都没有
+					return
+				}
+				// 讲次详情真的给出了结果、而且一讲都没有 → 这门课确实没录像
+				// （以前这种一律算"待确认"留着，于是"大学物理实验"这种课永远筛不掉）
+				//
+				// 但如果检索结果自己说有节次、详情却一讲给不出来，那是"没权限看"而不是
+				// "没录像"——这种仍旧留着标待确认，别把无权限课程一起藏了。
+				if v.detailOK && v.totalSessions == 0 {
+					if n, ok := c["sessions"].(int); ok && n > 0 {
+						row := cloneRow(c)
+						row["verified"] = false
+						row["note"] = "详情接口没给出讲次，可能没有查看权限"
+						results[i] = judged{keep: true, row: row, unverified: true}
+						return
+					}
+					results[i] = judged{hidden: true}
 					return
 				}
 			}

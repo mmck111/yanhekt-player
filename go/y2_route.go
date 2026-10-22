@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"sync"
+	"sync/atomic"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,6 +67,8 @@ func registerY2(mux *http.ServeMux) {
 	mux.HandleFunc("/y2dl", safe(handleY2Download))
 	mux.HandleFunc("/y2stream", safe(handleY2Stream))
 	mux.HandleFunc("/api/y2/diag", safe(handleY2Diag))
+	mux.HandleFunc("/api/y2/crawl", safe(handleY2Crawl))
+	mux.HandleFunc("/api/y2/catalog", safe(handleY2Catalog))
 	mux.HandleFunc("/diag", safe(handleY2Diag))
 }
 
@@ -128,6 +131,7 @@ func handleY2Login(w http.ResponseWriter, r *http.Request) {
 	}
 	y2RememberIdentity(raw, id)
 	setCookie(w, y2Cookie, encodeURIComponent(raw), y2TTL)
+	y2CatalogKick(raw)
 	writeJSON(w, 200, map[string]any{"ok": true, "userId": id.userId, "auth": style})
 }
 
@@ -146,6 +150,7 @@ func handleY2LoginAuto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setCookie(w, y2Cookie, encodeURIComponent(jwt), y2TTL)
+	y2CatalogKick(jwt)
 	writeJSON(w, 200, map[string]any{"ok": true, "userId": id.userId, "from": from})
 }
 
@@ -187,11 +192,6 @@ func handleY2Terms(w http.ResponseWriter, r *http.Request) {
 
 func handleY2Search(w http.ResponseWriter, r *http.Request) {
 	jwt := y2Token(r)
-	id := y2Who(jwt)
-	if id == nil {
-		writeJSON(w, 401, map[string]any{"ok": false, "error": "尚未登录 Yanhe 2.0", "needLogin": true})
-		return
-	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	term := strings.TrimSpace(r.URL.Query().Get("term"))
 	page := 1
@@ -203,17 +203,62 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	id := y2Who(jwt)
+	if id == nil {
+		// 没登录也能搜本地课程库：先把课找出来，点播放时再让用户登录
+		if q != "" {
+			if cat := y2CatalogLoad(); cat != nil {
+				if hits := y2CatalogSearch(cat, q, 40); len(hits) > 0 {
+					out := make([]y2Course, 0, len(hits))
+					for _, h := range hits {
+						c := y2CatRowCourse(h)
+						c["note"] = "未登录：只显示课程库匹配"
+						out = append(out, c)
+					}
+					writeJSON(w, 200, map[string]any{
+						"ok": true, "courses": out, "total": len(out), "shown": len(out),
+						"hidden": 0, "unverified": 0, "source": "local",
+						"notes": []string{"未登录：仅在本地课程库里匹配，登录后才能看录像"},
+					})
+					return
+				}
+			}
+		}
+		writeJSON(w, 401, map[string]any{"ok": false, "error": "尚未登录 Yanhe 2.0", "needLogin": true})
+		return
+	}
+
 	notes := []string{}
 	courses := []y2Course{}
 	total := 0
 	source := "catalog"
 	hidden, unverified := 0, 0
 
-	if r0, err := y2SearchCourses(jwt, q, term, page, 20); err == nil {
-		courses = r0.courses
-		total = r0.total
-	} else {
-		notes = append(notes, "课程检索："+err.Error())
+	// 0) 本地课程库优先：库里搜是本地匹配，包含/归一化/序号写法都能对上，
+	//    也不吃上游的限流。库里没命中再走线上检索。
+	localHits := 0
+	if q != "" {
+		if cat := y2CatalogLoad(); cat != nil && len(cat.Rows) > 0 {
+			hits := y2CatalogSearch(cat, q, 40)
+			for _, h := range hits {
+				courses = append(courses, y2CatRowCourse(h))
+			}
+			if len(hits) > 0 {
+				localHits = len(hits)
+				total = len(hits)
+				source = "local"
+				notes = append(notes, fmt.Sprintf("本地课程库命中 %d 门（库存 %d 门）", len(hits), len(cat.Rows)))
+			}
+		}
+	}
+
+	if localHits == 0 {
+		if r0, err := y2SearchCourses(jwt, q, term, page, 20); err == nil {
+			courses = r0.courses
+			total = r0.total
+		} else {
+			notes = append(notes, "课程检索："+err.Error())
+		}
 	}
 
 	// 新版检索只吃课程名。关键词按空格拆开处理：
@@ -222,8 +267,10 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 	tokens := strings.Fields(q)
 
 	// title 是精确/前缀匹配：搜「大学物理」查不到「大学物理AII」。
-	// 查不到时用课程库里的课名做包含匹配，再逐门回查（限 8 个课名）。
-	if len(courses) == 0 && q != "" {
+	// 不管上游返回了几门，都用内置课程库做一次「课名包含」展开再逐门回查 ——
+	// 只在上游返回 0 门时展开是不够的：搜「大学物理」时上游会返回「大学物理」本身，
+	// 结果非空就再也不会去找「大学物理AⅡ / AII / 2」这些写法了。
+	if localHits == 0 && q != "" {
 		longest := ""
 		for _, t := range tokens {
 			if len([]rune(t)) > len([]rune(longest)) {
@@ -233,26 +280,26 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		if longest == "" {
 			longest = q
 		}
-		cat, _ := catalogSearch(longest, "", 200)
+		cat, _ := catalogSearch(longest, "", 400)
 		titles := []string{}
 		seenT := map[string]bool{}
+		for _, c := range courses {
+			seenT[y2NormText(jstr(c["title"]))] = true
+		}
 		for _, c := range cat {
 			n := strings.TrimSpace(c.Name)
-			k := strings.ToLower(strings.ReplaceAll(n, " ", ""))
-			if n == "" || seenT[k] {
+			k := y2NormText(n)
+			if n == "" || seenT[k] || !y2FuzzyAll(n, tokens) {
 				continue
 			}
 			seenT[k] = true
 			titles = append(titles, n)
-			if len(titles) >= 8 {
+			if len(titles) >= 10 {
 				break
 			}
 		}
 		if len(titles) > 0 {
-			words := make([]string, 0, len(tokens))
-			for _, t := range tokens {
-				words = append(words, strings.ToLower(t))
-			}
+			added := 0
 			seenC := map[string]bool{}
 			for _, c := range courses {
 				seenC[jstr(c["courseId"])] = true
@@ -277,24 +324,17 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 						if seenC[id] {
 							continue
 						}
-						hay := strings.ToLower(jstr(c["title"]) + " " + jstr(c["teacher"]))
-						ok := true
-						for _, w := range words {
-							if !strings.Contains(hay, w) {
-								ok = false
-								break
-							}
-						}
-						if !ok {
+						if !y2FuzzyAll(jstr(c["title"])+" "+jstr(c["teacher"]), tokens) {
 							continue
 						}
 						seenC[id] = true
+						added++
 						courses = append(courses, c)
 					}
 				}(title)
 			}
 			wg.Wait()
-			if len(courses) > 0 {
+			if added > 0 {
 				total = len(courses)
 				notes = append(notes, "按课程名包含匹配")
 			}
@@ -311,20 +351,12 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		rest := []string{}
 		for _, t := range tokens {
 			if t != titleQ {
-				rest = append(rest, strings.ToLower(t))
+				rest = append(rest, t)
 			}
 		}
 		kept := []y2Course{}
 		for _, c := range courses {
-			hay := strings.ToLower(jstr(c["title"]) + " " + jstr(c["teacher"]))
-			ok := true
-			for _, t := range rest {
-				if !strings.Contains(hay, t) {
-					ok = false
-					break
-				}
-			}
-			if ok {
+			if y2FuzzyAll(jstr(c["title"])+" "+jstr(c["teacher"]), rest) {
 				kept = append(kept, c)
 			}
 		}
@@ -357,18 +389,8 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 					if seen0[id] {
 						continue
 					}
-					hay := strings.ToLower(jstr(c["title"]) + " " + jstr(c["teacher"]))
-					if !strings.Contains(hay, strings.ToLower(tname)) {
-						continue
-					}
-					ok := true
-					for _, t := range rest {
-						if !strings.Contains(hay, t) {
-							ok = false
-							break
-						}
-					}
-					if !ok {
+					hay := jstr(c["title"]) + " " + jstr(c["teacher"])
+					if !y2FuzzyHas(hay, tname) || !y2FuzzyAll(hay, rest) {
 						continue
 					}
 					seen0[id] = true
@@ -385,7 +407,7 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 			others := []string{}
 			for _, t := range tokens {
 				if t != tname {
-					others = append(others, strings.ToLower(t))
+					others = append(others, t)
 				}
 			}
 			var mu sync.Mutex
@@ -408,18 +430,8 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 						if seen[id] {
 							continue
 						}
-						hay := strings.ToLower(jstr(c["title"]) + " " + jstr(c["teacher"]))
-						if !strings.Contains(hay, strings.ToLower(tname)) {
-							continue
-						}
-						ok := true
-						for _, t := range others {
-							if !strings.Contains(hay, t) {
-								ok = false
-								break
-							}
-						}
-						if !ok {
+						hay := jstr(c["title"]) + " " + jstr(c["teacher"])
+						if !y2FuzzyHas(hay, tname) || !y2FuzzyAll(hay, others) {
 							continue
 						}
 						seen[id] = true
@@ -936,6 +948,70 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	return nil
 }
 
+// ---------------------------------------------------------------- 课程库（爬取 / 查看）
+
+// handleY2Catalog 看本地课程库的状态（不需要登录）
+func handleY2Catalog(w http.ResponseWriter, r *http.Request) {
+	cat := y2CatalogLoad()
+	out := map[string]any{"ok": true, "file": y2CatFile()}
+	if cat == nil {
+		out["count"] = 0
+		out["hint"] = "还没有本地课程库：登录新版后访问 /api/y2/crawl 爬一份"
+		writeJSON(w, 200, out)
+		return
+	}
+	out["count"] = len(cat.Rows)
+	out["at"] = time.Unix(cat.At, 0).Format("2006-01-02 15:04:05")
+	out["ageHours"] = int(time.Since(time.Unix(cat.At, 0)).Hours())
+	out["crawling"] = atomic.LoadInt32(&y2CatRunning) == 1
+	head := cat.Rows
+	if len(head) > 5 {
+		head = head[:5]
+	}
+	out["sample"] = head
+	writeJSON(w, 200, out)
+}
+
+// handleY2Crawl 把新版门户的整份课程列表爬下来存成本地索引
+func handleY2Crawl(w http.ResponseWriter, r *http.Request) {
+	jwt := y2Token(r)
+	if jwt == "" {
+		writeJSON(w, 401, map[string]any{"ok": false, "error": "尚未登录 Yanhe 2.0", "needLogin": true})
+		return
+	}
+	if y2Who(jwt) == nil {
+		writeJSON(w, 401, map[string]any{"ok": false, "error": "登录已失效，请重新登录新版", "needLogin": true})
+		return
+	}
+	perPage, maxPages := 100, 300
+	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("per_page"))); err == nil && n > 0 {
+		perPage = n
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("pages"))); err == nil && n > 0 {
+		maxPages = n
+	}
+	t0 := time.Now()
+	cat, stats, err := y2Crawl(jwt, perPage, maxPages, nil)
+	if err != nil {
+		code := 502
+		if strings.Contains(err.Error(), "登录") {
+			code = 401
+		}
+		writeJSON(w, code, map[string]any{"ok": false, "error": err.Error(), "stats": stats})
+		return
+	}
+	stats["saveError"] = nil
+	if e := y2CatalogSave(cat); e != nil {
+		stats["saveError"] = e.Error()
+	}
+	stats["ms"] = time.Since(t0).Milliseconds()
+	head := cat.Rows
+	if len(head) > 8 {
+		head = head[:8]
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "stats": stats, "sample": head})
+}
+
 // ---------------------------------------------------------------- 自检
 
 // y2Diag 自检：登录后打开 /diag，能看到每个接口的真实状态与字段名（不含 token / 手机号）
@@ -1169,6 +1245,24 @@ func handleY2Diag(w http.ResponseWriter, r *http.Request) {
 					out["取流"] = got
 				}
 				return out, nil
+			})
+		}
+
+		// 4) 搜索变体：同一个词换各种参数名，看哪种真做「包含匹配」
+		dq := strings.TrimSpace(r.URL.Query().Get("q"))
+		if dq == "" {
+			dq = "大学物理"
+		}
+		step("搜索变体「"+dq+"」", func() (map[string]any, error) {
+			vars := y2DiagSearch(jwt, dq)
+			// 顺带把「大学物理」这种短词在上游的返回条数记下来，方便判断是精确还是包含
+			return map[string]any{"variants": vars}, nil
+		})
+
+		// 5) 指定课（?course=xxx）的真实讲次情况
+		if cid := strings.TrimSpace(r.URL.Query().Get("course")); cid != "" {
+			step("指定课讲次（"+cid+"）", func() (map[string]any, error) {
+				return y2DiagCourse(jwt, cid, id.account), nil
 			})
 		}
 	}
