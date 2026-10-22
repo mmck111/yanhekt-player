@@ -60,6 +60,7 @@ func registerY2(mux *http.ServeMux) {
 	mux.HandleFunc("/api/y2/courses", safe(handleY2Courses))
 	mux.HandleFunc("/api/y2/terms", safe(handleY2Terms))
 	mux.HandleFunc("/api/y2/search", safe(handleY2Search))
+	mux.HandleFunc("/api/y2/verify", safe(handleY2Verify))
 	mux.HandleFunc("/api/y2/find", safe(handleY2Search))
 	mux.HandleFunc("/api/y2/sessions", safe(handleY2Sessions))
 	mux.HandleFunc("/api/y2/sub", safe(handleY2Sub))
@@ -463,23 +464,99 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 把"没有录像"的课筛掉（这一步会顺带拿到教室名）。
-	// 本地课程库命中时只扫当前学期：库里已经有课号，扫整张课表只是白白多发几百个请求。
+	// 录像校验不再挡在搜索里：课程库匹配是本地毫秒级的，慢的只有"逐门问平台有没有录像"。
+	// 这里只套用 12 小时内已经验过的结果（有缓存就顺带把没录像的筛掉），
+	// 没缓存的课程先照常列出来，由前端随后调 /api/y2/verify 补徽章。
 	if len(courses) > 0 {
-		tv, toVerify := time.Now(), len(courses)
-		if kept, h, u, _, err := y2Verify(jwt, id, courses, q, localHits > 0); err == nil {
-			courses = kept
-			hidden, unverified = h, u
-			notes = append(notes, fmt.Sprintf("验录像 %d 门 %dms", toVerify, time.Since(tv).Milliseconds()))
-		} else {
-			notes = append(notes, "录像校验："+err.Error())
+		kept := make([]y2Course, 0, len(courses))
+		for _, c := range courses {
+			v, ok := y2VerdictGet(jstr(c["courseId"]))
+			if !ok {
+				kept = append(kept, c)
+				continue
+			}
+			if v.Videos <= 0 && v.Checked {
+				hidden++
+				continue
+			}
+			c["verified"] = true
+			c["totalSessions"] = v.Total
+			if v.Room != "" {
+				c["room"] = v.Room
+			}
+			if v.Checked {
+				c["videoCount"] = v.Videos
+			}
+			kept = append(kept, c)
 		}
+		courses = kept
 	}
 
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "courses": courses, "total": total, "shown": len(courses),
 		"hidden": hidden, "unverified": unverified, "source": source, "notes": notes,
 	})
+}
+
+// handleY2Verify 前端拿到列表后，再单独来问"这几门到底有没有录像"。
+// 一次最多 20 门，5 路并发，结果写进 12 小时缓存（下次搜索直接命中）。
+func handleY2Verify(w http.ResponseWriter, r *http.Request) {
+	jwt := y2Token(r)
+	id := y2Who(jwt)
+	if id == nil {
+		writeJSON(w, 401, map[string]any{"ok": false, "error": "尚未登录 Yanhe 2.0", "needLogin": true})
+		return
+	}
+	body := readBody(r)
+	ids := []string{}
+	for _, v := range y2Arr(body["ids"]) {
+		s := strings.TrimSpace(y2Text(v))
+		if s != "" {
+			ids = append(ids, s)
+		}
+	}
+	if len(ids) > 20 {
+		ids = ids[:20]
+	}
+	if len(ids) == 0 {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "缺少 ids"})
+		return
+	}
+
+	out := make([]map[string]any, len(ids))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i, cid := range ids {
+		if v, ok := y2VerdictGet(cid); ok {
+			out[i] = map[string]any{"courseId": cid, "videos": v.Videos, "total": v.Total, "room": v.Room, "checked": v.Checked, "cached": true}
+			continue
+		}
+		wg.Add(1)
+		go func(i int, cid string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			res := map[string]any{"courseId": cid, "videos": 0, "total": 0, "checked": false}
+			v, err := y2Videos(jwt, id, cid, false, "", "", false)
+			if err == nil && v != nil {
+				res["videos"] = v.videoCount
+				res["total"] = v.totalSessions
+				res["room"] = v.room
+				// checked 表示"数量和有没有都确定了"：只抽了几讲验的，数字不准，
+				// 前端就别写"3 讲有录像"，写"有录像 + 共 10 讲"更诚实。
+				checked := v.totalSessions > 0 && v.verified && v.countExact
+				res["checked"] = checked
+				res["verified"] = v.videoCount > 0
+				y2VerdictSet(cid, y2Verdict{Videos: v.videoCount, Total: v.totalSessions, Room: v.room, Checked: checked})
+			} else if err != nil {
+				res["error"] = err.Error()
+			}
+			out[i] = res
+		}(i, cid)
+	}
+	wg.Wait()
+	y2VerdictFlush(false)
+	writeJSON(w, 200, map[string]any{"ok": true, "items": out})
 }
 
 // ---------------------------------------------------------------- 讲次

@@ -27,6 +27,7 @@
   .item{padding:9px 11px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
   .item:hover{background:var(--panel2)}
   .item.on{background:#1b2740;border-color:#2f4a7a}
+  .item.dim{opacity:.55}
   .item.dead{opacity:.45}
   .item.dead:hover{background:transparent}
   .item .d{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis}
@@ -480,9 +481,11 @@ async function doFind(){
 
     if (newOnes.length) {
       section('新版平台（播放快，拖动秒定位）');
+      const pending = [];
       newOnes.forEach(c=>{
         const el = document.createElement('div');
         el.className='item';
+        el.dataset.cid = c.courseId;
         const tn = c.termName || (c.termId ? termName(c.termId) : '');
         el.innerHTML = '<div class="d">' + esc(c.title || '（未命名课程）') + '</div>'
           + '<div class="m">'
@@ -491,15 +494,14 @@ async function doFind(){
           + '</div>'
           + '<div class="m">'
           + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
-          + (c.videoCount
-            ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>'
-            : (c.verified ? '<span class="badge rec">有录像</span>' : ''))
-          + (c.totalSessions > c.videoCount ? '<span class="badge" title="讲次详情里一共有 ' + c.totalSessions + ' 讲">共 ' + c.totalSessions + ' 讲</span>' : '')
-          + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'这个学期的课表没扫到讲次，接口也没给') + '">未确认</span>' : '')
+          + '<span class="bd">' + badges(c) + '</span>'
           + '</div>';
         el.onclick = ()=>loadSessions(c, el);
         list.appendChild(el);
+        if (c.verified !== true) pending.push({ c, el });
       });
+      // 列表先出来，再回头逐门问"有没有录像"（最多 20 门，5 路并发，结果缓存 12 小时）
+      if (pending.length) fillVerdicts(pending);
     }
 
     if (oldOnes.length) {
@@ -522,6 +524,52 @@ async function doFind(){
       });
     }
   }catch(e){ $('#list').innerHTML = '<div class="splash"><b>出错</b><span>'+ esc(e.message) +'</span></div>'; }
+}
+
+// 课程条目上的"录像"徽章（搜索先渲染一次，验完再刷一次）
+function badges(c){
+  let h = '';
+  if(c.videoCount) h += '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>';
+  else if(c.verified) h += '<span class="badge rec">有录像</span>';
+  if(c.noVideo) h += '<span class="badge">没录像</span>';
+  if(c.totalSessions > c.videoCount) h += '<span class="badge" title="讲次详情里一共有 ' + c.totalSessions + ' 讲">共 ' + c.totalSessions + ' 讲</span>';
+  if(c.verified === false && !c.noVideo) h += '<span class="badge" title="' + esc(c.note||'还没确认过') + '">未确认</span>';
+  return h;
+}
+
+// 列表先出来，再回头问"这几门到底有没有录像"（最多 20 门，5 路并发，结果缓存 12 小时）
+async function fillVerdicts(pending){
+  const ids = pending.slice(0, 20).map(x => x.c.courseId);
+  if(!ids.length) return;
+  let items = [];
+  try{
+    const r = await fetch('/api/y2/verify', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ ids }) });
+    const j = await r.json();
+    if(!j.ok) return;
+    items = j.items || [];
+  }catch(e){ return; }
+  const byId = new Map(items.map(i => [i.courseId, i]));
+  let noVideo = 0;
+  pending.forEach(({ c, el })=>{
+    const v = byId.get(c.courseId);
+    if(!v || v.error) return;
+    if(v.videos > 0){
+      c.verified = true;
+      c.videoCount = v.checked ? v.videos : null;
+      c.totalSessions = v.total || c.totalSessions;
+    }else if(v.checked){
+      noVideo++;
+      c.noVideo = true;
+      c.verified = false;
+      el.classList.add('dim');
+    }
+    const bd = el.querySelector('.bd');
+    if(bd) bd.innerHTML = badges(c);
+  });
+  if(noVideo){
+    const meta = $('#fmeta');
+    if(meta) meta.textContent = meta.textContent + ' · ' + noVideo + ' 门没录像';
+  }
 }
 
 // ---------------- 讲次 ----------------
