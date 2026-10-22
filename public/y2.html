@@ -491,8 +491,10 @@ async function doFind(){
           + '</div>'
           + '<div class="m">'
           + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
-          + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>' : '')
-          + (c.totalSessions > c.videoCount ? '<span class="badge" title="这个学期一共排了 ' + c.totalSessions + ' 次课">共 ' + c.totalSessions + ' 讲</span>' : '')
+          + (c.videoCount
+            ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>'
+            : (c.verified ? '<span class="badge rec">有录像</span>' : ''))
+          + (c.totalSessions > c.videoCount ? '<span class="badge" title="讲次详情里一共有 ' + c.totalSessions + ' 讲">共 ' + c.totalSessions + ' 讲</span>' : '')
           + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'这个学期的课表没扫到讲次，接口也没给') + '">未确认</span>' : '')
           + '</div>';
         el.onclick = ()=>loadSessions(c, el);

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -153,6 +154,15 @@ func y2Remember(key string, data *y2VideosData) *y2VideosData {
 	}
 	y2VideoCache[key] = y2VideoEntry{at: time.Now(), data: data}
 	y2VideoMu.Unlock()
+	return data
+}
+
+// y2RememberIf 只有"完整深挖"的结果才写缓存：搜索时为了快拿到的可能是少几讲的
+// 视图，绝不能让它盖掉点开课程时该看到的完整讲次列表。
+func y2RememberIf(cache bool, key string, data *y2VideosData) *y2VideosData {
+	if cache {
+		return y2Remember(key, data)
+	}
 	return data
 }
 
@@ -433,24 +443,30 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 	d, err := y2CourseVideos(jwt, courseID, id.account)
 	if err == nil {
 		detail = d
-		if d.videoCount > 0 {
-			merged := y2MergeKnownSessions(jwt, id, courseID, d.sessions, q, termName, deep)
-			sessions := d.sessions
-			if len(merged) > 0 {
+		// 点开课程（deep）：要展示**完整讲次表**，不能只给探过流的那几讲。
+		// 搜索校验（!deep）：只要"有没有录像 + 能播几讲"，用探过的就行。
+		list := d.sessions
+		if deep && len(d.candidates) > len(d.sessions) {
+			list = d.candidates
+		}
+		if len(list) > 0 {
+			merged := y2MergeKnownSessions(jwt, id, courseID, list, q, termName, deep)
+			sessions := list
+			if len(merged) > len(list) {
 				sessions = merged
 			}
 			src := "detail"
-			if len(sessions) > len(d.sessions) {
+			if len(sessions) > len(list) {
 				src = "detail+schedule"
 			}
 			room := firstRoom(sessions)
 			if room == "" {
 				room = d.room
 			}
-			return y2Remember(key, &y2VideosData{
+			return y2RememberIf(deep, key, &y2VideosData{
 				source: src, verified: d.verified, note: "",
 				sessions: sessions, room: room,
-				videoCount: len(sessions), totalSessions: maxInt(d.totalSessions, len(sessions)), termName: d.termName,
+				videoCount: d.videoCount, totalSessions: maxInt(d.totalSessions, len(sessions)), termName: d.termName,
 				detailOK: true, countExact: d.countExact,
 			}), nil
 		}
@@ -462,9 +478,11 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 		notes = append(notes, "讲次直读："+err.Error())
 	}
 
-	// 2. 自己的课表。整张课表要一次拉 150 天（约 7 秒），只在"点开这门课"时才值得付；
-	//    搜索结果校验（deep=false）跳过，直接看详情给的讲次。
-	if deep {
+	// 2. 自己的课表：一次拉 150 天（约 3 秒，之后走缓存）。
+	//    只有"详情接口没给讲次"（没权限 / 接口没数据）时才需要它；详情已经给出
+	//    完整讲次表就不用拉，省 3 秒。
+	needSchedule := detail == nil || len(detail.sessions) == 0
+	if needSchedule {
 		if mp, serr := y2Schedule(jwt, id); serr == nil {
 			list := mp[courseID]
 			rows := make([]y2Session, 0, len(list))
@@ -473,10 +491,11 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 			}
 			playable := pickPlayable(jwt, courseID, rows)
 			if len(playable) > 0 {
-				return y2Remember(key, &y2VideosData{
+				return y2RememberIf(deep, key, &y2VideosData{
 					source: "schedule-table", verified: true, note: strings.Join(notes, "；"),
 					sessions: playable, room: playable[0].Room,
 					videoCount: len(playable), totalSessions: len(list), termName: "",
+					detailOK: true, countExact: true,
 				}), nil
 			}
 			if len(list) > 0 {
@@ -494,7 +513,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 				if mp, err := y2ScanWindows(jwt, q, windows); err == nil {
 					if rows := mp[courseID]; len(rows) > 0 {
 						list := pickPlayable(jwt, courseID, rows)
-						return y2Remember(key, &y2VideosData{
+						return y2RememberIf(deep, key, &y2VideosData{
 							source: "schedule-keyword", verified: len(list) > 0, note: strings.Join(notes, "；"),
 							sessions: list, room: firstRoom(list),
 							videoCount: len(list), totalSessions: len(rows), termName: termName,
@@ -504,7 +523,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 			} else if mp, err := y2ScanByKeyword(jwt, q, 100, 8, 21); err == nil {
 				if rows := mp[courseID]; len(rows) > 0 {
 					list := pickPlayable(jwt, courseID, rows)
-					return y2Remember(key, &y2VideosData{
+					return y2RememberIf(deep, key, &y2VideosData{
 						source: "schedule-keyword", verified: len(list) > 0, note: strings.Join(notes, "；"),
 						sessions: list, room: firstRoom(list),
 						videoCount: len(list), totalSessions: len(rows), termName: termName,
@@ -517,7 +536,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 		if err == nil {
 			list := pickPlayable(jwt, courseID, y2FilterRecordings(raw))
 			if len(list) > 0 {
-				return y2Remember(key, &y2VideosData{
+				return y2RememberIf(deep, key, &y2VideosData{
 					source: "schedule", verified: true, note: strings.Join(notes, "；"),
 					sessions: list, room: firstRoom(list),
 					videoCount: len(list), totalSessions: len(raw), termName: "",
@@ -533,7 +552,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 	if detail != nil {
 		total = detail.totalSessions
 	}
-	return y2Remember(key, &y2VideosData{
+	return y2RememberIf(deep, key, &y2VideosData{
 		source: "none", verified: false, note: strings.Join(notes, "；"),
 		sessions: []y2Session{}, room: "",
 		videoCount: 0, totalSessions: total, termName: "",
@@ -653,6 +672,22 @@ func y2LongestToken(s string) string {
 	return best
 }
 
+// y2CurrentTermName 当前学期名（按月份猜：9 月~次年 1 月是秋季学期）
+func y2CurrentTermName() string {
+	now := time.Now()
+	y, m := now.Year(), int(now.Month())
+	switch {
+	case m >= 9:
+		return fmt.Sprintf("%d-%d 第一学期", y, y+1)
+	case m == 1:
+		return fmt.Sprintf("%d-%d 第一学期", y-1, y)
+	case m >= 2 && m <= 7:
+		return fmt.Sprintf("%d-%d 第二学期", y-1, y)
+	default: // 8 月：暑期，归到刚结束的第二学期
+		return fmt.Sprintf("%d-%d 第二学期", y-1, y)
+	}
+}
+
 func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string, skipScan bool) (kept []y2Course, hidden, unverified int, fallback bool, err error) {
 	// 1. 按结果里出现的学期，各自扫一遍课表（一次搜索最多 2 个学期）
 	termNames := map[string]string{}
@@ -666,25 +701,31 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string, skipScan
 	if scanQ == "" {
 		scanQ = q
 	}
+	// 本地课程库命中的课程没有学期名，按"当前学期"扫一遍就够：
+	// 不扫的话，"大学物理实验"这种详情接口拿不到讲次的课永远停在"未确认"。
+	scanWindows := windows
+	if skipScan && len(scanWindows) == 0 {
+		if w := y2TermWindow(y2CurrentTermName()); w != nil {
+			scanWindows = []y2WindowFull{{key: w.from + "~" + w.to, from: w.from, to: w.to}}
+		}
+	}
 	var scan map[string][]y2Session
-	if !skipScan {
-		if scanQ != "" && len(windows) > 0 {
-			scan, err = y2ScanWindows(jwt, scanQ, windows)
-			if err != nil {
-				if y2IsAuthRejected(err.Error()) {
-					return nil, 0, 0, false, err
-				}
-				scan = nil
+	if (!skipScan || scanWindows != nil) && scanQ != "" && len(scanWindows) > 0 {
+		scan, err = y2ScanWindows(jwt, scanQ, scanWindows)
+		if err != nil {
+			if y2IsAuthRejected(err.Error()) {
+				return nil, 0, 0, false, err
 			}
-		} else if scanQ != "" {
-			// 学期名解析不出来 → 退回"近 100 天"
-			scan, err = y2ScanByKeyword(jwt, scanQ, 100, 8, 21)
-			if err != nil {
-				if y2IsAuthRejected(err.Error()) {
-					return nil, 0, 0, false, err
-				}
-				scan = nil
+			scan = nil
+		}
+	} else if !skipScan && scanQ != "" {
+		// 学期名解析不出来 → 退回"近 100 天"
+		scan, err = y2ScanByKeyword(jwt, scanQ, 100, 8, 21)
+		if err != nil {
+			if y2IsAuthRejected(err.Error()) {
+				return nil, 0, 0, false, err
 			}
+			scan = nil
 		}
 	}
 
@@ -831,28 +872,23 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string, skipScan
 					results[i] = judged{keep: true, row: row}
 					return
 				}
-				if v.totalSessions > 0 {
+				// 有讲次、但一讲都取不到流 → 判没录像（这是"大学物理实验"那类要筛掉的）
+				if v.totalSessions > 0 && v.videoCount == 0 && v.verified {
 					y2VerdictSet(jstr(c["courseId"]), y2Verdict{Videos: 0, Total: v.totalSessions, Checked: true})
-					results[i] = judged{hidden: true} // 有讲次，但一讲能播的都没有
-					return
-				}
-				// 讲次详情真的给出了结果、而且一讲都没有 → 这门课确实没录像
-				// （以前这种一律算"待确认"留着，于是"大学物理实验"这种课永远筛不掉）
-				//
-				// 但如果检索结果自己说有节次、详情却一讲给不出来，那是"没权限看"而不是
-				// "没录像"——这种仍旧留着标待确认，别把无权限课程一起藏了。
-				if v.detailOK && v.totalSessions == 0 {
-					if n, ok := c["sessions"].(int); ok && n > 0 {
-						row := cloneRow(c)
-						row["verified"] = false
-						row["note"] = "详情接口没给出讲次，可能没有查看权限"
-						results[i] = judged{keep: true, row: row, unverified: true}
-						return
-					}
-					y2VerdictSet(jstr(c["courseId"]), y2Verdict{Videos: 0, Total: 0, Checked: true})
 					results[i] = judged{hidden: true}
 					return
 				}
+				// 讲次详情一讲都没给（没权限 / 接口没数据）→ **不能**当成"没录像"。
+				// 以前这里直接藏掉，结果有录像的课整门消失；现在留成待确认。
+				row := cloneRow(c)
+				row["verified"] = false
+				if v.detailOK {
+					row["note"] = "详情接口没给出讲次，可能没有查看权限"
+				} else {
+					row["note"] = "没能读到讲次，未确认"
+				}
+				results[i] = judged{keep: true, row: row, unverified: true}
+				return
 			}
 			row := cloneRow(c)
 			row["verified"] = false

@@ -883,7 +883,21 @@ func y2DeepSubArray(root any) []any {
 	return found
 }
 
-// y2ParseDetail 解析 get-course-detail 的返回；不可用返回 nil
+// y2SubListFlatten 把"按章节分组的 sub_list 对象"摊平成一个数组。
+// 分组键是日期（2026.9.4），按 key 排序后再拼，保证同一份数据每次顺序一致。
+func y2SubListFlatten(v any) []any {
+	m := jobj(v)
+	if m == nil {
+		return nil
+	}
+	out := []any{}
+	for _, k := range y2Keys(m) {
+		out = append(out, y2Arr(m[k])...)
+	}
+	return out
+}
+
+// y2ParseDetail 解析 get-course-detail / get-course-info 的返回；不可用返回 nil
 func y2ParseDetail(courseID string, body any) *y2Detail {
 	b := jobj(body)
 	if b == nil {
@@ -899,6 +913,11 @@ func y2ParseDetail(courseID string, body any) *y2Detail {
 	}
 	var raw []any
 	if a := jarr(d["sub_list"]); len(a) > 0 {
+		raw = a
+	} else if a := y2SubListFlatten(d["sub_list"]); len(a) > 0 {
+		// get-course-detail 的 sub_list 是按章节分组的对象：
+		//   {"2026.9.4":[{...}], "2026.10.1":[{...},{...}]}
+		// 直接取第一组只会拿到 1 讲，这就是"5 讲只显示 1 个视频"的来源。
 		raw = a
 	} else if a := jarr(d["origin_sub_list"]); len(a) > 0 {
 		raw = a
@@ -929,6 +948,10 @@ func y2ParseDetail(courseID string, body any) *y2Detail {
 //     还会在 data 里递归找"看起来像讲次"的数组，甚至解开 JSON 字符串里的
 func y2CourseDetail(jwt, courseID, account string) (*y2Detail, error) {
 	tries := []y2Try{
+		// 门户课程页用的就是它：sub_list 是**平铺**的完整讲次表（实测 22 讲、10 讲），
+		// 而 multi-search 的 sub_list 按章节分组，只取第一组就会少算成 1 讲。
+		{name: "portal-course-info", path: "/courseapi/v3/portal-home-setting/get-course-info", params: y2Params{
+			y2P("course_id", courseID), y2P("student", account)}},
 		{name: "multi-search+student", path: y2DetailPathConst, params: y2Params{
 			y2P("course_id", courseID), y2P("student", account)}},
 		{name: "multi-search", path: y2DetailPathConst, params: y2Params{y2P("course_id", courseID)}},
@@ -958,6 +981,9 @@ type y2CourseVideosResult struct {
 	title         string
 	termName      string
 	sessions      []y2Session
+	// candidates 所有"像录像"的讲次（含没取到流的）。
+	// 点开课程时要展示完整讲次表，不能只给探过流的那几讲。
+	candidates    []y2Session
 	videoCount    int
 	totalSessions int
 	room          string
@@ -1033,6 +1059,7 @@ func y2CourseVideos(jwt, courseID, account string) (*y2CourseVideosResult, error
 		title:         d.title,
 		termName:      d.termName,
 		sessions:      sessions,
+		candidates:    candidates,
 		videoCount:    len(sessions),
 		totalSessions: len(all),
 		room:          room,
