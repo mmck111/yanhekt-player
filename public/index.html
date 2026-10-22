@@ -118,6 +118,15 @@
   .login .msg.err{color:var(--err)} .login .msg.ok{color:var(--ok)}
   .login .note{font-size:11.5px;color:#7d869a;line-height:1.7;margin-top:12px;border-top:1px solid var(--line);padding-top:11px}
 
+  /* 一键自动登录 */
+  .login .autobtn{display:block;width:100%;margin:6px 0 2px;padding:14px 16px;border:none;border-radius:11px;
+    background:linear-gradient(180deg,#6fb0ff,#4a8ff0);color:#04101e;font-size:15px;font-weight:700;cursor:pointer;
+    text-align:left;box-shadow:0 6px 18px rgba(74,143,240,.22)}
+  .login .autobtn:hover{filter:brightness(1.06)}
+  .login .autobtn:disabled{filter:grayscale(.5) brightness(.85);cursor:default;box-shadow:none}
+  .login .autobtn b{display:block;font-size:15px}
+  .login .autobtn i{display:block;font-style:normal;font-size:11.5px;font-weight:500;opacity:.78;margin-top:3px}
+
   /* 登录引导（两个平台，一次讲清） */
   .login.wide{width:min(700px,94vw)}
   .login.wide h2{display:flex;align-items:center;gap:9px;margin-bottom:2px}
@@ -146,6 +155,14 @@
   .login details{margin-top:8px}
   .login summary{cursor:pointer;font-size:12px;color:var(--dim)}
   .login summary:hover{color:var(--fg)}
+
+  /* 录播 / 直播切换 */
+  .srcsw{display:flex;gap:6px;margin:0 0 8px}
+  .srcsw button{flex:1;padding:5px 0;font-size:12px;border-radius:7px;border:1px solid var(--line);
+    background:var(--panel2);color:var(--dim);cursor:pointer}
+  .srcsw button.on{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:700}
+  .livebadge{font-size:10px;font-weight:700;color:#06101f;background:var(--ok);border-radius:4px;padding:0 5px;flex:none}
+  .livebadge.up{background:var(--warn)}
 
   /* 登录状态小徽标 */
   .userline{flex-wrap:wrap}
@@ -177,6 +194,10 @@
   <aside>
     <div class="brand">
       <h1><span class="dot" id="dot"></span><span id="stateTxt">延河课堂 · 在线播放</span></h1>
+      <div class="srcsw">
+        <button id="mRec" class="on" title="看课程录像（默认）">录播</button>
+        <button id="mLive" title="看正在进行的直播">直播</button>
+      </div>
       <div class="finder">
         <input id="dq" placeholder="课程名 / 教师名，如 理论力学" spellcheck="false" autocomplete="off">
         <button id="dgo" class="ghost">搜课</button>
@@ -194,6 +215,7 @@
       <div class="who"><b id="cname">延河课堂在线播放器</b><span id="cmeta">搜课程名开始，可按学期筛</span></div>
       <button class="tab on" data-mode="main">全景</button>
       <button class="tab" data-mode="vga">课件</button>
+      <button class="tab liveonly" data-mode="room" style="display:none">教室</button>
       <button class="tab" data-mode="dual">双画面</button>
     </div>
 
@@ -209,8 +231,6 @@
       <button id="btnPlay">播放 / 暂停</button>
       <button data-jump="-15">« 15s</button>
       <button data-jump="15">15s »</button>
-      <span class="time" id="time">00:00 / 00:00</span>
-      <input type="range" id="seek" min="0" max="1000" value="0" step="1">
       <select id="rate">
         <option value="0.75">0.75×</option><option value="1" selected>1×</option>
         <option value="1.25">1.25×</option><option value="1.5">1.5×</option>
@@ -224,53 +244,44 @@
   </main>
 </div>
 
-<!-- 登录引导模板：两个平台讲清楚，一次配好 -->
+<!-- 登录：默认一键自动（去浏览器里找已有登录态），找不到才手动 -->
 <template id="loginTpl">
-  <div class="login wide">
+  <div class="login">
     <h2>登录延河课堂</h2>
-    <p class="sub">只用设置一次，能撑约 6 天。账号密码不经过这个工具，你在浏览器里正常登录，把登录状态交给播放器就行。</p>
+    <p class="sub">一次设置能撑约 6 天。账号、密码都不经过这个工具。</p>
 
-    <div class="sect">
-      <div class="shead"><span class="n">1</span><b>打开延河课堂并登录</b><span class="no" id="st1">有效期约 6 天</span></div>
-      <div class="hint">验证码、短信都由你自己过。登到能看见课程列表为止，然后<b>别关这个标签页</b>。</div>
-      <div style="margin-top:8px"><a class="ghost" href="https://www.yanhekt.cn" target="_blank" rel="noreferrer" style="padding:7px 15px;display:inline-block">在浏览器打开 yanhekt.cn ↗</a></div>
-    </div>
-
-    <div class="sect">
-      <div class="shead"><span class="n">2</span><b>把「一键登录」拖进书签栏</b></div>
-      <div class="hint">按住下面这个按钮不放，拖到浏览器顶部那条栏里再松手。拖一次，以后一直能用。</div>
-      <a class="bm" id="bmOld" href="#" title="拖到书签栏：在延河课堂页面点一下即可自动登录">一键登录</a>
-      <svg class="pic" viewBox="0 0 430 112" aria-label="书签栏位置示意">
-        <rect x="1" y="1" width="428" height="110" rx="8" fill="#12151c" stroke="#2a2f3a"/>
-        <rect x="12" y="9" width="104" height="16" rx="5" fill="#1e222b"/>
-        <text x="22" y="21" font-size="10.5" fill="#9aa3b2">延河课堂</text>
-        <rect x="12" y="31" width="336" height="18" rx="6" fill="#1e222b" stroke="#2a2f3a"/>
-        <text x="21" y="44" font-size="10.5" fill="#7d869a">www.yanhekt.cn</text>
-        <text x="356" y="45" font-size="11" fill="#7d869a">☆</text>
-        <rect x="12" y="58" width="406" height="26" rx="6" fill="#16233a" stroke="#5b9cff" stroke-dasharray="5 4"/>
-        <rect x="20" y="63" width="86" height="16" rx="4" fill="#5b9cff"/>
-        <text x="63" y="75" font-size="10.5" fill="#06101f" text-anchor="middle" font-weight="700">一键登录</text>
-        <text x="116" y="75" font-size="10.5" fill="#8fb4e8">← 按住左边的按钮，拖到这条栏里再松手</text>
-        <text x="12" y="101" font-size="10.5" fill="#7d869a">这就是书签栏。看不见它？按 Ctrl+Shift+B 让它出来。</text>
-      </svg>
-    </div>
-
-    <div class="sect">
-      <div class="shead"><span class="n">3</span><b>回到延河那个标签页，点一下书签栏里的「一键登录」</b></div>
-      <div class="hint">页面会自动跳回这里并登录好，然后自动打开你上次看的那节课。</div>
-    </div>
-
-    <details class="sect">
-      <summary style="cursor:pointer;font-size:12.5px;color:#5b9cff">拖不动 / 找不到书签栏 / 干脆手动粘贴 → 两种替代办法</summary>
-      <div class="hint" style="margin-top:8px"><b>办法 A：右键书签栏 →「添加网页…」</b>（没有书签栏先按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>），名称填 <code>一键登录</code>，网址粘贴下面这段：</div>
-      <div class="one"><textarea id="jsOld" readonly style="height:46px"></textarea><button id="copyJs">复制</button></div>
-      <div class="hint" style="margin-top:10px"><b>办法 B：直接在延河页面粘一行</b> —— 按 <kbd>F12</kbd> → Console → 粘贴 → 回车，把打印出来的 token 贴到下面：</div>
-      <div class="one"><textarea id="tk" placeholder="在这里粘贴 token（32 位十六进制）" spellcheck="false"></textarea>
-        <button id="btnLogin">登录</button></div>
-    </details>
+    <button class="autobtn" id="btnAuto">
+      <b>自动登录</b>
+      <i>已经有登录状态的浏览器，点一下就好</i>
+    </button>
 
     <div class="msg" id="lmsg"></div>
-    <div class="note">token 只保存在本机，不会发往除延河课堂服务器以外的任何地方。播放器只监听 <code>127.0.0.1</code>，同一局域网里别的机器访问不到。</div>
+
+    <details class="sect" id="manualBox">
+      <summary>没找到 / 第一次用 → 手动登录（约 30 秒）</summary>
+
+      <div class="shead" style="margin-top:12px"><span class="n">1</span><b>在浏览器里打开延河课堂并登录</b><span class="no" id="st1">有效期约 6 天</span></div>
+      <div class="hint">验证码、短信都由你自己过。登到能看见课程列表为止，<b>别关这个标签页</b>。</div>
+      <div style="margin-top:8px"><a class="ghost" href="https://www.yanhekt.cn" target="_blank" rel="noreferrer" style="padding:7px 15px;display:inline-block">在浏览器打开 yanhekt.cn ↗</a></div>
+
+      <div class="shead" style="margin-top:16px"><span class="n">2</span><b>把「一键登录」拖进书签栏</b></div>
+      <div class="hint">按住不放，拖到浏览器顶部那条栏里再松手。拖一次，以后一直能用。</div>
+      <a class="bm" id="bmOld" href="#" title="拖到书签栏：在延河课堂页面点一下即可自动登录">一键登录</a>
+      <div class="hint" style="margin-top:8px">看不见书签栏就按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>。</div>
+
+      <div class="shead" style="margin-top:16px"><span class="n">3</span><b>回到延河那个标签页，点一下书签栏里的「一键登录」</b></div>
+      <div class="hint">页面自动跳回来并登录好，顺带打开你上次看的那节课。</div>
+
+      <details class="sect" style="margin-top:14px">
+        <summary>拖不动 / 没有书签栏 → 直接粘 token</summary>
+        <div class="hint" style="margin-top:8px">在延河页面按 <kbd>F12</kbd> → Console → 粘贴 <code>copy(JSON.parse(localStorage.getItem('auth')).token)</code> → 回车，token 就进了剪贴板，粘到下面：</div>
+        <div class="one"><textarea id="tk" placeholder="在这里粘贴 token（32 位十六进制）" spellcheck="false"></textarea>
+          <button id="btnLogin">登录</button></div>
+        <div class="one"><textarea id="jsOld" readonly style="height:44px" title="办 A：把这个网址存成书签，在延河页面点一下"></textarea><button id="copyJs">复制</button></div>
+      </details>
+    </details>
+
+    <div class="note">自动登录只是在你自己的电脑上读浏览器里已经存好的登录状态，读不到就去手动登录；凭证只写进本机 cookie，不会发往延河课堂服务器以外的地方。播放器只监听 <code>127.0.0.1</code>。</div>
   </div>
 </template>
 
@@ -361,7 +372,7 @@ function attach(k, url){
 function renderStage(){
   $('#stage').className = 'stage ' + (mode === 'dual' ? 'dual' : 'single');
   $('#paneMain').classList.toggle('hide', mode === 'vga');
-  $('#paneVga').classList.toggle('hide', mode === 'main');
+  $('#paneVga').classList.toggle('hide', !(mode === 'vga' || mode === 'dual'));
   vids.vga.muted = (mode === 'dual');
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
 }
@@ -380,13 +391,7 @@ function loadSession(s){
   setTimeout(() => vids.main.play().catch(()=>{}), 250);
 }
 function tick(){
-  const v = vids.main, d = v.duration;
-  if (d && isFinite(d)) {
-    $('#seek').value = Math.round(v.currentTime / d * 1000);
-    $('#time').textContent = fmt(v.currentTime) + ' / ' + fmt(d);
-  } else if (cur && cur.duration) {
-    $('#time').textContent = fmt(v.currentTime) + ' / ' + fmt(cur.duration);
-  }
+  const v = vids.main;
   if (mode === 'dual' && vids.vga.readyState >= 2 && vids.main.readyState >= 2) {
     if (Math.abs(vids.main.currentTime - vids.vga.currentTime) > 0.5) {
       try { vids.vga.currentTime = vids.main.currentTime; } catch(e){}
@@ -432,7 +437,7 @@ function showLogin(msg, keep){
   $('#btnLogout').style.display = 'none';
   $('#list').innerHTML = '';
   $('#cname').textContent = '延河课堂在线播放器';
-  $('#cmeta').textContent = '先花两分钟登录，之后就不用管了';
+  $('#cmeta').textContent = '点一下自动登录，之后就不用管了';
 
   const tpl = document.getElementById('loginTpl');
   const node = tpl.content.cloneNode(true);
@@ -457,11 +462,37 @@ function showLogin(msg, keep){
   const lm = box.querySelector('#lmsg');
   if (msg) { lm.className = 'msg err'; lm.textContent = msg; }
 
+  const ba = box.querySelector('#btnAuto');
+  if (ba) ba.onclick = () => autoLogin({ silent: false });
   box.querySelector('#btnLogin').onclick = () => doLogin();
   const tk = box.querySelector('#tk');
   if (tk) tk.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) doLogin(); });
 
   if (me) { const s = box.querySelector('#st1'); if (s) { s.textContent = '已登录'; s.className = 'ok'; } }
+}
+
+// 自动登录：后端去本机浏览器里找已登录的凭证
+async function autoLogin({ silent = false } = {}){
+  const btn = $('#btnAuto'), msg = $('#lmsg');
+  if (btn) { btn.disabled = true; btn.querySelector('i').textContent = '正在找浏览器里的登录状态…'; }
+  if (msg) { msg.className = 'msg'; msg.textContent = '正在找…'; }
+  try {
+    const r = await fetch('/api/login/auto', { method: 'POST' });
+    const j = await r.json();
+    if (j.ok) { signedIn(j.user); toast('已自动登录' + (j.from ? '（来自 ' + j.from + '）' : ''), 2600); return true; }
+    if (msg) { msg.className = 'msg err'; msg.textContent = '没找到登录状态 —— 展开下面「手动登录」，30 秒搞定'; }
+    const mb = $('#manualBox'); if (mb) mb.open = true;
+    if (btn) {
+      btn.disabled = false;
+      btn.querySelector('i').textContent = '再找一次（先去浏览器里登录延河课堂）';
+    }
+    if (silent) return false;
+    return false;
+  } catch (e) {
+    if (msg) { msg.className = 'msg err'; msg.textContent = '本地服务连不上：' + e.message; }
+    if (btn) btn.disabled = false;
+    return false;
+  }
 }
 
 async function doLogin(){
@@ -569,6 +600,120 @@ async function openCourse(input, { force = false } = {}){
   else splashEmpty('这些节次都没有录像', data);
 }
 
+/* ---------- 直播 ---------- */
+// 直播流是公开的 m3u8（clive*.yanhekt.cn），不用登录也能拉；
+// 统一走本地 /lp 代理，省得跟 CORS 和 CDN 行为打交道
+let srcMode = 'record';          // record | live
+let liveItems = [], liveCur = null, liveTimer = null, liveQuery = '';
+
+function setSrcMode(m){
+  if (srcMode === m) return;
+  srcMode = m;
+  $('#mRec').classList.toggle('on', m === 'record');
+  $('#mLive').classList.toggle('on', m === 'live');
+  document.querySelectorAll('.liveonly').forEach(b => { b.style.display = m === 'live' ? '' : 'none'; });
+  $('#btnDl').disabled = (m === 'live');
+  $('#btnDl').title = m === 'live'
+    ? '直播是实时流，不能像录像那样下载'
+    : '把这一讲下载成单个文件（.ts，VLC / PotPlayer 能播）';
+  if (m === 'live') {
+    cur = null; curCourse = null; liveCur = null;
+    if (mode === 'room') mode = 'main';
+    loadLive();
+  } else {
+    stopLive();
+    liveItems = []; liveCur = null;
+    $('#list').innerHTML = '';
+    $('#cname').textContent = '延河课堂在线播放器';
+    $('#cmeta').textContent = '搜课程名开始，可按学期筛';
+    splash('<div class="big">在左上角搜课程名</div><div>例如 <code>数值分析</code>，可以再按学期筛</div>');
+  }
+}
+
+function stopLive(){
+  clearInterval(liveTimer); liveTimer = null;
+  destroy('main'); destroy('vga');
+}
+
+async function loadLive(){
+  const list = $('#list');
+  try {
+    const j = await (await fetch('/api/live')).json();
+    if (!j.ok) throw new Error(j.error || '取不到直播列表');
+    liveItems = j.items || [];
+    renderLive();
+    clearInterval(liveTimer);
+    liveTimer = setInterval(() => { if (srcMode === 'live') loadLive(); }, 60 * 1000);
+  } catch (e) {
+    list.innerHTML = '<div class="listnote">直播列表读取失败：' + esc(e.message) + '</div>';
+  }
+}
+
+function renderLive(){
+  const list = $('#list');
+  list.innerHTML = '';
+  const q = liveQuery.trim().toLowerCase();
+  const view = q
+    ? liveItems.filter(x => (x.title + ' ' + x.teacher + ' ' + x.room).toLowerCase().includes(q))
+    : liveItems;
+  const onair = view.filter(x => x.phase === 'live').length;
+  const head = document.createElement('div');
+  head.className = 'listnote';
+  head.textContent = (q ? `筛出 ${view.length} 场（共 ${liveItems.length} 场）` : `直播 ${liveItems.length} 场`)
+    + ` · 正在直播 ${onair} 场 · 每分钟自动刷新，点一场就看`;
+  list.appendChild(head);
+  if (!view.length) {
+    splash('<div class="big">' + (q ? '没有匹配的直播' : '现在没有直播') + '</div><div>'
+      + (q ? '换个关键词，或把搜索框清空' : '直播一般在上课时段；切回「录播」看录像') + '</div>');
+    return;
+  }
+  for (const it of view) {
+    const el = document.createElement('div');
+    el.className = 'item';
+    el.dataset.id = it.id;
+    const badge = it.phase === 'live'
+      ? '<span class="livebadge">直播中</span>'
+      : '<span class="livebadge up">' + (it.phase === 'upcoming' ? '未开始' : '已结束') + '</span>';
+    el.innerHTML = `<div class="d">${badge}<span class="t">${esc(it.title)}</span></div>
+      <div class="m">${it.teacher ? '<span>' + esc(it.teacher) + '</span>' : ''}${it.room ? '<span>' + esc(it.room) + '</span>' : ''}<span>${String(it.startedAt).slice(11, 16)}–${String(it.endedAt).slice(11, 16)}</span></div>`;
+    el.onclick = () => playLive(it);
+    list.appendChild(el);
+  }
+  // 一进来就先放最靠前的"直播中"，省得再点一下（搜索时不自动切）
+  if (!liveCur && !q) {
+    const first = view.find(x => x.phase === 'live') || view[0];
+    if (first) playLive(first);
+  }
+}
+
+const liveUrl = u => (u ? '/lp?u=' + b64(u) : null);
+
+function playLive(it){
+  liveCur = it; cur = null;
+  $('#cname').textContent = it.title + (it.phase === 'live' ? '（直播中）' : '');
+  $('#cmeta').textContent = [it.teacher, it.room, it.startedAt + ' ~ ' + String(it.endedAt).slice(11, 16)].filter(Boolean).join(' · ');
+  $('#splash').style.display = 'none';
+  $('#stage').style.display = '';
+  document.querySelectorAll('.item').forEach(el => el.classList.toggle('on', String(el.dataset.id) === String(it.id)));
+  document.querySelectorAll('.liveonly').forEach(b => { b.disabled = !it.roomCam; });
+  applyLive();
+}
+
+function applyLive(){
+  const it = liveCur;
+  if (!it) return;
+  if (mode === 'dual') {
+    attach('main', liveUrl(it.main));
+    attach('vga', liveUrl(it.vga));
+  } else {
+    const u = mode === 'vga' ? (it.vga || it.main) : mode === 'room' ? (it.roomCam || it.main) : it.main;
+    attach('main', liveUrl(u));
+    destroy('vga');
+  }
+  renderStage();
+  setTimeout(() => vids.main.play().catch(() => {}), 200);
+}
+
 /* ---------- 交互 ---------- */
 // 起播/拖动耗时提示，方便判断是网络慢还是播放器慢
 let tMark = 0, markLabel = null;
@@ -621,6 +766,8 @@ function dbRow(c){
 async function dbSearch(){
   const q = $('#dq').value.trim();
   const term = $('#dterm').value;
+  // 直播模式下，搜索框变成"筛当前直播列表"，不联网
+  if (srcMode === 'live') { liveQuery = q; renderLive(); return; }
   if (!q && !term) { toast('先输个课程名，或用学期下拉筛', 2600); return; }
 
   const list = $('#list');
@@ -671,6 +818,8 @@ async function dbSearch(){
 
 
 
+$('#mRec').onclick = () => setSrcMode('record');
+$('#mLive').onclick = () => setSrcMode('live');
 $('#dgo').onclick = dbSearch;
 $('#btnSetup').onclick = () => showLogin('', true);
 $('#selfcheck').onclick = () => {
@@ -684,6 +833,7 @@ $('#dterm').onchange = () => { if ($('#dq').value.trim()) dbSearch(); };
 $('#btnRefresh').onclick = () => { if (curCourse) openCourse(curCourse.course.id, { force: true }); };
 // 下载：当前看的那一路画面（全景 / 课件）
 function downloadCurrent(){
+  if (srcMode === 'live') { toast('直播是实时流，不能下载；想存就等它变成回放', 3600); return; }
   if (!cur) { toast('先点一个讲次', 2600); return; }
   const kind = mode === 'vga' ? 'vga' : 'main';
   const label = kind === 'vga' ? '课件' : '全景';
@@ -702,13 +852,6 @@ $('#btnLogout').onclick = async () => {
   destroy('main'); destroy('vga');
   showLogin('已退出登录');
 };
-$('#seek').addEventListener('input', e => {
-  const v = vids.main, d = v.duration;
-  if (d && isFinite(d)) {
-    v.currentTime = d * e.target.value / 1000;
-    if (mode === 'dual') { try { vids.vga.currentTime = v.currentTime; } catch(err){} }
-  }
-});
 $('#btnPlay').onclick = () => vids.main.paused ? vids.main.play() : vids.main.pause();
 document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
   vids.main.currentTime = Math.max(0, vids.main.currentTime + Number(b.dataset.jump));
@@ -720,7 +863,11 @@ $('#rate').onchange = e => {
 };
 $('#btnFs').onclick = () => { const s = $('#stage'); s.requestFullscreen && s.requestFullscreen(); };
 $('#btnDl').onclick = () => downloadCurrent('');
-document.querySelectorAll('.tab').forEach(b => b.onclick = () => { mode = b.dataset.mode; renderStage(); });
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+  mode = b.dataset.mode;
+  renderStage();
+  if (srcMode === 'live') applyLive();
+});
 document.addEventListener('keydown', e => {
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
   if (e.code === 'Space') { e.preventDefault(); $('#btnPlay').click(); }
@@ -743,6 +890,8 @@ document.addEventListener('keydown', e => {
   const ht = (location.hash.match(/^#t=(.+)$/) || [])[1];
   if (ht) {
     const token = decodeURIComponent(ht);
+    // 新版平台的书签以前也跳回根路径，带的是 JWT：直接转给 /y2，别在这里白试一次
+    if (/^eyJ/.test(token)) { location.replace('/y2' + location.hash); return; }
     history.replaceState(null, '', location.pathname + location.search);
     await loginWithToken(token);
     if (me) return;
@@ -750,15 +899,22 @@ document.addEventListener('keydown', e => {
 
   try {
     const j = await (await fetch('/api/status')).json();
-    if (j.loggedIn) signedIn(j.user);
-    else showLogin(ht ? 'token 无效或已过期，请重新点一次书签' : '');
+    if (j.loggedIn) {
+      signedIn(j.user);
+    } else {
+      showLogin(ht ? 'token 无效或已过期，请重新点一次书签' : '');
+      // 先自己试着去浏览器里找登录态：找得到就不用用户动手
+      await autoLogin({ silent: true });
+    }
   } catch (e) {
     showLogin('无法连接本地服务：' + e.message);
   }
 
   // 带 ?course= 或 ?s= 直接进来时自动处理
   const sp = new URLSearchParams(location.search);
-  if (sp.get('course')) {
+  if (sp.get('src') === 'live') {
+    setSrcMode('live');
+  } else if (sp.get('course')) {
     if (me) openCourse(sp.get('course'));
   } else if (sp.get('s')) {
     $('#dq').value = sp.get('s');

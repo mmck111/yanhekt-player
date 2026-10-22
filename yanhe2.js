@@ -46,17 +46,41 @@ function dateOf(v) {
 }
 
 // ---------------- 基础请求 ----------------
+// aita 的网关有时候认 Authorization，有时候只认 _token cookie（浏览器两样都带）。
+// 这里跟着登录探测的结果切换，探测到哪种能过就一直用它。
+let authStyle = 'off';   // off | plain | serialized | raw
+let rawCookieHeader = '';
+
+function tokenCookie(jwt) {
+  if (authStyle === 'off') return '';
+  if (authStyle === 'raw') return rawCookieHeader;
+  if (authStyle === 'serialized') {
+    const v = 'a:2:{i:0;s:6:"_token";i:1;s:' + jwt.length + ':"' + jwt + '";}';
+    return '_token=' + encodeURIComponent(v);
+  }
+  return '_token=' + jwt;
+}
+
 function req(method, url, jwt, extraHeaders, body) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const headers = Object.assign({
       'User-Agent': UA,
       Accept: 'application/json, text/plain, */*',
-      Referer: Y2 + '/',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      // 网关/CDN 会看来源页：http 请求头里的 Referer 只能是路径级的
+      Referer: Y2 + '/portal/',
       Origin: Y2,
       'tenant-id': String(TENANT),
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
     }, extraHeaders || {});
-    if (jwt) headers.Authorization = 'Bearer ' + jwt;
+    if (jwt) {
+      headers.Authorization = 'Bearer ' + jwt;
+      const c = tokenCookie(jwt);
+      if (c) headers.Cookie = c;
+    }
     const r = https.request(u, { method, headers, rejectUnauthorized: false, servername: u.hostname }, (res) => {
       const c = []; res.on('data', d => c.push(d));
       res.on('end', () => {
@@ -89,7 +113,12 @@ function apiUrl(path, params) {
 
 async function getJson(jwt, path, params) {
   const res = await req('GET', apiUrl(path, params), jwt);
-  if (res.status === 401 || res.status === 403) throw new Error('Yanhe2 会话被拒绝（已过期？）');
+  const snip = () => {
+    let t = '';
+    try { t = res.body.toString('utf8').replace(/\s+/g, ' ').trim(); } catch (e) {}
+    return t ? '：' + t.slice(0, 90) : '';
+  };
+  if (res.status === 401 || res.status === 403) throw new Error(`Yanhe2 拒绝访问（HTTP ${res.status}${snip()}）`);
   if (res.status < 200 || res.status >= 300) throw new Error(`Yanhe2 HTTP ${res.status}`);
   if (!res.json) throw new Error('Yanhe2 返回非 JSON');
   return res.json;
@@ -112,6 +141,62 @@ async function profile(jwt) {
   if (!userId) throw new Error('infosimple 缺少 id');
   return { userId, tenantId, phone, account: text(p.account), realname: text(p.realname) };
 }
+
+/**
+ * 从用户粘进来/书签带进来的一坨东西里抠出 JWT。
+ * 可能是：裸 JWT、整段 cookie、URL 编码过的 cookie、PHP 序列化的 cookie 值。
+ */
+function extractJwt(raw) {
+  let s = String(raw || '').trim();
+  if (!s) return '';
+  if (/^(a:\d+:|eyJ)/.test(s) === false && /%[0-9A-Fa-f]{2}/.test(s)) {
+    try { s = decodeURIComponent(s); } catch (e) {}
+  }
+  const wrapped = /\{i:\d+;s:\d+:"_token";i:\d+;s:\d+:"(.+?)";\}/.exec(s);
+  if (wrapped) return wrapped[1].trim();
+  const named = /(?:^|[;\s])_token=([^;\s]+)/.exec(s);
+  if (named) {
+    let v = named[1];
+    try { v = decodeURIComponent(v); } catch (e) {}
+    const inner = /\{i:\d+;s:\d+:"_token";i:\d+;s:\d+:"(.+?)";\}/.exec(v);
+    return (inner ? inner[1] : v).trim();
+  }
+  const jwt = /eyJ[A-Za-z0-9_\-\+\/]+\.[A-Za-z0-9_\-\+\/]+\.[A-Za-z0-9_\-\+\/=]+/.exec(s);
+  if (jwt) return jwt[0];
+  return s;   // 兜底：整段当 token，交给服务器判
+}
+
+/**
+ * 登录验证：一次试几种鉴权写法，哪种能过就一直用哪种。
+ *   off        —— 只发 Authorization: Bearer
+ *   plain      —— Bearer + Cookie: _token=<jwt>
+ *   serialized —— Bearer + Cookie: _token=<PHP 序列化串>
+ *   raw        —— 原样把用户粘进来的整段 cookie 发过去（前端有时要多个 cookie 一起才认）
+ * 返回 {id, style}，全失败抛最后一次的错误。
+ */
+async function login(jwt, rawCookie) {
+  const styles = ['off', 'plain', 'serialized'];
+  if (rawCookie && /[=;]/.test(rawCookie)) styles.push('raw');
+  const keep = authStyle, keepRaw = rawCookieHeader;
+  rawCookieHeader = String(rawCookie || '');
+  let lastErr = null;
+  for (const s of styles) {
+    authStyle = s;
+    try {
+      const id = await profile(jwt);
+      return { id, style: s };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  authStyle = keep; rawCookieHeader = keepRaw;
+  throw lastErr || new Error('Yanhe2 登录验证失败');
+}
+
+function setAuthStyle(s) {
+  if (['off', 'plain', 'serialized', 'raw'].includes(s)) authStyle = s;
+}
+function getAuthStyle() { return authStyle; }
 
 /**
  * 变体探测：接口一次能试几种参数写法，成功一次就记住（不同学校/版本部署差异很大）。
@@ -224,8 +309,8 @@ async function weekSchedule(jwt, userId, startAt, endAt) {
         title: text(row.sub_title) || text(row.title) || '',
         courseName: text(row.course_title) || text(row.course_name) || '',
         date: text(day.day) || text(row.start_at).slice(0, 10),
-        startAt: num(row.start_at),
-        endAt: num(row.end_at),
+        startAt: tsOf(row.start_at),
+        endAt: tsOf(row.end_at),
         duration: num(row.duration) || num(row.sub_duration),
         status: text(row.sub_status) || text(row.status),
         room: text(row.room_name),
@@ -343,8 +428,8 @@ async function subInfo(jwt, courseId, subId) {
     subTitle: text(d.sub_title),
     teacher: text(d.lecturer_name),
     room: text(pick(d, 'room_name', 'sub_room_name', 'classroom', 'class_room', 'room')),
-    startAt: num(d.start_at),
-    endAt: num(d.end_at),
+    startAt: tsOf(d.start_at),
+    endAt: tsOf(d.end_at),
     duration: num(d.duration),
     streams,
     audio,
@@ -413,6 +498,37 @@ async function searchCourses(jwt, { q = '', term = '', page = 1, perPage = 40 } 
     return { value: courses, courses, total: num(data.total) || num(body && body.total) || courses.length };
   });
   return { courses: got.courses || [], total: got.total || 0 };
+}
+
+/**
+ * 按老师名直接查（新版接口只吃课程名，这里探几种可能的参数名）。
+ * 每种都严格过滤：只留课名或老师里真的包含这个名字的结果，避免参数被忽略时把全站课都端回来。
+ */
+async function searchByTeacher(jwt, name, { term = '' } = {}) {
+  const key = String(name || '').trim();
+  if (!key) return [];
+  const low = key.toLowerCase();
+  const base = { term, page: 1, per_page: 40, tenant: TENANT };
+  const variants = [
+    { teacher_name: key }, { teacher: key }, { lecturer_name: key },
+    { realname: key }, { keyword: key }, { q: key },
+  ];
+  for (const extra of variants) {
+    try {
+      const body = await getJson(jwt, COURSE_LIST, { ...base, ...extra });
+      const data = (body && body.data) || {};
+      const list = arr(data.list || data.data || data.rows || data);
+      const hit = [];
+      for (const c of list) {
+        const n = normCourse(c);
+        if (!n) continue;
+        const hay = (String(n.title || '') + ' ' + String(n.teacher || '')).toLowerCase();
+        if (hay.includes(low)) hit.push(n);
+      }
+      if (hit.length) return hit;
+    } catch (e) {}
+  }
+  return [];
 }
 
 /**
@@ -507,11 +623,65 @@ async function courseDetail(jwt, courseId, account) {
   return got.value;
 }
 
+// 一门课最多逐讲探多少讲（超过就按状态列出，避免被限流）
+const PROBE_CAP = 12;
+
+// 单讲"到底有没有视频流"的探测缓存（key 里带 jwt 尾巴，换账号/换会话自动失效）
+const streamCache = new Map();
+
+/**
+ * 这一讲真的能取到视频流吗？
+ * 只认 get-sub-info 返回的 video_list —— 平台给的 sub_status 靠不住：
+ * 常见一门课 5 讲全是 6，实际只有 1 讲有流，其余点进去是黑屏。
+ * 返回 { ok, err }：err=true 表示这次请求失败（网络/权限），不是"没有流"。
+ */
+async function sessionHasStream(jwt, courseId, subId) {
+  if (!subId) return { ok: false, err: false };
+  const key = String(jwt).slice(-12) + ':' + subId;
+  const hit = streamCache.get(key);
+  if (hit) return hit;
+  let ok = false, err = false;
+  try {
+    const info = await subInfo(jwt, courseId, subId);
+    ok = !!(info && info.streams && info.streams.length);
+  } catch (e) { err = true; }
+  const res = { ok, err };
+  if (!err) {
+    if (streamCache.size > 5000) streamCache.clear();
+    streamCache.set(key, res);
+  }
+  return res;
+}
+
+/**
+ * 逐讲验流：只有真取到视频流的讲次才算"有录像"。
+ * 返回 { playable, failed, probed }：
+ *   playable 按时间倒序；failed = 请求失败的讲次数；probed = 一共验了几讲。
+ * 全部请求都失败时调用方可以退回状态判断（不要把网络问题当成"没录像"）。
+ */
+async function verifySessions(jwt, courseId, sessions, { concurrency = 6, limit = 0 } = {}) {
+  const list = arr(sessions).slice(0, limit > 0 ? limit : undefined);
+  const playable = [];
+  let failed = 0;
+  const queue = list.slice();
+  const run = async () => {
+    while (queue.length) {
+      const s = queue.shift();
+      const r = await sessionHasStream(jwt, courseId, s.subId);
+      if (r.err) failed++;
+      else if (r.ok) playable.push(s);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, run));
+  playable.sort((a, b) => (b.startAt || 0) - (a.startAt || 0));
+  return { playable, failed, probed: list.length };
+}
+
 /**
  * 一门课"到底有没有能看的录像"，以及这些录像的讲次列表。
  * 判定顺序：
- *   1. sub_status=6（可播放）→ 直接算有录像
- *   2. 只有 5 / 未知 状态的 → 抽最新的一两条真的去要一次视频流，要到才算
+ *   1. 有 sub_status=6 的 → 逐个真取一次视频流，取到才算（状态不可靠，必须以流为准）
+ *   2. 只有 5 / 未知 状态的 → 同样逐讲验流
  *   3. 只有 1/2/3（直播中/未开始/处理中）→ 没有录像
  * 另外补一次教室名：讲次自带就用，没带就找 get-sub-info 要。
  */
@@ -521,20 +691,29 @@ async function courseVideos(jwt, courseId, account) {
   const confirmed = all.filter(s => isRecordingStatus(s.status));
   const maybe = all.filter(s => maybeRecording(s.status));
 
+  // 候选 = 所有"不像直播中/未开始/处理中"的讲次。
+  // 注意不能只看 status=6：实测常有一门课 5 讲里只有 1 讲是 6、其余是 5（已结束），
+  // 只看 6 就会把另外 4 讲（其实也有录像）漏掉，卡片写 5 讲、点进去只剩 1 讲。
+  const candidates = all.filter(s => isRecordingStatus(s.status) || maybeRecording(s.status));
   let sessions = [];
+  let verified = true;
   let probed = false;
 
-  if (confirmed.length) {
-    sessions = confirmed;
-  } else if (maybe.length) {
-    // 只在"看起来可能有回放"的课上多花请求：编号最新的一两条试一下
-    for (const cand of maybe.slice(0, 2)) {
-      probed = true;
-      try {
-        const info = await subInfo(jwt, courseId, cand.subId);
-        if (info.streams && info.streams.length) { sessions = maybe; break; }
-      } catch (e) { /* 取不到就当没有 */ }
+  // 讲次少的课逐讲验流（这样"有几讲"才准）；讲次多的课**不能**逐讲探 ——
+  // 一门 40 讲的课就是 40 个请求，平台会限流，之后的课全变成"没有视频"。
+  // 那种课按状态列出来，点开某一讲时再取流（/api/y2/sub 会给出真实原因）。
+  if (candidates.length && candidates.length <= PROBE_CAP) {
+    probed = true;
+    const v = await verifySessions(jwt, courseId, candidates);
+    sessions = v.playable;
+    // 全部请求都失败（网络/权限）→ 退回状态判断，但标记未验证
+    if (!sessions.length && v.failed > 0 && v.failed === v.probed) {
+      sessions = candidates;
+      verified = false;
     }
+  } else if (candidates.length) {
+    sessions = candidates;
+    verified = false;
   }
 
   // 教室：先用讲次自带的，没有就问 get-sub-info（只问最新一讲）
@@ -556,6 +735,7 @@ async function courseVideos(jwt, courseId, account) {
     room,
     latestDate: (sessions[0] && sessions[0].date) || '',
     probed,
+    verified,
   };
 }
 
@@ -582,8 +762,8 @@ function rowOf(period, r) {
     subTitle: text(r.sub_title),
     status: text(r.sub_status) || text(r.status),
     duration: num(r.sub_duration) || num(r.duration),
-    startAt: num(r.start_at),
-    endAt: num(r.end_at),
+    startAt: tsOf(r.start_at),
+    endAt: tsOf(r.end_at),
     teacher: (Array.isArray(r.teachers) && r.teachers[0] && (r.teachers[0].realname || r.teachers[0].name)) || text(r.lecturer_name),
     room: text(r.room_name) || text(r.sub_room_name),
     period: text(period.name),
@@ -782,8 +962,10 @@ function signedUrl(rawUrl, id) {
 }
 
 module.exports = {
-  profile, myCourses, weekSchedule, subInfo, signedUrl, signPath, apiUrl, req, dayRows,
+  profile, login, extractJwt, setAuthStyle, getAuthStyle,
+  myCourses, weekSchedule, subInfo, signedUrl, signPath, apiUrl, req, dayRows,
   findCourses, scanSessions, scanByKeyword, scanDates, termWindow, datesBetween,
-  termList, searchCourses, courseDetail, courseVideos, filterRecordings,
+  termList, searchCourses, searchByTeacher, courseDetail, courseVideos, filterRecordings,
+  sessionHasStream, verifySessions,
   scheduleMap, isRecordingStatus, maybeRecording, isLiveStatus, tryJson, kindOfSub, dateOf, tsOf, Y2, TENANT, UA,
 };

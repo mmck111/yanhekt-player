@@ -11,7 +11,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 
 const PORT = Number(process.env.SMOKE_PORT || 8897);
-const BASE = `http://127.0.0.1:${PORT}`;
+const BASE = process.env.SMOKE_URL || `http://127.0.0.1:${PORT}`;
 const root = path.join(__dirname, '..');
 
 let pass = 0, fail = 0, skip = 0;
@@ -35,6 +35,23 @@ function get(p, timeout = 30000) {
 }
 const json = (r) => { try { return JSON.parse(r.body); } catch (e) { return null; } };
 
+function post(p, body = '', timeout = 40000) {
+  return new Promise((resolve) => {
+    const u = new URL(BASE + p);
+    const req = http.request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method: 'POST', timeout,
+      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => {
+      let b = '';
+      res.setEncoding('utf8');
+      res.on('data', d => (b += d));
+      res.on('end', () => resolve({ status: res.statusCode, body: b }));
+    });
+    req.on('error', e => resolve({ status: 0, body: String(e.message) }));
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: 'timeout' }); });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
 async function waitUp(ms = 15000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -46,14 +63,16 @@ async function waitUp(ms = 15000) {
 }
 
 (async () => {
-  const child = spawn(process.execPath, [path.join(root, 'server.js')], {
+  // SMOKE_URL=http://127.0.0.1:8898 时不去起 node 服务，直接测已经在跑的那个（Go 版对拍用）
+  const external = process.env.SMOKE_URL || '';
+  const child = external ? null : spawn(process.execPath, [path.join(root, 'server.js')], {
     cwd: root,
     // 不用 pipe：这样在任何环境下都不会卡在管道上，输出丢掉也不影响断言
     stdio: 'ignore',
     env: { ...process.env, PORT: String(PORT), NO_APP: '1', FORCE_NEW: '1' },
   });
 
-  const done = (code) => { try { child.kill(); } catch (e) {}; process.exit(code); };
+  const done = (code) => { try { child && child.kill(); } catch (e) {}; process.exit(code); };
 
   try {
     if (!await waitUp()) {
@@ -83,9 +102,20 @@ async function waitUp(ms = 15000) {
     ok('/api/open 未登录返回 401', (await get('/api/open?id=1')).status === 401);
     ok('/dl 未登录返回 401', (await get('/dl?course=1&session=2')).status === 401);
 
+    // 自动登录：本机浏览器里有登录态就该成功，没有也得正常返回 ok:false 而不是报错
+    const autoRes = await post('/api/login/auto');
+    const auto = json(autoRes);
+    if (!auto) ok('自动登录接口可用', false, 'HTTP ' + autoRes.status + ' ' + autoRes.body.slice(0, 60));
+    else if (auto.ok) ok('自动登录接口可用（这台机器浏览器里有登录态）', !!(auto.user && auto.user.id), '来自 ' + auto.from);
+    else ok('自动登录接口可用（这台机器浏览器里没有登录态）', auto.ok === false, auto.error);
+
     const terms = json(await get('/api/db/terms'));
     ok('/api/db/terms 有学期列表', !!(terms && terms.ok && terms.terms.length > 0),
       terms ? terms.terms.length + ' 个学期' : '无响应');
+
+    const live = json(await get('/api/live', 40000));
+    ok('/api/live 可用', !!(live && typeof live.ok === 'boolean'),
+      live && live.ok ? (live.items || []).length + ' 场直播' : '接口正常但没取到（' + ((live && live.error) || '?') + '）');
 
     console.log('\n联网检索（需要能访问学校服务器）');
     const search = await get('/api/db/search?q=' + encodeURIComponent('数值分析') + '&limit=3');

@@ -83,6 +83,19 @@
   .login button.copy:hover{border-color:var(--accent)}
   .login button.primary{margin-top:10px;background:var(--accent);border:none;color:#06101f;font-weight:600;border-radius:8px;padding:8px 18px;cursor:pointer;font-size:13px}
   .login textarea{width:100%;height:62px;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:9px 11px;font:12px/1.5 ui-monospace,Consolas,monospace;outline:none;margin-top:6px}
+.login .autobtn{display:block;width:100%;margin:2px 0 12px;padding:13px 16px;border:none;border-radius:11px;
+  background:linear-gradient(180deg,#6fb0ff,#4a8ff0);color:#04101e;font-size:15px;font-weight:700;cursor:pointer;
+  text-align:left;box-shadow:0 6px 18px rgba(74,143,240,.22)}
+.login .autobtn:hover{filter:brightness(1.06)}
+.login .autobtn:disabled{filter:grayscale(.5) brightness(.85);cursor:default;box-shadow:none}
+.login .autobtn i{display:block;font-style:normal;font-size:11.5px;font-weight:500;opacity:.78;margin-top:3px}
+  /* 复制登录态：这是新版唯一稳的路子 */
+  .login .paste{background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:13px 14px;margin:4px 0 12px}
+  .login .paste>b{display:block;font-size:13.5px;margin-bottom:7px}
+  .login .mini{margin:0 0 2px;padding-left:19px;font-size:12px;line-height:1.95;color:#a9b2c2}
+  .login .mini code{font-size:11.5px}
+  .login .paste textarea{height:56px;margin-top:8px}
+  .login .paste button.primary{margin-top:8px;width:100%;font-size:14px;font-weight:700;padding:10px 18px}
   .msg{font-size:12px;margin-top:8px;min-height:16px}
   .msg.err{color:var(--err)} .msg.ok{color:var(--ok)}
   .tiny{font-size:11.5px;color:#7d869a}
@@ -100,14 +113,18 @@
     <div class="hd">
       <h1><span class="dot off" id="sdot"></span>新版平台 · 在线播放（快 3~5 倍）</h1>
       <div class="search">
-        <input id="q" placeholder="课程名，如 数值分析" spellcheck="false">
+        <input id="q" placeholder="课程名 / 教师名，可空格分开：数值分析 孙新" spellcheck="false">
         <button id="go">查找</button>
       </div>
       <div class="filters">
         <select id="term" title="按学期筛选"><option value="">全部学期</option></select>
       </div>
       <div class="fmeta" id="fmeta"></div>
-      <div class="fmeta" style="margin-top:2px"><a id="oldlink" href="/" style="color:#5b9cff">← 回老平台（全部学期，2004 年至今）</a></div>
+      <div class="fmeta" style="margin-top:2px">
+        <a id="gov2" href="https://aita.yanhekt.cn/portal/" target="_blank" rel="noopener" style="color:#5b9cff">在浏览器打开新版延河 ↗</a>
+        <a id="oldlink" href="/" style="color:#5b9cff;margin-left:12px">← 回老平台</a>
+      </div>
+      <div class="fmeta" id="ytime" style="margin-top:2px"></div>
     </div>
     <div class="list" id="list"></div>
   </aside>
@@ -121,8 +138,8 @@
     <div class="stage"><video id="v" controls playsinline preload="metadata"></video></div>
     <div class="ctrl">
       <button id="pp">播放/暂停</button>
-      <span class="time" id="time">00:00 / 00:00</span>
-      <input type="range" id="seek" min="0" max="1000" value="0" step="1">
+      <button data-jump="-15" title="后退 15 秒">« 15s</button>
+      <button data-jump="15" title="前进 15 秒">15s »</button>
       <select id="rate" style="background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:4px;font-size:12px">
         <option value="1" selected>1×</option><option value="1.25">1.25×</option>
         <option value="1.5">1.5×</option><option value="2">2×</option>
@@ -153,18 +170,38 @@ async function jget(url, opts){
 }
 
 // ---------------- 登录 ----------------
-// 在延河的页面里跑：把登录态带回来（书签 / 控制台 都用这段）
+// 在延河的页面里跑：把登录态带回来（书签用这段）
+// _token 的形态改过几版（裸 JWT / PHP 序列化 / URL 编码），这里和官网 getToken 一样兜住；
+// 同时把整段 document.cookie 一起带回来 —— 网关有时要几个 cookie 一起才认
 function loginScript(){
   const origin = location.origin;
+  // 一定要跳回"当前这一页"（/y2），不能跳回站根路径 —— 那是老平台页面，会把 token 吃掉
+  const back = location.href.split('#')[0];
   return "(()=>{"
-    + "const J=/eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]+/;let t='';"
-    + "const c=document.cookie.match(/(?:^|;\\s*)_token=([^;]+)/);"
-    + "if(c){const d=J.exec(decodeURIComponent(c[1]));if(d)t=d[0];}"
-    + "if(!t){const d=J.exec(document.cookie);if(d)t=d[0];}"
-    + "if(!t){const scan=(st)=>{try{for(let i=0;i<st.length;i++){const v=st.getItem(st.key(i))||'';const d=J.exec(v);if(d)return d[0];}}catch(e){}return '';};"
-    + "t=scan(localStorage)||scan(sessionStorage);}"
-    + "if(!t){alert('没在这个页面找到登录态。\\n\\n请先确认：①已经登录成功（能看到课程列表）②这个标签页的地址是 aita.yanhekt.cn\\n\\n还不行就在播放器里展开「手动粘贴 _token」。');return;}"
-    + "location.href='" + origin + "/#t='+encodeURIComponent(t);"
+    // 这个书签必须在「延河课堂」的页面上点。点错地方时把话说清楚，别让人一头雾水
+    + "const host=location.hostname||'';"
+    + "const onLocal=host==='127.0.0.1'||host==='localhost'||host==='[::1]';"
+    + "const onYh=/(^|\\.)yanhekt\\.cn$/i.test(host);"
+    + "if(onLocal){"
+    +   "alert('你点的是播放器里的这个按钮 —— 它得在「延河课堂」页面上点才有用。\\n\\n1) 先按住这个按钮，拖到浏览器顶部的书签栏，松手（只需一次）\\n2) 切到「延河课堂」那个标签页\\n3) 在延河页面上点一下书签栏里的「新版一键登录」');return;}"
+    + "if(!onYh){"
+    +   "alert('当前页面是 '+host+'，不是延河课堂。\\n\\n请先打开 https://aita.yanhekt.cn/portal/ 并登录，然后在延河课堂的那个标签页里点这个书签。');return;}"
+    + "const dec=s=>{try{return decodeURIComponent(s)}catch(e){return s}};"
+    + "const find=s=>{"
+    +   "const w=/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/.exec(s);if(w)return w[1];"
+    +   "const n=/(?:^|[;\\s])_token=([^;\\s]+)/.exec(s);if(n){const v=dec(n[1]);const w2=/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/.exec(v);return w2?w2[1]:v;}"
+    +   "const j=/eyJ[A-Za-z0-9_\\-+\\/]+\\.[A-Za-z0-9_\\-+\\/]+\\.[A-Za-z0-9_\\-+\\/=]+/.exec(s);return j?j[0]:'';};"
+    + "const ck=document.cookie||'';"
+    + "let t=find(dec(ck))||find(ck);"
+    + "if(!t)t=find(dec(localStorage.getItem('_token')||''));"
+    + "if(!t)t=find(dec(sessionStorage.getItem('_token')||''));"
+    + "if(!t){const q=new URLSearchParams(location.search).get('token');if(q)t=q;}"
+    + "if(!t){alert('延河课堂这个页面还没有登录态。\\n\\n① 先在这个页面完成登录 —— 能看到「我的课程」/课程列表才算登录成功\\n② 登录好之后，再点一次书签栏里的「新版一键登录」\\n③ 如果已经登录了还这样，刷新一下这个页面再试');return;}"
+    // 顺手在浏览器里用同一份 cookie 打一次 API，把状态带回去：能分清是 cookie 不行，还是本地服务被网关拦
+    + "let jumped=false;"
+    + "const go=extra=>{if(jumped)return;jumped=true;location.href='" + back + "#t='+encodeURIComponent(t)+'&c='+encodeURIComponent(ck)+extra;};"
+    + "try{fetch('/userapi/v1/infosimple',{credentials:'include'}).then(r=>go('&h='+r.status)).catch(()=>go('&h=x'));}catch(e){go('&h=x');}"
+    + "setTimeout(()=>go('&h=timeout'),1500);"
     + "})()";
 }
 const bookmarkletUrl = () => 'javascript:' + loginScript();
@@ -174,59 +211,57 @@ function showLogin(msg){
   ov.style.display = 'flex';
   $('#sdot').classList.add('off');
   ov.innerHTML = `<div class="login">
-    <h2>登录延河课堂</h2>
-    <p class="sub">只用设置一次。登录一次能撑 24 小时，过期后回来再点一下书签就行。不用把账号密码给我。</p>
-    <ol class="steps">
-      <li>
-        <b>打开延河课堂，正常登录</b>
-        <a class="btn2" href="https://aita.yanhekt.cn/" target="_blank" rel="noopener">在浏览器打开 aita.yanhekt.cn ↗</a>
-        <div class="hint">用学校统一身份登录，登到能看见课程列表为止，然后<strong>别关这个标签页</strong>。</div>
-      </li>
-      <li>
-        <b>把下面这个「一键登录」拖进浏览器的书签栏</b>
-        <div class="dragrow">
-          <a id="bm" class="bmbtn" href="#">一键登录</a>
-          <svg class="pic" viewBox="0 0 420 116" aria-label="书签栏位置示意">
-            <rect x="1" y="1" width="418" height="114" rx="8" fill="#12151c" stroke="#2a2f3a"/>
-            <rect x="12" y="9" width="104" height="17" rx="5" fill="#1e222b"/>
-            <text x="22" y="21" font-size="10.5" fill="#9aa3b2">延河课堂</text>
-            <rect x="12" y="32" width="336" height="19" rx="6" fill="#1e222b" stroke="#2a2f3a"/>
-            <text x="21" y="45" font-size="10.5" fill="#7d869a">aita.yanhekt.cn</text>
-            <text x="356" y="46" font-size="11" fill="#7d869a">☆</text>
-            <rect x="12" y="59" width="396" height="27" rx="6" fill="#16233a" stroke="#5b9cff" stroke-dasharray="5 4"/>
-            <rect x="20" y="64" width="74" height="17" rx="4" fill="#5b9cff"/>
-            <text x="57" y="76" font-size="10.5" fill="#06101f" text-anchor="middle" font-weight="700">一键登录</text>
-            <text x="104" y="76" font-size="10.5" fill="#8fb4e8">← 把左边的「一键登录」拖到这条栏里</text>
-            <text x="12" y="104" font-size="10.5" fill="#7d869a">这就是书签栏。看不到它？按 Ctrl+Shift+B 让它出来。</text>
-          </svg>
-        </div>
-        <div class="hint">拖拽时鼠标按住不放，拖到浏览器顶部那条空白栏再松手。</div>
-      </li>
-      <li>
-        <b>回到延河那个标签页，点一下书签栏里的「一键登录」</b>
-        <div class="hint">页面会自动跳回这里并登录好，然后自动打开你上次看的那节课。</div>
-      </li>
-    </ol>
+    <h2>登录延河课堂 · 新版</h2>
+    <p class="sub">一次能用 24 小时。不用把账号密码给我。</p>
 
-    <details class="alt">
-      <summary>拖不动 / 根本找不到书签栏 → 两种替代办法</summary>
-      <div class="altbody">
-        <p><b>办法 A：右键书签栏 → 「添加网页…」</b>（没有书签栏先按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>）<br>
-        名称填 <code>一键登录</code>，网址粘贴下面这段：</p>
-        <div class="copyrow"><span class="val" id="jsval"></span><button class="copy" data-copy="jsval">复制</button></div>
-        <p class="tiny">如果粘贴时开头的 <code>javascript:</code> 被浏览器吞掉了，保存后进书签管理器把它补回去即可。</p>
-        <p><b>办法 B：直接控制台粘一行</b> —— 在延河页面按 <kbd>F12</kbd> → 选 <code>Console</code> → 粘贴 → 回车：</p>
-        <div class="copyrow"><span class="val" id="codeval"></span><button class="copy" data-copy="codeval">复制</button></div>
-        <p class="tiny">Chrome 第一次粘代码可能要先手打 <code>allow pasting</code> 再回车，之后再粘贴就正常了。</p>
+    <div class="paste">
+      <b>① 打开新版延河并登录</b>
+      <a class="btn2" href="https://aita.yanhekt.cn/portal/" target="_blank" rel="noopener">打开 aita.yanhekt.cn/portal/ ↗</a>
+      <div class="tiny" style="margin-top:6px">登到能看见课程列表就行，然后<b>别关那个标签页</b>。</div>
+
+      <b style="display:block;margin-top:14px">② 把「新版一键登录」拖进书签栏（只需一次）</b>
+      <div class="dragrow">
+        <a id="bm" class="bmbtn" href="#">新版一键登录</a>
+        <button class="copy" id="copybm" type="button">拖不动？复制书签代码</button>
       </div>
-    </details>
+      <svg class="pic" viewBox="0 0 430 108" aria-label="书签栏位置示意">
+        <rect x="1" y="1" width="428" height="106" rx="8" fill="#12151c" stroke="#2a2f3a"/>
+        <rect x="12" y="9" width="150" height="16" rx="5" fill="#1e222b"/>
+        <text x="20" y="21" font-size="10.5" fill="#9aa3b2">延河课堂 · aita</text>
+        <rect x="12" y="31" width="336" height="18" rx="6" fill="#1e222b" stroke="#2a2f3a"/>
+        <text x="21" y="44" font-size="10.5" fill="#7d869a">https://aita.yanhekt.cn/portal/</text>
+        <rect x="12" y="56" width="406" height="26" rx="6" fill="#16233a" stroke="#5b9cff" stroke-dasharray="5 4"/>
+        <rect x="20" y="61" width="92" height="16" rx="4" fill="#5b9cff"/>
+        <text x="66" y="73" font-size="10.5" fill="#06101f" text-anchor="middle" font-weight="700">新版一键登录</text>
+        <text x="122" y="73" font-size="10.5" fill="#8fb4e8">← 把上面的按钮拖到这条栏里松手</text>
+        <text x="12" y="97" font-size="10.5" fill="#7d869a">这条就是「书签栏」。看不见它？按 Ctrl+Shift+B 让它出来。</text>
+      </svg>
+      <div class="tiny" style="margin-top:2px">拖过旧版书签的请删掉重拖（旧版只带 token，不带整段 cookie）。</div>
+
+      <b style="display:block;margin-top:14px">③ 切回「延河课堂」那个标签页，在延河页面上点一下书签栏里的「新版一键登录」</b>
+      <div class="tiny" style="margin-top:6px">
+        注意：这个书签<b>必须站在延河课堂的页面上点</b>。<br>
+        · 在播放器这里点 → 会提示你去延河页面点<br>
+        · 在延河页面点但那边还没登录 → 会提示你先登录<br>
+        · 点对了 → 自动跳回来登录好，并打开你上次看的那节课
+      </div>
+
+      <b style="display:block;margin-top:14px">书签点了没反应？用这行代替</b>
+      <div class="tiny" style="margin-top:4px">在延河页面按 <kbd>F12</kbd> → <code>Console</code>，把下面这行粘进去回车（效果和书签一样，不用找 token）：</div>
+      <div class="copyrow" style="margin-top:6px"><span class="val" id="codeval"></span><button class="copy" data-copy="codeval">复制这行</button></div>
+    </div>
 
     <details class="alt">
-      <summary>上面都不行 → 手动粘贴一次 _token</summary>
+      <summary>书签用不了 / 想手动来一次</summary>
       <div class="altbody">
-        <p>延河页面按 <kbd>F12</kbd> → <code>Application</code>（或「存储」）→ <code>Cookies</code> → <code>https://aita.yanhekt.cn</code> → 找到 <code>_token</code> → 复制整段值粘到下面。</p>
-        <textarea id="tk" placeholder="粘贴 _token 的值（很长的一串，含 eyJ 开头即可）" spellcheck="false"></textarea>
+        <button class="autobtn" id="auto">自动登录<i>从本机浏览器已存的数据里找（多数情况读不到）</i></button>
+        <p><b>办法 A：手工加书签</b> —— 右键书签栏 → 「添加网页…」，名称填 <code>新版一键登录</code>，网址粘贴下面这段：</p>
+        <div class="copyrow"><span class="val" id="jsval"></span><button class="copy" data-copy="jsval">复制</button></div>
+        <p class="tiny">粘贴时开头的 <code>javascript:</code> 若被吞掉，保存后进书签管理器补回去。</p>
+        <p><b>办法 B：手动粘一次登录态</b> —— 延河页面 <kbd>F12</kbd> → <code>Console</code> → 粘 <code>document.cookie</code> 回车 → 复制整段，粘到下面：</p>
+        <textarea id="tk" placeholder="整段 cookie 或 _token 的值都行" spellcheck="false"></textarea>
         <button class="primary" id="go2">用这个登录</button>
+        <p class="tiny">或者 <code>F12</code> → <code>Application</code> → <code>Cookies</code> → <code>https://aita.yanhekt.cn</code> → 复制 <code>_token</code> 的 Value。</p>
       </div>
     </details>
 
@@ -248,23 +283,87 @@ function showLogin(msg){
     };
   });
   const g2 = ov.querySelector('#go2'); if (g2) g2.onclick = () => doLogin();
+  const ab = ov.querySelector('#auto'); if (ab) ab.onclick = () => autoLogin();
+  const cb = ov.querySelector('#copybm');
+  if (cb) cb.onclick = async () => {
+    const code = bookmarkletUrl();
+    try { await navigator.clipboard.writeText(code); cb.textContent = '已复制，去书签栏加'; }
+    catch (e) { const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); cb.textContent = '已复制，去书签栏加'; }
+    setTimeout(() => { cb.textContent = '拖不动？复制书签代码'; }, 2000);
+  };
+}
+
+// 自动登录：后端去本机浏览器里找已有的 _token
+async function autoLogin(){
+  const m = document.querySelector('#m');
+  const b = document.querySelector('#auto');
+  const label = t => { const i = b && b.querySelector('i'); if (i) i.textContent = t; };
+  if (b) b.disabled = true;
+  label('正在找浏览器里的登录状态…');
+  if (m) { m.className='msg'; m.textContent='正在找…'; }
+  try{
+    const j = await jget('/api/y2/login/auto', { method:'POST' });
+    if (j.ok) {
+      hideOverlay();
+      $('#sdot').classList.remove('off');
+      toast('已自动登录' + (j.from ? '（来自 ' + j.from + '）' : ''), 2600);
+      await loadTerms();
+      await resumeLast();
+      return true;
+    }
+    if (m) { m.className='msg err'; m.textContent='没找到 —— 延河的登录态多半在 HttpOnly cookie 里，网页脚本读不到；用上面「① 从浏览器里复制」那条，10 秒就好'; }
+  }catch(e){
+    if (m) { m.className='msg err'; m.textContent=e.message; }
+  }
+  if (b) b.disabled = false;
+  label('再找一次（先去浏览器里登录延河课堂）');
+  return false;
 }
 
 function hideOverlay(){ const ov = $('#overlay'); ov.style.display = 'none'; ov.innerHTML = ''; }
 
-async function doLogin(tokenFromHash){
+async function doLogin(tokenFromHash, rawCookie, hint){
   const ta = document.querySelector('#tk');
-  const tk = (tokenFromHash || (ta ? ta.value : '')).trim();
+  const tk = String(tokenFromHash || (ta ? ta.value : '') || '').trim();
   const m = document.querySelector('#m');
   if (m) { m.className='msg'; m.textContent='验证中…'; }
+  if (!tk) { if (m) { m.className='msg err'; m.textContent='先粘登录态'; } return; }
   try{
-    const j = await jget('/api/y2/login', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ jwt: tk }) });
-    if(!j.ok){ if (m) { m.className='msg err'; m.textContent = j.error||'登录失败'; } else toast(j.error||'登录失败', 4000); return; }
+    const j = await jget('/api/y2/login', { method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ jwt: tk, cookie: String(rawCookie || '').trim() }) });
+    if(!j.ok){
+      let msg = j.error || '登录失败';
+      if (hint === '200') msg += '｜浏览器里同一份 cookie 请求是 200，说明 cookie 没问题，是本地服务发出去被网关拦了 —— 把这句发我';
+      else if (hint === '401' || hint === '403') msg += '｜浏览器里同一份 cookie 也被拒绝（HTTP ' + hint + '）—— 延河那边该重新登录了';
+      else if (hint === 'timeout' || hint === 'x') msg += '｜浏览器里的探测没回音（可能被拦截或断网）';
+      else if (hint) msg += '｜浏览器里探测返回 HTTP ' + hint;
+      if (m) { m.className='msg err'; m.textContent = msg; } else toast(msg, 8000);
+      return;
+    }
     hideOverlay();
     $('#sdot').classList.remove('off');
     await loadTerms();
     await resumeLast();
+    refreshY2Status();
   }catch(e){ if (m) { m.className='msg err'; m.textContent=e.message; } else toast(e.message, 4000); }
+}
+
+/** 侧栏显示新版登录还剩多久（过期就该点一下书签了） */
+async function refreshY2Status(){
+  const el = $('#ytime');
+  try{
+    const st = await (await fetch('/api/y2/status')).json();
+    if (!el) return st;
+    if (!st || !st.loggedIn) { el.textContent = ''; return st; }
+    const exp = Number(st.expiresAt) || 0;
+    if (!exp) { el.textContent = '新版已登录'; return st; }
+    const left = exp * 1000 - Date.now();
+    if (left <= 0) { el.textContent = '新版登录已过期 —— 在延河页面点一下书签续上'; el.style.color = '#d98c4a'; return st; }
+    const txt = left >= 3600000 ? Math.round(left / 3600000) + ' 小时' : Math.max(1, Math.round(left / 60000)) + ' 分钟';
+    el.textContent = '新版登录 · 还剩 ' + txt + '（过期后点一下书签）';
+    el.style.color = left > 3600000 ? '#5c6678' : '#d98c4a';
+    return st;
+  }catch(e){ if (el) el.textContent = ''; return null; }
 }
 
 // ---------------- 筛选条件 ----------------
@@ -297,7 +396,7 @@ async function loadTerms(){
         o.textContent = name;
         sel.appendChild(o);
       }
-      if (d.meta && d.meta.count) $('#q').placeholder = `课程名，如 理论力学（库 ${d.meta.count} 门）`;
+      if (d.meta && d.meta.count) $('#q').placeholder = `课程名 / 教师名（库 ${d.meta.count} 门）`;
     }
   }catch(e){}
 }
@@ -318,7 +417,7 @@ async function resumeLast(){
   hideOverlay();
   const s = lastSaved();
   if (!s || !s.course) {
-    $('#list').innerHTML = '<div class="splash"><span style="font-size:12px">上面输入课程名开始，例如「数值分析」<br><span class="tiny">课程名不用输全，几个字就行</span></span></div>';
+    $('#list').innerHTML = '<div class="splash"><span style="font-size:12px">上面输入课程名或教师名开始，例如「数值分析」「孙新」<br><span class="tiny">课程名不用输全，几个字就行</span></span></div>';
     $('#now').textContent = '—';
     $('#q').focus();
     return;
@@ -341,9 +440,10 @@ async function doFind(){
   const ol = $('#oldlink'); if (ol) ol.href = '/old?s=' + encodeURIComponent(q);
   try{
     // 新版接口 + 内置课程库，两个一起查
+    // 注意：选「全部学期」时 term 是空串，以前这里会直接跳过新版检索，只出老平台结果
     const [j, db] = await Promise.all([
-      (term && !isOldTerm)
-        ? jget('/api/y2/search?q=' + encodeURIComponent(q) + '&term=' + encodeURIComponent(term)).catch(e => ({ ok:false, error:e.message, courses:[] }))
+      !isOldTerm
+        ? jget('/api/y2/search?q=' + encodeURIComponent(q) + (term ? '&term=' + encodeURIComponent(term) : '')).catch(e => ({ ok:false, error:e.message, courses:[] }))
         : Promise.resolve({ ok:true, courses:[], hidden:0, unverified:0, source:'skipped', notes:[] }),
       fetch('/api/db/search?q=' + encodeURIComponent(q)
         + (oldTermName ? '&term=' + encodeURIComponent(oldTermName) : '')
@@ -366,7 +466,9 @@ async function doFind(){
     if (oldOnes.length) bits.push('老平台课程库 ' + db.total + ' 门');
     if (j.hidden) bits.push('新版已隐藏 ' + j.hidden + ' 门无录像');
     if (j.unverified) bits.push(j.unverified + ' 门「未确认」');
-    $('#fmeta').innerHTML = esc(bits.join(' · ')) + diagHint(j.notes);
+    if (j.hidden) bits.push('隐藏 ' + j.hidden + ' 门无录像');
+    const noteText = (j.notes || []).join('；');
+    $('#fmeta').innerHTML = esc(bits.join(' · ')) + (noteText ? ' · ' + esc(noteText) : '') + diagHint(j.notes);
 
     const section = (title) => {
       const h = document.createElement('div');
@@ -389,7 +491,8 @@ async function doFind(){
           + '</div>'
           + '<div class="m">'
           + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
-          + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲</span>' : '')
+          + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>' : '')
+          + (c.totalSessions > c.videoCount ? '<span class="badge" title="这个学期一共排了 ' + c.totalSessions + ' 次课">共 ' + c.totalSessions + ' 讲</span>' : '')
           + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'这个学期的课表没扫到讲次，接口也没给') + '">未确认</span>' : '')
           + '</div>';
         el.onclick = ()=>loadSessions(c, el);
@@ -442,7 +545,7 @@ async function loadSessions(c, el, opts){
       return;
     }
     if (j.source === 'schedule') $('#fmeta').textContent = '讲次来自扫课表（' + j.sessions.length + ' 节有录像）';
-    else $('#fmeta').textContent = j.sessions.length + ' 讲有录像' + (j.hidden > 0 ? '（另有 ' + j.hidden + ' 讲没有录像，已隐藏）' : '');
+    else $('#fmeta').textContent = j.sessions.length + ' 讲有录像' + (j.total > j.sessions.length ? '（共 ' + j.total + ' 讲）' : '') + (j.hidden > 0 && !(j.total > j.sessions.length) ? '（另有 ' + j.hidden + ' 讲没有录像，已隐藏）' : '');
     let firstPlayable = null;
     j.sessions.forEach(s=>{
       const el2 = document.createElement('div');
@@ -541,15 +644,21 @@ $('#go').onclick = doFind;
 $('#q').addEventListener('keydown', e=>{ if(e.key==='Enter') doFind(); });
 $('#term').onchange = ()=>{ if($('#q').value.trim()) doFind(); else if(curCourse) loadSessions(curCourse, null); };
 $('#pp').onclick = ()=> v.paused ? v.play() : v.pause();
-$('#seek').addEventListener('input', e=>{ const d=v.duration; if(d&&isFinite(d)) v.currentTime = d*e.target.value/1000; });
+document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
+  v.currentTime = Math.max(0, v.currentTime + Number(b.dataset.jump));
+});
+
+// 和老平台页面一样的键盘快捷键
+document.addEventListener('keydown', e => {
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (e.code === 'Space') { e.preventDefault(); v.paused ? v.play().catch(()=>{}) : v.pause(); }
+  if (e.code === 'ArrowLeft') v.currentTime = Math.max(0, v.currentTime - 15);
+  if (e.code === 'ArrowRight') v.currentTime = Math.max(0, v.currentTime + 15);
+});
 $('#rate').onchange = e=>{ v.playbackRate = Number(e.target.value); };
 document.querySelectorAll('.tab').forEach(b=> b.onclick = ()=>{ kind=b.dataset.k; pick(performance.now()); });
 v.addEventListener('timeupdate', ()=>{
-  const d = v.duration;
-  if(d && isFinite(d)){
-    $('#seek').value = Math.round(v.currentTime/d*1000);
-    $('#time').textContent = fmt(v.currentTime)+' / '+fmt(d);
-  }
+  // 进度条用视频自带的那条；这里只留拖动耗时的统计
 });
 v.addEventListener('seeking', ()=>{ window.__seekAt = performance.now(); });
 v.addEventListener('seeked', ()=>{
@@ -560,34 +669,41 @@ v.addEventListener('seeked', ()=>{
 });
 
 (async function init(){
-  // 一键登录书签跳回来时 token 在 #t= 里
-  const ht = (location.hash.match(/^#t=(.+)$/) || [])[1];
+  // 一键登录书签跳回来时：token 在 #t=，整段 cookie 在 #c=
+  const hp = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const ht = hp.get('t');
   if (ht) {
-    const token = decodeURIComponent(ht);
+    const rawCookie = hp.get('c') ? decodeURIComponent(hp.get('c')) : '';
+    const hint = hp.get('h') || '';
     history.replaceState(null, '', location.pathname);
-    await doLogin(token);
+    await doLogin(decodeURIComponent(ht), rawCookie, hint);
     return;
   }
+  // 先自动试一把：浏览器里登录过就直接进来，不用用户动手
+  let logged = false;
+  try {
+    const st = await (await fetch('/api/y2/status')).json();
+    logged = !!st.loggedIn;
+    if (!logged) {
+      const a = await (await fetch('/api/y2/login/auto', { method: 'POST' })).json();
+      if (a.ok) { logged = true; toast('已自动登录' + (a.from ? '（来自 ' + a.from + '）' : ''), 2600); }
+    }
+  } catch (e) {}
+  if (logged) { $('#sdot').classList.remove('off'); refreshY2Status(); }
+
   // 从默认页点「新版平台」跳过来，带着课程名：自动搜一次
   const sp = new URLSearchParams(location.search);
   const q0 = (sp.get('q') || '').trim();
   const directId = sp.get('course');
   if (!directId && q0) {
-    try{
-      const st = await (await fetch('/api/y2/status')).json();
-      $('#q').value = q0;
-      if (!st.loggedIn) { showLogin('新版平台上播放更快 —— 先登录新版（老平台那套不影响，两边各登一次）'); return; }
-      $('#sdot').classList.remove('off');
-      await loadTerms();
-      await doFind();
-      return;
-    }catch(e){ showLogin(e.message); return; }
+    $('#q').value = q0;
+    if (!logged) { showLogin('新版平台上播放更快 —— 先登录新版（老平台那套不影响，两边各登一次）'); return; }
+    try{ await loadTerms(); await doFind(); }catch(e){ showLogin(e.message); }
+    return;
   }
   if (directId) {
+    if (!logged) { showLogin('这门课在新版平台上更快，先登录新版（老平台那套照旧用）'); return; }
     try{
-      const st = await (await fetch('/api/y2/status')).json();
-      if (!st.loggedIn) { showLogin('这门课在新版平台上更快，先登录新版（老平台那套照旧用）'); return; }
-      $('#sdot').classList.remove('off');
       await loadTerms();
       await loadSessions({
         courseId: directId,
@@ -595,14 +711,14 @@ v.addEventListener('seeked', ()=>{
         termName: sp.get('term') || '',
         termId: '',
       }, null, { autoLatest: true });
-      return;
-    }catch(e){ showLogin(e.message); return; }
+    }catch(e){ showLogin(e.message); }
+    return;
   }
-  try{
-    const j = await (await fetch('/api/y2/status')).json();
-    if(j.loggedIn){ $('#sdot').classList.remove('off'); await loadTerms(); await resumeLast(); }
-    else showLogin();
-  }catch(e){ showLogin(e.message); }
+  if (logged) {
+    try{ await loadTerms(); await resumeLast(); }catch(e){ showLogin(e.message); }
+  } else {
+    showLogin();
+  }
 })();
 </script>
 </body>

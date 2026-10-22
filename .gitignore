@@ -1,6 +1,9 @@
 # 构建产物（体积大，别提交；用 GitHub Releases 分发）
 dist/
 
+# Go 版构建时从 ../public 同步过来的页面（go:embed 用，别提交）
+go/web/
+
 # 依赖
 node_modules/
 .pnpm-store/
@@ -9,7 +12,13 @@ node_modules/
 token.txt
 *.log
 
+# 调研/截图用的临时目录（里面可能有浏览器 profile、下载的 bundle，绝不提交）
+.tmp-probe/
+_archived/
+
 # 系统垃圾
 .DS_Store
 Thumbs.db
 desktop.ini
+go/*.exe
+go/yanhekt.exe~

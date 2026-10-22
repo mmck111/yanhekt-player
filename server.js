@@ -30,7 +30,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const COOKIE = 'yht';
 const COOKIE_TTL = 6 * 24 * 3600;
 // 版本号：启动横幅、页面右下角、/api/status 都会显示，用来确认"跑的是哪一版"
-const BUILD = '1.4.1';
+const BUILD = '1.5.0';
 
 // 打包后从 exe 内读资源，开发时读 public/
 function loadAsset(name) {
@@ -98,6 +98,24 @@ function catalogByTeacher(name, limit = 20) {
     if (seen.has(k)) continue;
     seen.add(k);
     out.push({ id: r.id, name: r.n, teacher: r.t, term: r.term });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** 用离线课程库的老师索引，找出这个人教过的课名（去重、限量） */
+function teacherCourseTitles(name, limit = 12) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return [];
+  const seen = new Set();
+  const out = [];
+  for (const r of catalogByTeacher(name, 60)) {
+    const n = String(r.name || '').trim();
+    if (!n) continue;
+    const k = n.replace(/\s+/g, '').toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(n);
     if (out.length >= limit) break;
   }
   return out;
@@ -282,6 +300,110 @@ async function verifyToken(token) {
   return null;
 }
 
+// ---------------- 自动登录：从本机浏览器已存的登录态里找 ----------------
+// Edge / Chrome 的 localStorage 落在 leveldb 文件里，值是明文。
+// 只读本机文件；找到的凭证只写进本机 cookie，别无他用。
+const LS_MAX_BYTES = 6 * 1024 * 1024;
+
+function browserRoots() {
+  if (process.platform !== 'win32') return [];
+  const la = process.env.LOCALAPPDATA || '';
+  if (!la) return [];
+  return [
+    ['Edge', path.join(la, 'Microsoft', 'Edge', 'User Data')],
+    ['Chrome', path.join(la, 'Google', 'Chrome', 'User Data')],
+    ['Brave', path.join(la, 'BraveSoftware', 'Brave-Browser', 'User Data')],
+    ['Vivaldi', path.join(la, 'Vivaldi', 'User Data')],
+  ];
+}
+
+/** 各浏览器所有 profile 的 Local Storage 文件，最近改过的排前面 */
+function localStoreFiles() {
+  const out = [];
+  for (const [name, root] of browserRoots()) {
+    let profs = [];
+    try { profs = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name); } catch (e) { continue; }
+    for (const prof of profs) {
+      const dir = path.join(root, prof, 'Local Storage', 'leveldb');
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch (e) { continue; }
+      for (const f of names) {
+        if (!/\.(log|ldb)$/i.test(f)) continue;
+        const full = path.join(dir, f);
+        try {
+          const st = fs.statSync(full);
+          if (!st.isFile() || st.size > LS_MAX_BYTES) continue;
+          out.push({ browser: name, file: full, mtime: st.mtimeMs });
+        } catch (e) {}
+      }
+    }
+  }
+  out.sort((a, b) => b.mtime - a.mtime);
+  return out.slice(0, 200);
+}
+
+/**
+ * 扫一遍浏览器本地存储，捞出两边的登录凭证。
+ * 老平台：www.yanhekt.cn 下 localStorage 的 auth.token（32 位十六进制）
+ * 新平台：aita.yanhekt.cn 下的 JWT（_token）
+ */
+function scanBrowserStore() {
+  const oldTokens = new Map();   // token -> 浏览器
+  const jwts = new Map();        // jwt -> 浏览器
+  let files = 0;
+  for (const f of localStoreFiles()) {
+    let buf;
+    try { buf = fs.readFileSync(f.file); } catch (e) { continue; }
+    files++;
+    const s = buf.toString('latin1');
+    if (s.indexOf('yanhekt') === -1) continue;
+    let i = -1;
+    while ((i = s.indexOf('www.yanhekt.cn', i + 1)) !== -1) {
+      const win = s.slice(i, i + 12000);
+      for (const m of win.matchAll(/token\\?"\s*:\s*\\?"([0-9a-fA-F]{20,64})/g)) {
+        if (!oldTokens.has(m[1])) oldTokens.set(m[1], f.browser);
+      }
+    }
+    i = -1;
+    while ((i = s.indexOf('aita.yanhekt.cn', i + 1)) !== -1) {
+      const win = s.slice(i, i + 20000);
+      for (const m of win.matchAll(/eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g)) {
+        if (!jwts.has(m[0])) jwts.set(m[0], f.browser);
+      }
+    }
+  }
+  return { oldTokens: [...oldTokens], jwts: [...jwts], files };
+}
+
+let autoScanCache = { at: 0, data: null };
+function scanBrowserStoreCached() {
+  if (autoScanCache.data && Date.now() - autoScanCache.at < 10000) return autoScanCache.data;
+  let data;
+  try { data = scanBrowserStore(); } catch (e) { data = { oldTokens: [], jwts: [], files: 0, error: e.message }; }
+  autoScanCache = { at: Date.now(), data };
+  return data;
+}
+
+/** 自动登录老平台：验证候选 token，返回第一个有效的 */
+async function autoLoginOld() {
+  const scan = scanBrowserStoreCached();
+  for (const [token, browser] of scan.oldTokens.slice(0, 40)) {
+    const user = await verifyToken(token);
+    if (user) return { token, user, from: browser, candidates: scan.oldTokens.length };
+  }
+  return { token: '', user: null, candidates: scan.oldTokens.length, files: scan.files };
+}
+
+/** 自动登录新平台：验证候选 JWT */
+async function autoLoginNew() {
+  const scan = scanBrowserStoreCached();
+  for (const [jwt, browser] of scan.jwts.slice(0, 8)) {
+    const id = await y2Who(jwt);
+    if (id) return { jwt, id, from: browser, candidates: scan.jwts.length };
+  }
+  return { jwt: '', id: null, candidates: scan.jwts.length, files: scan.files };
+}
+
 // ---------------- 视频 token（按用户） ----------------
 const vtCache = new Map();
 async function videoToken(userToken, badge) {
@@ -453,6 +575,158 @@ async function probeOldCourses(courses, token, { concurrency = 6, onlyPlayable =
   out.sort((a, b) => (order.get(a.id) || 0) - (order.get(b.id) || 0));
   if (!onlyPlayable) return { courses: out, hidden };
   return { courses: out, hidden };
+}
+
+/**
+ * 搜索结果的"匹配度"打分（和录像多少无关）：
+ *   - 关键词按空格拆词，每个词都要在**课程名 / 教师名 / 课程号**里至少命中一处
+ *   - 完全相等 6 分，前缀匹配 4 分，包含 3 分（教师名按顿号/逗号拆开逐个比）
+ *   - 整串和课程名/教师名完全相等再加分
+ * 排序时先用它，再用录像数；录像再多但名字不像的课不会排到前面。
+ */
+function searchScore(c, q) {
+  const qn = String(q || '').toLowerCase().trim();
+  if (!qn) return 0;
+  const tokens = qn.split(/\s+/).filter(Boolean);
+  const name = String(c.name || c.title || '').toLowerCase();
+  const code = String(c.code || '').toLowerCase();
+  const teachers = String(c.teacher || '').toLowerCase().split(/[、,，;；/\s]+/).filter(Boolean);
+  const fieldScore = (f, t) => {
+    if (!f) return 0;
+    if (f === t) return 6;
+    if (f.startsWith(t)) return 4;
+    if (t.length >= 2 && f.includes(t)) return 3;
+    return 0;
+  };
+  let total = 0;
+  for (const t of tokens) {
+    let best = Math.max(fieldScore(name, t), fieldScore(code, t) - 1);
+    for (const tn of teachers) best = Math.max(best, fieldScore(tn, t));
+    if (best <= 0) return 0;   // 有一个词没命中，就不算匹配
+    total += best;
+  }
+  if (name && name === qn) total += 4;
+  if (teachers.some(tn => tn === qn)) total += 3;
+  return total;
+}
+
+// ---------------- 直播（旧平台，免登录可读） ----------------
+// 实测：/v1/live/hot/list 与 /v2/live/list 匿名就能读，直播流是公开的 m3u8
+// （clive*.yanhekt.cn/live/xxx.m3u8，带 Access-Control-Allow-Origin: *）
+const LIVE_TTL = 30 * 1000;
+let liveCache = { at: 0, data: null };
+
+const unescapeUrl = s => String(s || '').replace(/\\\//g, '/');
+function parseLocalTime(s) {
+  const t = Date.parse(String(s || '').replace(/-/g, '/'));
+  return Number.isFinite(t) ? t : 0;
+}
+
+function liveRow(l) {
+  const c = l.course || {};
+  const profs = (c.professors || []).map(p => p.name).filter(Boolean);
+  const teacher = profs.slice(0, 3).join('、') || (l.session && l.session.professor && l.session.professor.name) || '';
+  const startedAt = l.schedule_started_at || l.started_at || (l.session && l.session.started_at) || '';
+  const endedAt = l.schedule_ended_at || l.ended_at || (l.session && l.session.ended_at) || '';
+  const s = parseLocalTime(startedAt), e = parseLocalTime(endedAt);
+  const now = Date.now();
+  const phase = s && now < s ? 'upcoming' : (e && now > e ? 'ended' : 'live');
+  return {
+    id: String(l.id || (l.session && l.session.id) || ''),
+    title: l.title || c.name_zh || '',
+    teacher,
+    course: c.name_zh || '',
+    room: l.subtitle || (l.session && l.session.section_group_title) || '',
+    startedAt, endedAt, phase,
+    main: unescapeUrl(l.target),
+    vga: unescapeUrl(l.target_vga),
+    roomCam: unescapeUrl(l.target_room),
+    views: Number(l.participant_count || l.views || 0) || 0,
+  };
+}
+
+async function liveListOld() {
+  if (liveCache.data && Date.now() - liveCache.at < LIVE_TTL) return liveCache.data;
+  const [hot, all] = await Promise.all([
+    apiCall('/v1/live/hot/list?page=1&page_size=60').catch(() => null),
+    apiCall('/v2/live/list?page=1&page_size=200').catch(() => null),
+  ]);
+  const map = new Map();
+  const put = (l) => {
+    if (!l) return;
+    const row = liveRow(l);
+    if (!row.id || !row.main) return;
+    const prev = map.get(row.id);
+    map.set(row.id, prev ? Object.assign(prev, row, { main: row.main || prev.main, vga: row.vga || prev.vga, roomCam: row.roomCam || prev.roomCam }) : row);
+  };
+  for (const it of (hot && Array.isArray(hot.data) ? hot.data : [])) put(it.live || it);
+  const allRows = (all && all.data && Array.isArray(all.data.data)) ? all.data.data : (Array.isArray(all && all.data) ? all.data : []);
+  for (const it of allRows) put(it);
+
+  const now = Date.now();
+  const items = [...map.values()]
+    // 只要"现在在播 / 今天马上开播 / 刚结束半小时内"，别把 5000 多条历史全端出来
+    .filter(x => {
+      const e = parseLocalTime(x.endedAt);
+      const s = parseLocalTime(x.startedAt);
+      if (e && now - e > 30 * 60 * 1000) return false;
+      if (s && s - now > 6 * 3600 * 1000) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const rank = x => (x.phase === 'live' ? 0 : x.phase === 'upcoming' ? 1 : 2);
+      const d = rank(a) - rank(b);
+      if (d) return d;
+      return (parseLocalTime(a.startedAt) || 0) - (parseLocalTime(b.startedAt) || 0);
+    });
+  const data = { items, at: Date.now() };
+  liveCache = { at: Date.now(), data };
+  return data;
+}
+
+// 直播代理：m3u8 里的分片改成本地地址，分片直接转发；不缓存（直播要实时）
+const liveAgent = new https.Agent({ keepAlive: true, maxSockets: 4, maxFreeSockets: 2, timeout: 20000 });
+function proxyLive(res, req, rawUrl) {
+  return new Promise((resolve) => {
+    const u = new URL(rawUrl);
+    const r = https.get(u, {
+      headers: { 'User-Agent': UA, Referer: ORIGIN + '/', Origin: ORIGIN, Accept: '*/*' },
+      rejectUnauthorized: false, servername: u.hostname, agent: liveAgent,
+    }, (up) => {
+      const ct = String(up.headers['content-type'] || '');
+      if (/mpegurl|m3u8/i.test(ct) || /\.m3u8($|\?)/i.test(u.pathname + u.search)) {
+        const c = []; up.on('data', d => c.push(d));
+        up.on('end', () => {
+          const txt = Buffer.concat(c).toString('utf8');
+          const out = txt.split('\n').map(line => {
+            const t = line.trim();
+            if (!t || t.startsWith('#')) return line;
+            try { return '/lp?u=' + enc(new URL(t, u).href); } catch (e) { return line; }
+          }).join('\n');
+          res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl', 'cache-control': 'no-store', 'access-control-allow-origin': '*' });
+          res.end(out);
+          resolve();
+        });
+        return;
+      }
+      res.writeHead(up.statusCode || 200, {
+        'content-type': ct || 'video/mp2t',
+        'cache-control': 'no-store',
+        'access-control-allow-origin': '*',
+        'content-length': up.headers['content-length'] || undefined,
+      });
+      up.pipe(res);
+      up.on('end', resolve);
+      up.on('error', () => { try { res.end(); } catch (e) {} resolve(); });
+    });
+    r.on('error', (e) => {
+      if (!res.headersSent) { res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }); res.end('直播流取不到：' + e.message); }
+      else { try { res.end(); } catch (x) {} }
+      resolve();
+    });
+    r.setTimeout(20000, () => r.destroy(new Error('直播流超时')));
+    req.on('close', () => { try { r.destroy(); } catch (e) {} });
+  });
 }
 
 // ---------------- 课程数据 ----------------
@@ -905,8 +1179,19 @@ function y2Token(req) {
   return c[Y2_COOKIE] || '';
 }
 
+/** JWT 里的 exp（秒）；解析不了就返回 0 */
+function jwtExp(jwt) {
+  try {
+    const p = String(jwt || '').split('.')[1] || '';
+    const json = Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const exp = Number(JSON.parse(json).exp);
+    return Number.isFinite(exp) ? exp : 0;
+  } catch (e) { return 0; }
+}
+
 // JWT -> 身份（含签名用的 phone），只放内存
 const y2Identity = new Map();
+const y2Probed = new Set();
 async function y2Who(jwt) {
   if (!jwt) return null;
   const hit = y2Identity.get(jwt);
@@ -917,7 +1202,17 @@ async function y2Who(jwt) {
     y2Identity.set(jwt, id);
     return id;
   } catch (e) {
-    return null;
+    // 可能是网关的鉴权写法变了（比如只认 cookie）：探测一次，成功就把这种方式记住
+    if (y2Probed.has(jwt)) return null;
+    y2Probed.add(jwt);
+    try {
+      const r = await y2.login(jwt);
+      if (y2Identity.size > 50) y2Identity.clear();
+      y2Identity.set(jwt, r.id);
+      return r.id;
+    } catch (e2) {
+      return null;
+    }
   }
 }
 
@@ -994,17 +1289,10 @@ async function y2ScanWindows(jwt, q, windows) {
 // 单讲"到底有没有流"的探测缓存
 const y2ProbeCache = new Map();
 
+/** 一讲到底有没有视频流（缓存由 yanhe2 管，按 jwt+subId） */
 async function probeStream(jwt, courseId, subId) {
-  const key = jwt.slice(-12) + ':' + subId;
-  if (y2ProbeCache.has(key)) return y2ProbeCache.get(key);
-  let ok = false;
-  try {
-    const info = await y2.subInfo(jwt, courseId, subId);
-    ok = !!(info.streams && info.streams.length);
-  } catch (e) {}
-  if (y2ProbeCache.size > 500) y2ProbeCache.clear();
-  y2ProbeCache.set(key, ok);
-  return ok;
+  const r = await y2.sessionHasStream(jwt, courseId, subId);
+  return r.ok;
 }
 
 /**
@@ -1012,13 +1300,20 @@ async function probeStream(jwt, courseId, subId) {
  *  - 有 status=6 的，直接就是它们
  *  - 全是 5 / 未知：抽一条实际取流，要到才算（要不到 = 这门课没录像）
  */
+/**
+ * 从课表行里挑出真正能播的讲次。
+ * sub_status=6 **不能**直接当"有录像"用：平台上一门课 5 讲全是 6、实际只有 1 讲有流的
+ * 情况很常见，所以这里逐讲真取一次视频流，取到才算。
+ * 全部请求都失败（网络/权限）时退回状态判断，别把故障当成"没录像"。
+ */
 async function pickPlayable(jwt, courseId, rows) {
   const list = Array.isArray(rows) ? rows : [];
-  const six = list.filter(r => y2.isRecordingStatus(r.status));
-  if (six.length) return six;
   if (!list.length) return [];
-  const ok = await probeStream(jwt, courseId, list[0].subId);
-  return ok ? list : [];
+  const six = list.filter(r => y2.isRecordingStatus(r.status) || y2.maybeRecording(r.status));
+  const cand = six.length ? six : list;
+  const v = await y2.verifySessions(jwt, courseId, cand);
+  if (v.playable.length || v.failed < v.probed) return v.playable;
+  return six;
 }
 
 /**
@@ -1040,10 +1335,16 @@ async function y2Videos(jwt, id, courseId, { allowScan = true, q = '', termName 
   try {
     detail = await y2.courseVideos(jwt, courseId, id.account);
     if (detail.videoCount) {
+      // 讲次直读经常只给一部分（常见：5 讲里只有 1 讲是"可播放"状态），
+      // 再和自己的课表 / 搜索时扫过的课表合并一次，避免"卡片 5 讲、进去 1 讲"
+      const merged = await mergeKnownSessions(jwt, id, courseId, detail.sessions, q, termName);
+      const sessions = merged.length ? merged : detail.sessions;
       return y2Remember(key, {
-        source: 'detail', verified: true, note: '',
-        sessions: detail.sessions, room: detail.room || '',
-        videoCount: detail.videoCount, totalSessions: detail.totalSessions, termName: detail.termName || '',
+        source: sessions.length > detail.sessions.length ? 'detail+schedule' : 'detail',
+        verified: detail.verified !== false, note: '',
+        sessions, room: (sessions[0] && sessions[0].room) || detail.room || '',
+        videoCount: sessions.length, totalSessions: Math.max(detail.totalSessions, sessions.length),
+        termName: detail.termName || '',
       });
     }
     notes.push('讲次直读没给到可播放讲次');
@@ -1056,7 +1357,7 @@ async function y2Videos(jwt, id, courseId, { allowScan = true, q = '', termName 
   try {
     const map = await y2Schedule(jwt, id);
     const list = map.get(String(courseId));
-    const playable = verifiedFromSchedule(list);
+    const playable = await pickPlayable(jwt, courseId, list);
     if (playable.length) {
       return y2Remember(key, {
         source: 'schedule-table', verified: true, note: notes.join('；'),
@@ -1116,6 +1417,66 @@ function y2Remember(key, data) {
   return data;
 }
 
+/** 只从"关键词扫描"缓存里取结果；没扫过就返回 null（不现场扫） */
+function y2ScanCached(jwt, q, termName) {
+  if (!q) return null;
+  const tail = String(jwt).slice(-12) + '|' + q + '|';
+  const w = y2.termWindow(termName);
+  const want = w ? tail + (w.from + '~' + w.to) : '';
+  let hit = null;
+  for (const [k, v] of y2ScanCache) {
+    if (!k.startsWith(tail)) continue;
+    if (Date.now() - v.at >= Y2_TTL) continue;
+    if (want && !k.includes(want)) continue;
+    hit = v.map;
+    break;
+  }
+  return hit;
+}
+
+/**
+ * 把"讲次直读"的结果和课表里已知的讲次合并，再逐讲验流。
+ *
+ * 为什么需要：讲次直读经常只返回一部分 —— 实测一门 5 讲的课只有 1 讲是
+ * `sub_status=6`，其余 4 讲是 5 或空，于是旧逻辑只认那 1 讲，卡片写 5 讲、
+ * 点进去只剩 1 讲。课表（自己的课表 / 搜索时扫过的课表）里 5 讲都在，
+ * 合并后再验流，两边就一致了。
+ */
+async function mergeKnownSessions(jwt, id, courseId, sessions, q, termName) {
+  const base = Array.isArray(sessions) ? sessions : [];
+  const seen = new Set(base.map(s => String(s.subId)));
+  const extra = [];
+  const add = (rows) => {
+    for (const r of rows || []) {
+      const k = String(r.subId || '');
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      extra.push(r);
+    }
+  };
+  try { add((await y2Schedule(jwt, id)).get(String(courseId))); } catch (e) {}
+  // 搜索时已经扫过的课表直接拿来用（缓存里有就用）
+  if (!extra.length && q) {
+    try {
+      const cached = y2ScanCached(jwt, q, termName);
+      if (cached) add(cached.get(String(courseId)));
+    } catch (e) {}
+  }
+  // 直读只给了一两讲（典型：5 讲里只有 1 讲是可播放状态）→ 单独把这门课的课表扫一遍
+  if (!extra.length && base.length < 2) {
+    try {
+      const raw = await y2.scanSessions(jwt, courseId, undefined, { days: 90, maxEmpty: 20 });
+      add(y2.filterRecordings(raw));
+    } catch (e) {}
+  }
+  if (!extra.length) return base;
+  const v = await y2.verifySessions(jwt, courseId, extra);
+  if (!v.playable.length) return base;
+  const out = base.concat(v.playable);
+  out.sort((a, b) => (b.startAt || 0) - (a.startAt || 0));
+  return out;
+}
+
 /** 并发跑一批任务（上游对并发不敏感，6 路足够快） */
 async function pool(items, limit, worker) {
   const queue = items.slice();
@@ -1134,7 +1495,15 @@ async function pool(items, limit, worker) {
  *
  * 总保险：如果一轮下来全部被藏掉，说明判定出了系统性偏差，这时一门都不藏。
  */
-async function y2Verify(jwt, id, courses, { q = '' } = {}) {
+/** 课表扫描用的关键词：多词查询取最长的一段（通常是课程名） */
+function scanKeyword(q) {
+  const t = String(q || '').split(/\s+/).map(x => x.trim()).filter(Boolean);
+  if (!t.length) return '';
+  return t.slice().sort((a, b) => b.length - a.length)[0];
+}
+
+async function y2Verify(jwt, id, courses, { q = '', scanQ = '' } = {}) {
+  const kw = scanQ || scanKeyword(q) || q;
   const kept = [];
   let hidden = 0, unverified = 0;
 
@@ -1146,12 +1515,12 @@ async function y2Verify(jwt, id, courses, { q = '' } = {}) {
   } catch (e) {}
   const windows = windowsFor(courses, termNames, 2);
   let scan = null;
-  if (q && windows.length) {
-    try { scan = await y2ScanWindows(jwt, q, windows); }
+  if (kw && windows.length) {
+    try { scan = await y2ScanWindows(jwt, kw, windows); }
     catch (e) { if (/会话被拒绝/.test(e.message)) throw e; }
-  } else if (q) {
+  } else if (kw) {
     // 学期名解析不出来 → 退回"近 100 天"
-    try { scan = await y2.scanByKeyword(jwt, q, { days: 100, concurrency: 8 }); }
+    try { scan = await y2.scanByKeyword(jwt, kw, { days: 100, concurrency: 8 }); }
     catch (e) { if (/会话被拒绝/.test(e.message)) throw e; }
   }
 
@@ -1159,11 +1528,6 @@ async function y2Verify(jwt, id, courses, { q = '' } = {}) {
   for (const c of courses) {
     if (c.sessions === 0) { hidden++; continue; }   // 课程库明确说 0 讲
     const rows = scan ? (scan.get(String(c.courseId)) || []) : [];
-    const playable = rows.filter(r => y2.isRecordingStatus(r.status));
-    if (playable.length) {
-      kept.push({ ...c, verified: true, videoCount: playable.length, room: playable[0].room || '', source: 'scan' });
-      continue;
-    }
     pending.push({ c, rows });
   }
 
@@ -1174,21 +1538,37 @@ async function y2Verify(jwt, id, courses, { q = '' } = {}) {
     const scannedThisTerm = !!(scan && w && windows.some(x => x.from === w.from && x.to === w.to));
 
     if (rows.length) {
-      // 有讲次、但没有"可播放"状态：抽最新一条实际取流
-      const cand = rows[0];
-      const ok = await probeStream(jwt, c.courseId, cand.subId);
-      if (!ok) { hidden++; return; }        // 一条流都没有 = 真的没录像
-      kept.push({ ...c, verified: true, videoCount: rows.length, room: cand.room || '', source: 'probe' });
+      // sub_status=6 不等于"真有流"：一门课 5 讲全是 6、实际只有 1 讲有流的情况很常见。
+      // 所以逐讲真取一次流：讲次少的课全验（卡片上的数字就是准确讲数），
+      // 讲次多的只抽最新 5 讲验，卡片上只标"有录像"不写数字。
+      const six = rows.filter(r => y2.isRecordingStatus(r.status) || y2.maybeRecording(r.status));
+      const cand = six.length ? six : rows;
+      const exact = cand.length <= 12;
+      const v = await y2.verifySessions(jwt, c.courseId, cand, { limit: exact ? 0 : 3 });
+      if (v.playable.length) {
+        kept.push({
+          ...c, verified: true, totalSessions: rows.length, source: 'scan',
+          videoCount: exact ? v.playable.length : null,
+          room: v.playable[0].room || cand[0].room || '',
+        });
+        return;
+      }
+      if (v.failed === v.probed && v.probed > 0) {   // 请求全失败 → 不能当成没录像
+        unverified++;
+        kept.push({ ...c, verified: false, note: '取视频流超时，未能确认' });
+        return;
+      }
+      hidden++;                                       // 验过的讲次一条流都没有
       return;
     }
-    // 这个学期扫过了，却一条讲次都没有 → 这门课这学期没录像
-    if (scannedThisTerm) { hidden++; return; }
+    // 扫不到讲次不等于没录像：常见原因是这门课不在你的课表里（没选它）。
+    // 继续往下走 detail / 自己的课表确认，别在这里直接藏掉。
 
     // 学期窗口没扫到（往届课程 / 学期名认不出来）→ 试 detail / 自己的课表
     try {
       const v = await y2Videos(jwt, id, c.courseId, { allowScan: false });
       if (v.videoCount) {
-        kept.push({ ...c, verified: true, videoCount: v.videoCount, room: v.room || '', source: v.source });
+        kept.push({ ...c, verified: true, videoCount: v.videoCount, totalSessions: v.totalSessions, room: v.room || '', source: v.source });
         return;
       }
       if (v.totalSessions > 0) { hidden++; return; }   // 有讲次，但一讲能播的都没有
@@ -1198,16 +1578,104 @@ async function y2Verify(jwt, id, courses, { q = '' } = {}) {
   });
 
   const order = new Map(courses.map((c, i) => [c.courseId, i]));
-  kept.sort((a, b) => (order.get(a.courseId) || 0) - (order.get(b.courseId) || 0));
+  kept.sort((a, b) => {
+    const d = searchScore(b, q) - searchScore(a, q);
+    if (d) return d;
+    const vc = (b.videoCount || 0) - (a.videoCount || 0);
+    if (vc) return vc;
+    return (order.get(a.courseId) || 0) - (order.get(b.courseId) || 0);
+  });
 
-  // 全被藏掉 = 判定大概率有问题，宁可全显示
-  if (!kept.length && hidden > 0) {
-    return {
-      courses: courses.map(c => ({ ...c, verified: false, note: '录像判定结果异常，先全部显示' })),
-      hidden: 0, unverified: courses.length, fallback: true,
-    };
-  }
   return { courses: kept, hidden, unverified, fallback: false };
+}
+
+async function y2DownloadHls(res, req, streamUrl, name) {
+  const hp = String(req.headers.host || '').split(':')[1] || String(PORT);
+  const base = 'http://127.0.0.1:' + hp;
+  const cookie = req.headers.cookie || '';
+  const get = (url) => new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const r = http.request({
+      host: u.hostname, port: u.port, path: u.pathname + u.search, method: 'GET',
+      headers: cookie ? { cookie } : {},
+    }, (up) => {
+      const chunks = [];
+      up.on('data', d => chunks.push(d));
+      up.on('end', () => resolve({ status: up.statusCode, buf: Buffer.concat(chunks) }));
+    });
+    r.on('error', reject);
+    r.setTimeout(90000, () => r.destroy(new Error('timeout')));
+    r.end();
+  });
+
+  // 全部走本地 /y2play 代理：签名、地址改写、上游行为都和在线播放一模一样
+  const readPlaylist = async (url) => {
+    const { status, buf } = await get(url);
+    if (status !== 200) throw new Error('播放列表 HTTP ' + status);
+    return buf.toString('utf8');
+  };
+  const absLocal = (u) => (u.startsWith('http') ? u : base + u);
+
+  let text = await readPlaylist(base + '/y2play?u=' + enc(streamUrl));
+
+  // 多码率总表：挑第一路子列表
+  if (/#EXT-X-STREAM-INF/i.test(text)) {
+    const child = text.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'));
+    if (!child) throw new Error('主播放列表里没有子列表');
+    text = await readPlaylist(absLocal(child));
+  }
+
+  if (/#EXT-X-KEY/i.test(text) && /METHOD=AES-128/i.test(text)) {
+    throw new Error('这讲的播放列表是 AES-128 加密的，暂时不能离线拼片');
+  }
+
+  let init = '';
+  const segs = [];
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith('#EXT-X-MAP')) {
+      const m = /URI="([^"]+)"/.exec(t);
+      if (m) init = absLocal(m[1]);
+      continue;
+    }
+    if (t.startsWith('#')) continue;
+    segs.push(absLocal(t));
+  }
+  if (!segs.length) throw new Error('播放列表里没有分片');
+
+  const order = init ? [init, ...segs] : segs;
+
+  // 先取第一片：取不到就直接报错，别给用户一个空文件
+  const first = await get(order[0]);
+  if (first.status !== 200 || !first.buf.length) {
+    throw new Error('第一片取不到（HTTP ' + first.status + '）');
+  }
+
+  res.writeHead(200, {
+    'content-type': 'video/mp2t',
+    'content-disposition': 'attachment; filename="lecture.ts"; filename*=UTF-8\'\'' + encodeURIComponent(name + '.ts'),
+    'cache-control': 'no-store',
+  });
+  res.write(first.buf);
+
+  let done = 1, failed = 0;
+  for (let i = 1; i < order.length; i++) {
+    let got = null;
+    for (let n = 0; n < 4 && !got; n++) {
+      try {
+        const g = await get(order[i]);
+        if (g.status === 200 && g.buf.length) got = g;
+      } catch (e) {}
+      if (!got) await sleep(300 * (n + 1));
+    }
+    if (!got) { failed++; continue; }
+    done++;
+    try { res.write(got.buf); } catch (e) { break; }
+    if (done % 10 === 0) await sleep(100);
+  }
+  try { res.end(); } catch (e) {}
+  console.log('新版下载结束：成功 ' + done + ' 片，失败 ' + failed + ' 片');
 }
 
 /** /play/ 转发：透传 Range；m3u8 会把分片地址改回本代理（每片现签） */
@@ -1393,20 +1861,28 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/y2/status') {
       const jwt = y2Token(req);
       const id = await y2Who(jwt);
-      return json(res, 200, { loggedIn: !!id, userId: id ? id.userId : null });
+      return json(res, 200, { loggedIn: !!id, userId: id ? id.userId : null, expiresAt: id ? jwtExp(jwt) : 0 });
     }
 
     if (u.pathname === '/api/y2/login') {
       if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method not allowed' });
       const body = await readBody(req);
-      let raw = String(body.jwt || '').trim();
-      const m = raw.match(/eyJ[\w-]+\.[\w-]+\.[\w-]+/);
-      if (m) raw = m[0];
-      if (!raw) return json(res, 400, { ok: false, error: '没找到 JWT' });
-      const id = await y2Who(raw);
-      if (!id) return json(res, 200, { ok: false, error: 'Yanhe2 不认这个会话（过期或复制不全）' });
-      const cookie = `${Y2_COOKIE}=${encodeURIComponent(raw)}; Path=/; Max-Age=${Y2_COOKIE_TTL}; HttpOnly; SameSite=Lax`;
-      return json(res, 200, { ok: true, userId: id.userId }, { 'set-cookie': cookie });
+      // 用户可能粘的是：裸 JWT / 整段 document.cookie / DevTools 里 _token 的 Value（有时带引号）
+      const pasted = String(body.jwt || '').trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+      const cookieHeader = String(body.cookie || '').trim().replace(/^["'`]+|["'`]+$/g, '').replace(/[\r\n]+/g, ' ').trim();
+      const raw = y2.extractJwt(pasted || cookieHeader);
+      if (!raw) return json(res, 400, { ok: false, error: '没找到 JWT（粘的内容里没有 _token）' });
+      let cookieOut = cookieHeader || pasted;
+      if (cookieOut && !/(?:^|;\s*)_token=/.test(cookieOut)) cookieOut = '_token=' + cookieOut;
+      try {
+        const r = await y2.login(raw, cookieOut);
+        if (y2Identity.size > 50) y2Identity.clear();
+        y2Identity.set(raw, r.id);
+        const cookie = `${Y2_COOKIE}=${encodeURIComponent(raw)}; Path=/; Max-Age=${Y2_COOKIE_TTL}; HttpOnly; SameSite=Lax`;
+        return json(res, 200, { ok: true, userId: r.id.userId, auth: r.style }, { 'set-cookie': cookie });
+      } catch (e) {
+        return json(res, 200, { ok: false, error: e.message || 'Yanhe2 不认这个会话（过期或复制不全）' });
+      }
     }
 
     if (u.pathname === '/api/y2/courses') {
@@ -1453,6 +1929,107 @@ const server = http.createServer(async (req, res) => {
         total = r.total;
       } catch (e) { notes.push('课程检索：' + e.message); }
 
+      // title 是"精确/前缀"匹配：搜「大学物理」查不到「大学物理AII」。
+      // 查不到时用课程库里的课名做包含匹配，再逐门回查（限 8 个课名）
+      if (!courses.length && q) {
+        try {
+          const cat = catalogSearch(tokens.slice().sort((a, b) => b.length - a.length)[0] || q, '', 200);
+          const titles = [];
+          const seenT = new Set();
+          for (const r of cat.courses) {
+            const n = String(r.name || '').trim();
+            const k = n.replace(/\s+/g, '').toLowerCase();
+            if (!n || seenT.has(k)) continue;
+            seenT.add(k);
+            titles.push(n);
+            if (titles.length >= 8) break;
+          }
+          if (titles.length) {
+            const found = await pool(titles, 4, async (title) => {
+              try {
+                const r2 = await y2.searchCourses(jwt, { q: title, term, page: 1, perPage: 20 });
+                return r2.courses || [];
+              } catch (e) { return []; }
+            });
+            const seenC = new Set(courses.map(c => c.courseId));
+            const words = tokens.map(t => t.toLowerCase());
+            for (const list of found) {
+              for (const c of list) {
+                if (seenC.has(c.courseId)) continue;
+                const hay = (String(c.title || '') + ' ' + String(c.teacher || '')).toLowerCase();
+                if (!words.every(t => hay.includes(t))) continue;
+                seenC.add(c.courseId);
+                courses.push(c);
+              }
+            }
+            if (courses.length) {
+              total = courses.length;
+              notes.push('按课程名包含匹配：' + titles.length + ' 个课名');
+            }
+          }
+        } catch (e) { notes.push('课程名包含匹配：' + e.message); }
+      }
+
+      // 新版检索接口只吃课程名。这里把关键词按空格拆开：
+      //   「数值分析 孙新」→ 拿最长的词当课程名查，其余词要求出现在课名或老师里
+      //   「孙新」→ 课程名查不到，就用离线课程库的老师索引找出他教的课名，逐门回查
+      //   「孙新 数值分析」同理，顺序不影响
+      const tokens = q.split(/\s+/).map(t => t.trim()).filter(Boolean);
+      if (tokens.length > 1 && courses.length) {
+        const titleQ = tokens.slice().sort((a, b) => b.length - a.length)[0];
+        const rest = tokens.filter(t => t !== titleQ).map(t => t.toLowerCase());
+        courses = courses.filter(c => {
+          const hay = (String(c.title || '') + ' ' + String(c.teacher || '') + ' ' + String(c.courseName || '')).toLowerCase();
+          return rest.every(t => hay.includes(t));
+        });
+        total = courses.length;
+      }
+
+      if (!courses.length && tokens.length) {
+        // 挑一个"像老师名"的词：在课程库教师索引里能命中的那个
+        const tname = tokens.slice().sort((a, b) => catalogByTeacher(b, 1).length - catalogByTeacher(a, 1).length)[0];
+        if (tname && catalogByTeacher(tname, 1).length) {
+          // 先试试新版接口自己认不认"老师名"这个参数（认了就能直接拿到全部）
+          const rest = tokens.filter(t => t !== tname).map(t => t.toLowerCase());
+          try {
+            const direct = await y2.searchByTeacher(jwt, tname, { term });
+            const seen0 = new Set(courses.map(c => c.courseId));
+            for (const c of direct) {
+              if (seen0.has(c.courseId)) continue;
+              const hay = (String(c.title || '') + ' ' + String(c.teacher || '')).toLowerCase();
+              if (!hay.includes(tname.toLowerCase())) continue;
+              if (!rest.every(t => hay.includes(t))) continue;
+              seen0.add(c.courseId);
+              courses.push(c);
+            }
+            if (direct.length) notes.push('新版接口按老师名直接命中 ' + direct.length + ' 门');
+          } catch (e) {}
+
+          const titles = teacherCourseTitles(tname);
+          const found = await pool(titles, 4, async (title) => {
+            try {
+              const r2 = await y2.searchCourses(jwt, { q: title, term, page: 1, perPage: 20 });
+              return r2.courses || [];
+            } catch (e) { return []; }
+          });
+          const seen = new Set(courses.map(c => c.courseId));
+          for (const list of found) {
+            for (const c of list) {
+              if (seen.has(c.courseId)) continue;
+              const hay = (String(c.title || '') + ' ' + String(c.teacher || '')).toLowerCase();
+              if (!hay.includes(tname.toLowerCase())) continue;
+              if (!rest.every(t => hay.includes(t))) continue;
+              seen.add(c.courseId);
+              courses.push(c);
+            }
+          }
+          if (courses.length) {
+            total = courses.length;
+            notes.push('按教师名匹配：' + tname + (titles.length > 1 ? '（' + titles.length + ' 门课）' : ''));
+          }
+        }
+      }
+
       // 全部失败才退回「扫最近三周课表」的老办法（那边已经只统计有录像的讲次）
       if (!courses.length) {
         try {
@@ -1464,7 +2041,7 @@ const server = http.createServer(async (req, res) => {
       // 把"没有录像"的课筛掉（这一步会顺带拿到教室名）
       if (courses.length) {
         try {
-          const v = await y2Verify(jwt, id, courses, { q });
+          const v = await y2Verify(jwt, id, courses, { q, scanQ: scanKeyword(q) });
           courses = v.courses;
           hidden = v.hidden;
           unverified = v.unverified;
@@ -1486,7 +2063,7 @@ const server = http.createServer(async (req, res) => {
       const notes = [];
       let data;
       try {
-        data = await y2Videos(jwt, id, courseId, { allowScan: true, q, termName });
+        data = await y2Videos(jwt, id, courseId, { allowScan: true, q: scanKeyword(q), termName });
       } catch (e) {
         return json(res, 200, { ok: false, error: e.message });
       }
@@ -1500,6 +2077,7 @@ const server = http.createServer(async (req, res) => {
       list.sort((a, b) => (b.startAt || 0) - (a.startAt || 0));
       return json(res, 200, {
         ok: true, source: data.source, notes, hidden: data.totalSessions - data.videoCount,
+        total: data.totalSessions,
         sessions: list.map(s => ({
           subId: s.subId, title: s.title, period: s.period || '', date: s.date || '',
           duration: s.duration, status: s.status, room: s.room, teacher: s.teacher,
@@ -1688,7 +2266,12 @@ const server = http.createServer(async (req, res) => {
         const CAP = 120;
         const list = raw.courses.slice(0, CAP);
         const pr = await probeOldCourses(list, token, { concurrency: 8 });
-        const sorted = pr.courses.slice().sort((a, b) => (b.videoCount || 0) - (a.videoCount || 0));
+        // 排序：先看课名/教师名的匹配度，再按录像数从多到少。
+        // 不然搜「数值分析」，名字里只有「分析」的课（刚好录像多）会排到真正的「数值分析」前面。
+        const sorted = pr.courses.slice().sort((a, b) => {
+          const d = searchScore(b, q) - searchScore(a, q);
+          return d || (b.videoCount || 0) - (a.videoCount || 0);
+        });
         return json(res, 200, {
           ok: true, source: raw.src, total: raw.total, courses: sorted,
           hidden: pr.hidden, probed: true, notes,
@@ -1725,12 +2308,11 @@ const server = http.createServer(async (req, res) => {
         const info = await y2.subInfo(jwt, c, s);
         const st = (info.streams || []).find(x => x.type === k) || (info.streams || [])[0];
         if (!st) { res.writeHead(404); return res.end('这一讲没有可下载的画面'); }
-        if (/\.m3u8/i.test(String(st.url).split('?')[0])) {
-          res.writeHead(501, { 'content-type': 'text/plain; charset=utf-8' });
-          return res.end('这一讲在新版上是 HLS 播放列表，暂时只能在线看，不能直接下载');
-        }
         const name = (u.searchParams.get('title') || ('course-' + c))
           .replace(/[\\/:*?"<>|\r\n\t]/g, '_').slice(0, 80);
+        if (/\.m3u8/i.test(String(st.url).split('?')[0])) {
+          return await y2DownloadHls(res, req, st.url, name);
+        }
         return await y2ProxyPlay(res, req, st.url, idn, { filename: name + '.mp4', ext: '.mp4' });
       } catch (e) {
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
@@ -1845,6 +2427,25 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, user }, { 'set-cookie': cookie });
     }
 
+    // 自动登录：去本机浏览器里找已登录的凭证，找到就直接种 cookie
+    if (u.pathname === '/api/login/auto') {
+      if (req.method !== 'POST' && req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' });
+      const r = await autoLoginOld();
+      if (!r.user) {
+        return json(res, 200, { ok: false, error: '没在浏览器里找到登录状态', candidates: r.candidates, files: r.files });
+      }
+      const cookie = `${COOKIE}=${encodeURIComponent(r.token)}; Path=/; Max-Age=${COOKIE_TTL}; HttpOnly; SameSite=Lax`;
+      return json(res, 200, { ok: true, user: r.user, from: r.from }, { 'set-cookie': cookie });
+    }
+
+    if (u.pathname === '/api/y2/login/auto') {
+      if (req.method !== 'POST' && req.method !== 'GET') return json(res, 405, { ok: false, error: 'method not allowed' });
+      const r = await autoLoginNew();
+      if (!r.id) return json(res, 200, { ok: false, error: '没在浏览器里找到登录状态', candidates: r.candidates, files: r.files });
+      const cookie = `${Y2_COOKIE}=${encodeURIComponent(r.jwt)}; Path=/; Max-Age=${Y2_COOKIE_TTL}; HttpOnly; SameSite=Lax`;
+      return json(res, 200, { ok: true, userId: r.id.userId, from: r.from }, { 'set-cookie': cookie });
+    }
+
     if (u.pathname === '/api/logout') {
       return json(res, 200, { ok: true }, { 'set-cookie': `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax` });
     }
@@ -1862,6 +2463,23 @@ const server = http.createServer(async (req, res) => {
       const raw = u.searchParams.get('u');
       if (!raw) { res.writeHead(400); return res.end('missing u'); }
       return await proxyHls(res, req, dec(raw));
+    }
+
+    // 直播列表（旧平台，匿名即可）
+    if (u.pathname === '/api/live') {
+      try {
+        const d = await liveListOld();
+        return json(res, 200, { ok: true, items: d.items, at: d.at });
+      } catch (e) {
+        return json(res, 200, { ok: false, items: [], error: e.message });
+      }
+    }
+
+    // 直播流代理（不缓存、不排队）
+    if (u.pathname === '/lp') {
+      const raw = u.searchParams.get('u');
+      if (!raw) { res.writeHead(400); return res.end('missing u'); }
+      return await proxyLive(res, req, dec(raw));
     }
 
     // 下载一个讲次：把 HLS 分片拼成单文件直接给浏览器
@@ -1920,6 +2538,18 @@ process.on('uncaughtException', (e) => {
   console.log('\n  [FATAL] ' + (e && e.stack ? e.stack : e));
   console.log('  Window stays open. Press Ctrl+C to quit.\n');
 });
+
+/** 把地址塞进剪贴板：省得用户手抄（不开浏览器，避免和已开的浏览器打架） */
+function copyToClipboard(text) {
+  if (process.platform !== 'win32') return false;
+  try {
+    const { spawn } = require('child_process');
+    const p = spawn('clip', [], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+    p.on('error', () => {});
+    p.stdin.end(text + '\r\n');
+    return true;
+  } catch (e) { return false; }
+}
 
 (async () => {
   setUtf8Console();
@@ -1981,7 +2611,9 @@ process.on('uncaughtException', (e) => {
   console.log('   延河课堂 · 在线播放器          版本 ' + BUILD);
   console.log('  ═══════════════════════════════════════════════════');
   console.log('');
-  console.log('   请复制以下链接到浏览器打开：');
+  const copied = copyToClipboard(urls[0]);
+  if (copied) console.log('   地址已经复制到剪贴板 —— 打开浏览器，地址栏 Ctrl+V 回车：');
+  else console.log('   请复制以下链接到浏览器打开：');
   console.log('');
   urls.forEach(x => console.log('        ' + x));
   console.log('');
