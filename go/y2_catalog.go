@@ -453,11 +453,11 @@ func y2CatalogSearch(cat *y2Catalog, q string, limit int) []y2CatRow {
 		if ya, yb := y2CatYear(a.row), y2CatYear(b.row); ya != yb {
 			return ya > yb
 		}
-		if a.row.Subs != b.row.Subs {
-			return a.row.Subs > b.row.Subs
-		}
 		if li, lj := len([]rune(a.row.Title)), len([]rune(b.row.Title)); li != lj {
 			return li < lj
+		}
+		if a.row.Subs != b.row.Subs {
+			return a.row.Subs > b.row.Subs
 		}
 		return a.row.ID < b.row.ID
 	})
