@@ -142,6 +142,8 @@ type y2VideosData struct {
 	// detailOK 讲次详情接口真的返回了数据（哪怕 0 讲）。
 	// 只有它为 true 时，"0 讲次"才能当作"这门课没有录像"的证据。
 	detailOK bool
+	// countExact videoCount 是不是准数（讲次多的时候只抽了几讲验）
+	countExact bool
 }
 
 func y2Remember(key string, data *y2VideosData) *y2VideosData {
@@ -415,7 +417,7 @@ func pickPlayable(jwt, courseID string, rows []y2Session) []y2Session {
 //  3. allowScan=true 时，按天扫课表
 //
 // 关键：某一级"成功但 0 条"时**不能就此结束**，要继续试下一级。
-func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, termName string) (*y2VideosData, error) {
+func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, termName string, deep bool) (*y2VideosData, error) {
 	key := y2JwtTail(jwt) + ":" + courseID
 	y2VideoMu.Lock()
 	hit, ok := y2VideoCache[key]
@@ -432,7 +434,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 	if err == nil {
 		detail = d
 		if d.videoCount > 0 {
-			merged := y2MergeKnownSessions(jwt, id, courseID, d.sessions, q, termName)
+			merged := y2MergeKnownSessions(jwt, id, courseID, d.sessions, q, termName, deep)
 			sessions := d.sessions
 			if len(merged) > 0 {
 				sessions = merged
@@ -449,6 +451,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 				source: src, verified: d.verified, note: "",
 				sessions: sessions, room: room,
 				videoCount: len(sessions), totalSessions: maxInt(d.totalSessions, len(sessions)), termName: d.termName,
+				detailOK: true, countExact: d.countExact,
 			}), nil
 		}
 		notes = append(notes, "讲次直读没给到可播放讲次")
@@ -459,23 +462,26 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 		notes = append(notes, "讲次直读："+err.Error())
 	}
 
-	// 2. 自己的课表
-	if mp, serr := y2Schedule(jwt, id); serr == nil {
-		list := mp[courseID]
-		rows := make([]y2Session, 0, len(list))
-		for _, s := range list {
-			rows = append(rows, y2ScheduleToSession(s))
-		}
-		playable := pickPlayable(jwt, courseID, rows)
-		if len(playable) > 0 {
-			return y2Remember(key, &y2VideosData{
-				source: "schedule-table", verified: true, note: strings.Join(notes, "；"),
-				sessions: playable, room: playable[0].Room,
-				videoCount: len(playable), totalSessions: len(list), termName: "",
-			}), nil
-		}
-		if len(list) > 0 {
-			notes = append(notes, "自己的课表里有课，但没有一讲是\"可播放\"状态")
+	// 2. 自己的课表。整张课表要一次拉 150 天（约 7 秒），只在"点开这门课"时才值得付；
+	//    搜索结果校验（deep=false）跳过，直接看详情给的讲次。
+	if deep {
+		if mp, serr := y2Schedule(jwt, id); serr == nil {
+			list := mp[courseID]
+			rows := make([]y2Session, 0, len(list))
+			for _, s := range list {
+				rows = append(rows, y2ScheduleToSession(s))
+			}
+			playable := pickPlayable(jwt, courseID, rows)
+			if len(playable) > 0 {
+				return y2Remember(key, &y2VideosData{
+					source: "schedule-table", verified: true, note: strings.Join(notes, "；"),
+					sessions: playable, room: playable[0].Room,
+					videoCount: len(playable), totalSessions: len(list), termName: "",
+				}), nil
+			}
+			if len(list) > 0 {
+				notes = append(notes, "自己的课表里有课，但没有一讲是\"可播放\"状态")
+			}
 		}
 	}
 
@@ -566,7 +572,7 @@ func y2ScanCached(jwt, q, termName string) map[string][]y2Session {
 //
 // 讲次直读经常只返回一部分 —— 实测一门 5 讲的课只有 1 讲是 sub_status=6，
 // 其余 4 讲是 5 或空，于是只剩 1 讲；课表里 5 讲都在，合并后两边一致。
-func y2MergeKnownSessions(jwt string, id *y2Identity, courseID string, sessions []y2Session, q, termName string) []y2Session {
+func y2MergeKnownSessions(jwt string, id *y2Identity, courseID string, sessions []y2Session, q, termName string, deep bool) []y2Session {
 	base := sessions
 	if base == nil {
 		base = []y2Session{}
@@ -599,8 +605,9 @@ func y2MergeKnownSessions(jwt string, id *y2Identity, courseID string, sessions 
 			add(mp[courseID])
 		}
 	}
-	// 直读只给了一两讲（典型：5 讲里只有 1 讲是可播放状态）→ 单独把这门课的课表扫一遍兜底
-	if len(extra) == 0 && len(base) < 2 {
+	// 直读只给了一两讲（典型：5 讲里只有 1 讲是可播放状态）→ 单独把这门课的课表扫一遍兜底。
+	// 这一步要扫几十天，很贵，所以只在"点开这门课"时做；搜索结果校验（deep=false）跳过。
+	if deep && len(extra) == 0 && len(base) < 2 {
 		if raw, err := y2ScanSessions(jwt, courseID, "", 90, 20); err == nil {
 			add(y2FilterRecordings(raw))
 		}
@@ -646,7 +653,7 @@ func y2LongestToken(s string) string {
 	return best
 }
 
-func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []y2Course, hidden, unverified int, fallback bool, err error) {
+func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string, skipScan bool) (kept []y2Course, hidden, unverified int, fallback bool, err error) {
 	// 1. 按结果里出现的学期，各自扫一遍课表（一次搜索最多 2 个学期）
 	termNames := map[string]string{}
 	if terms, e := y2TermList(jwt); e == nil {
@@ -660,22 +667,24 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 		scanQ = q
 	}
 	var scan map[string][]y2Session
-	if scanQ != "" && len(windows) > 0 {
-		scan, err = y2ScanWindows(jwt, scanQ, windows)
-		if err != nil {
-			if y2IsAuthRejected(err.Error()) {
-				return nil, 0, 0, false, err
+	if !skipScan {
+		if scanQ != "" && len(windows) > 0 {
+			scan, err = y2ScanWindows(jwt, scanQ, windows)
+			if err != nil {
+				if y2IsAuthRejected(err.Error()) {
+					return nil, 0, 0, false, err
+				}
+				scan = nil
 			}
-			scan = nil
-		}
-	} else if scanQ != "" {
-		// 学期名解析不出来 → 退回"近 100 天"
-		scan, err = y2ScanByKeyword(jwt, scanQ, 100, 8, 21)
-		if err != nil {
-			if y2IsAuthRejected(err.Error()) {
-				return nil, 0, 0, false, err
+		} else if scanQ != "" {
+			// 学期名解析不出来 → 退回"近 100 天"
+			scan, err = y2ScanByKeyword(jwt, scanQ, 100, 8, 21)
+			if err != nil {
+				if y2IsAuthRejected(err.Error()) {
+					return nil, 0, 0, false, err
+				}
+				scan = nil
 			}
-			scan = nil
 		}
 	}
 
@@ -698,7 +707,7 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 		pending = append(pending, pendingItem{c: c, rows: rows})
 	}
 
-	// 2. 剩下的并行确认（最多 6 路）
+	// 2. 剩下的并行确认（最多 10 路）
 	type judged struct {
 		keep       bool
 		row        y2Course
@@ -706,7 +715,7 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 		unverified bool
 	}
 	results := make([]judged, len(pending))
-	sem := make(chan struct{}, 6)
+	sem := make(chan struct{}, 10)
 	var wg sync.WaitGroup
 	for i := range pending {
 		wg.Add(1)
@@ -717,6 +726,26 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 
 			it := pending[i]
 			c := it.c
+
+			// 0) 判定缓存：12 小时内验过的课不用再逐讲取流
+			if v, ok := y2VerdictGet(jstr(c["courseId"])); ok {
+				if v.Videos > 0 {
+					row := cloneRow(c)
+					row["verified"] = true
+					row["videoCount"] = v.Videos
+					row["totalSessions"] = v.Total
+					if v.Room != "" {
+						row["room"] = v.Room
+					}
+					results[i] = judged{keep: true, row: row}
+					return
+				}
+				if v.Checked {
+					results[i] = judged{hidden: true}
+					return
+				}
+			}
+
 			name := jstr(c["termName"])
 			if name == "" {
 				name = termNames[jstr(c["termId"])]
@@ -767,6 +796,7 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 					}
 					row["room"] = room
 					row["source"] = "scan"
+					y2VerdictSet(jstr(c["courseId"]), y2Verdict{Videos: len(playable), Total: len(it.rows), Room: room, Checked: exact})
 					results[i] = judged{keep: true, row: row}
 					return
 				}
@@ -777,6 +807,7 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 					results[i] = judged{keep: true, row: row, unverified: true}
 					return
 				}
+				y2VerdictSet(jstr(c["courseId"]), y2Verdict{Videos: 0, Total: len(it.rows), Checked: true})
 				results[i] = judged{hidden: true} // 验过的讲次一条流都没有
 				return
 			}
@@ -784,18 +815,24 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 			// 继续往下走 detail / 自己的课表确认。
 			_ = scannedThisTerm
 			// 学期窗口没扫到（往届课程 / 学期名认不出来）→ 试 detail / 自己的课表
-			if v, e := y2Videos(jwt, id, jstr(c["courseId"]), false, "", ""); e == nil && v != nil {
+			if v, e := y2Videos(jwt, id, jstr(c["courseId"]), false, "", "", false); e == nil && v != nil {
 				if v.videoCount > 0 {
 					row := cloneRow(c)
 					row["verified"] = true
-					row["videoCount"] = v.videoCount
+					if v.countExact {
+						row["videoCount"] = v.videoCount
+					} else {
+						row["videoCount"] = nil // 只抽了几讲验，数量不准，别写死
+					}
 					row["totalSessions"] = v.totalSessions
 					row["room"] = v.room
 					row["source"] = v.source
+					y2VerdictSet(jstr(c["courseId"]), y2Verdict{Videos: v.videoCount, Total: v.totalSessions, Room: v.room, Checked: v.countExact})
 					results[i] = judged{keep: true, row: row}
 					return
 				}
 				if v.totalSessions > 0 {
+					y2VerdictSet(jstr(c["courseId"]), y2Verdict{Videos: 0, Total: v.totalSessions, Checked: true})
 					results[i] = judged{hidden: true} // 有讲次，但一讲能播的都没有
 					return
 				}
@@ -812,6 +849,7 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 						results[i] = judged{keep: true, row: row, unverified: true}
 						return
 					}
+					y2VerdictSet(jstr(c["courseId"]), y2Verdict{Videos: 0, Total: 0, Checked: true})
 					results[i] = judged{hidden: true}
 					return
 				}
@@ -823,6 +861,7 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string) (kept []
 		}(i)
 	}
 	wg.Wait()
+	y2VerdictFlush(false)
 
 	for i := range results {
 		switch {
@@ -1057,7 +1096,7 @@ func y2Rescue(jwt string, c y2Course) *y2RescueData {
 			// 只取讲次清单，不扫课表：搜索要快。点开课程时 /api/open 会再深挖
 			var vc *int
 			room := ""
-			if v, err := y2Videos(jwt, idn, *y2id, false, "", ""); err == nil && v != nil && v.videoCount > 0 {
+			if v, err := y2Videos(jwt, idn, *y2id, false, "", "", false); err == nil && v != nil && v.videoCount > 0 {
 				n := v.videoCount
 				vc = &n
 				room = v.room

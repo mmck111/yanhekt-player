@@ -55,7 +55,7 @@ func y2DiagSearch(jwt, q string) []map[string]any {
 			}
 			head = append(head, map[string]any{
 				"id": c["courseId"], "title": jstr(c["title"]),
-				"teacher": y2RuneCut(jstr(c["teacher"]), 12),
+				"teacher":  y2RuneCut(jstr(c["teacher"]), 12),
 				"termName": jstr(c["termName"]), "sessions": c["sessions"],
 			})
 		}

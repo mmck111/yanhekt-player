@@ -35,7 +35,7 @@ type y2CatRow struct {
 	Code    string `json:"c"`
 	Module  string `json:"g"`
 	Subs    int    `json:"s"` // 节次数，0 表示接口没给
-	Module2 string `json:"-"` // 占位，保持 JSON 稳定
+	Year    int    `json:"y,omitempty"`
 }
 
 // y2Catalog 整份索引
@@ -72,7 +72,7 @@ func y2CatalogKick(jwt string) {
 		if err != nil {
 			return
 		}
-		_ = y2CatalogSave(cat)
+		_, _ = y2CatalogSave(cat)
 	}()
 }
 
@@ -85,11 +85,45 @@ func y2CatFile() string {
 	return filepath.Join(dir, "yanhekt", "y2-catalog.json.gz")
 }
 
-// y2CatalogLoad 读索引（内存缓存 30 秒，文件变了会重新读）
+// y2CatWritePaths 写索引时可以尝试的路径（按优先级）。
+// 有些环境不允许往 %LOCALAPPDATA% 写（被杀软/策略拦住），这时依次退到临时目录、exe 旁边。
+func y2CatWritePaths(target string) []string {
+	base := filepath.Base(target)
+	dirs := []string{filepath.Dir(y2CatFile())}
+	if t := os.TempDir(); t != "" {
+		dirs = append(dirs, filepath.Join(t, "yanhekt"))
+	}
+	if exe, err := os.Executable(); err == nil {
+		dirs = append(dirs, filepath.Join(filepath.Dir(exe), ".yanhekt-cache"))
+	}
+	out := []string{}
+	seen := map[string]bool{}
+	for _, d := range dirs {
+		p := filepath.Join(d, base)
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// y2CatReadPaths 读索引时按优先级找：哪个存在用哪个
+func y2CatReadPaths() []string { return y2CatWritePaths(y2CatFile()) }
+
+// y2CatalogLoad 读索引（内存缓存，文件变了会重新读）。
+// 依次在几个候选路径里找最新的那份：有的机器不让写 %LOCALAPPDATA%，索引会落到临时目录。
 func y2CatalogLoad() *y2Catalog {
-	path := y2CatFile()
-	st, err := os.Stat(path)
-	if err != nil {
+	path, st := "", os.FileInfo(nil)
+	for _, p := range y2CatReadPaths() {
+		if fi, err := os.Stat(p); err == nil {
+			if st == nil || fi.ModTime().After(st.ModTime()) {
+				path, st = p, fi
+			}
+		}
+	}
+	if path == "" || st == nil {
 		return nil
 	}
 	y2CatMu.Lock()
@@ -113,8 +147,12 @@ func y2CatalogLoad() *y2Catalog {
 		return y2CatCache
 	}
 	y2CatCache, y2CatAt = &cat, st.ModTime()
+	y2CatPath = path
 	return y2CatCache
 }
+
+// y2CatPath 当前实际读到的索引路径（给 /api/y2/catalog 显示）
+var y2CatPath string
 
 func err2str(err error) string {
 	if err == nil {
@@ -123,37 +161,25 @@ func err2str(err error) string {
 	return err.Error()
 }
 
-// y2CatalogSave 写索引（先写临时文件再改名，中途失败不会留下半个库）
-func y2CatalogSave(cat *y2Catalog) error {
-	path := y2CatFile()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+// y2CatalogSave 写索引（先写临时文件再改名，中途失败不会留下半个库）。
+// 返回真正写成功的路径。
+func y2CatalogSave(cat *y2Catalog) (string, error) {
+	var lastErr error
+	for _, p := range y2CatWritePaths(y2CatFile()) {
+		if err := writeGzipJSON(p, cat); err != nil {
+			lastErr = err
+			continue
+		}
+		y2CatMu.Lock()
+		y2CatCache, y2CatAt = cat, time.Now()
+		y2CatMu.Unlock()
+		y2CatPath = p
+		return p, nil
 	}
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
+	if lastErr == nil {
+		lastErr = errors.New("没有可写的目录")
 	}
-	zw, _ := gzip.NewWriterLevel(f, gzip.BestCompression)
-	err = json.NewEncoder(zw).Encode(cat)
-	if e := zw.Close(); err == nil {
-		err = e
-	}
-	if e := f.Close(); err == nil {
-		err = e
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	y2CatMu.Lock()
-	y2CatCache, y2CatAt = cat, time.Now()
-	y2CatMu.Unlock()
-	return nil
+	return "", lastErr
 }
 
 // y2CatFromItem 列表里的一条 → 课程库行
@@ -173,8 +199,10 @@ func y2CatFromItem(it map[string]any) *y2CatRow {
 	if teacher == "" {
 		teacher = y2PickStr(it, "realname", "lecturer_name")
 	}
+	// 注意：列表里的 public_subs 是"有没有公开讲次"的 0/1 标记，不是节次数，
+	// 当成讲次数用会让"2 门课只显示 1 个视频"之类的问题重演，所以只认 sub_count。
 	subs := 0
-	if v := y2Pick(it, "sub_count", "subject_count", "public_subs", "class_hour"); v != nil {
+	if v := y2Pick(it, "sub_count", "subject_count"); v != nil {
 		subs = y2Num(v)
 	}
 	return &y2CatRow{
@@ -330,6 +358,35 @@ func y2Crawl(jwt string, perPage, maxPages int, progress func(y2CrawlProgress)) 
 	return cat, stats, nil
 }
 
+// y2CatYear 这门课大概属于哪个学年：优先看课号前缀（20262027… / 20261-02-…），其次看学期名。
+// 注意：手建课程的课号是一串随机十六进制（38e406b8…），里面有"2099"这种假数字，
+// 所以只认**前四位**是 20xx 的课号，别在整串里乱找，否则"大学物理实验 Ⅱ"会被排到 2099 年。
+func y2CatYear(r y2CatRow) int {
+	if r.Year > 1900 {
+		return r.Year
+	}
+	if y := y2TermYear(r.Term); y >= 2019 && y <= 2030 {
+		return y
+	}
+	if len(r.Code) >= 4 && r.Code[0] == '2' && r.Code[1] == '0' {
+		n := 0
+		ok := true
+		for _, c := range r.Code[:4] {
+			if c < '0' || c > '9' {
+				ok = false
+				break
+			}
+			n = n*10 + int(c-'0')
+		}
+		// 只认"像学年"的前缀：2019~2030。别的数字（2082、2051…）是课程内部编号，
+		// 当真了会把「大学物理实验 Ⅱ」排到 2082 年，把真正要看的课挤下去。
+		if ok && n >= 2019 && n <= 2030 {
+			return n
+		}
+	}
+	return 0
+}
+
 // y2CatalogSearch 本地匹配：每个词都要命中（课名 / 老师 / 课程号 / 课号），
 // 归一化后比较（Ⅱ=II=2、全角半角、空格、括号）。
 //
@@ -376,7 +433,7 @@ func y2CatalogSearch(cat *y2Catalog, q string, limit int) []y2CatRow {
 		if old, ok := best[key]; !ok {
 			best[key] = h
 			order = append(order, key)
-		} else if y2TermYear(r.Term) > y2TermYear(old.row.Term) {
+		} else if y2CatYear(r) > y2CatYear(old.row) {
 			best[key] = h
 		}
 	}
@@ -385,11 +442,16 @@ func y2CatalogSearch(cat *y2Catalog, q string, limit int) []y2CatRow {
 	for _, k := range order {
 		hits = append(hits, best[k])
 	}
-	// 2) 排序：匹配方式 → 录像/节次多的 → 课名短的 → 学期新的
+	// 2) 排序：匹配方式 → 学年新的 → 节次多的 → 课名短的。
+	// 学年必须排在课名长度前面：搜「大学物理」时「大学物理AⅡ」（本学期）要压过
+	// 「大学物理E」（上一学年），否则用户要找的那门课会被一堆旧课挤下去。
 	sort.SliceStable(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
 		if a.rank != b.rank {
 			return a.rank < b.rank
+		}
+		if ya, yb := y2CatYear(a.row), y2CatYear(b.row); ya != yb {
+			return ya > yb
 		}
 		if a.row.Subs != b.row.Subs {
 			return a.row.Subs > b.row.Subs
@@ -397,16 +459,21 @@ func y2CatalogSearch(cat *y2Catalog, q string, limit int) []y2CatRow {
 		if li, lj := len([]rune(a.row.Title)), len([]rune(b.row.Title)); li != lj {
 			return li < lj
 		}
-		if ya, yb := y2TermYear(a.row.Term), y2TermYear(b.row.Term); ya != yb {
-			return ya > yb
-		}
 		return a.row.ID < b.row.ID
 	})
 	out := make([]y2CatRow, 0, limit)
-	for i, h := range hits {
-		if i >= limit {
+	// 同一种课名最多占 4 个位置：搜「大学物理」时不能 12 条全是「大学物理AⅡ」，
+	// 得让「大学物理AⅠ / E / 实验」也露脸，用户才知道还有别的写法可选。
+	perTitle := map[string]int{}
+	for _, h := range hits {
+		if len(out) >= limit {
 			break
 		}
+		k := y2NormText(h.row.Title)
+		if perTitle[k] >= 4 {
+			continue
+		}
+		perTitle[k]++
 		out = append(out, h.row)
 	}
 	return out
@@ -448,6 +515,7 @@ func y2CatRowCourse(r y2CatRow) y2Course {
 	if r.Subs > 0 {
 		c["sessions"] = r.Subs
 	} else {
+		// 课程库没给节次数时留 nil：null 表示"不知道"，不能当成"0 讲"
 		c["sessions"] = nil
 	}
 	c["videoCount"] = nil

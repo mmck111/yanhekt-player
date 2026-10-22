@@ -6,8 +6,6 @@ package main
 
 import (
 	"bytes"
-	"sync"
-	"sync/atomic"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -239,7 +239,7 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 	localHits := 0
 	if q != "" {
 		if cat := y2CatalogLoad(); cat != nil && len(cat.Rows) > 0 {
-			hits := y2CatalogSearch(cat, q, 40)
+			hits := y2CatalogSearch(cat, q, 12)
 			for _, h := range hits {
 				courses = append(courses, y2CatRowCourse(h))
 			}
@@ -460,11 +460,14 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 把"没有录像"的课筛掉（这一步会顺带拿到教室名）
+	// 把"没有录像"的课筛掉（这一步会顺带拿到教室名）。
+	// 本地课程库命中时不扫课表：库里已经有课号，扫课表只是白白多发几百个请求。
 	if len(courses) > 0 {
-		if kept, h, u, _, err := y2Verify(jwt, id, courses, q); err == nil {
+		tv := time.Now()
+		if kept, h, u, _, err := y2Verify(jwt, id, courses, q, localHits > 0); err == nil {
 			courses = kept
 			hidden, unverified = h, u
+			notes = append(notes, fmt.Sprintf("验录像 %d 门 %dms", total, time.Since(tv).Milliseconds()))
 		} else {
 			notes = append(notes, "录像校验："+err.Error())
 		}
@@ -508,7 +511,7 @@ func handleY2Sessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := y2Videos(jwt, id, courseID, true, y2LongestToken(q), termName)
+	data, err := y2Videos(jwt, id, courseID, true, y2LongestToken(q), termName, true)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -954,6 +957,9 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 func handleY2Catalog(w http.ResponseWriter, r *http.Request) {
 	cat := y2CatalogLoad()
 	out := map[string]any{"ok": true, "file": y2CatFile()}
+	if y2CatPath != "" {
+		out["file"] = y2CatPath
+	}
 	if cat == nil {
 		out["count"] = 0
 		out["hint"] = "还没有本地课程库：登录新版后访问 /api/y2/crawl 爬一份"
@@ -1001,8 +1007,10 @@ func handleY2Crawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stats["saveError"] = nil
-	if e := y2CatalogSave(cat); e != nil {
+	if saved, e := y2CatalogSave(cat); e != nil {
 		stats["saveError"] = e.Error()
+	} else {
+		stats["file"] = saved
 	}
 	stats["ms"] = time.Since(t0).Milliseconds()
 	head := cat.Rows

@@ -964,6 +964,7 @@ type y2CourseVideosResult struct {
 	latestDate    string
 	probed        bool
 	verified      bool
+	countExact    bool // videoCount 是不是准数（只抽了几讲验的时候不是）
 }
 
 // y2CourseVideos 一门课"到底有没有能看的录像"，以及这些录像的讲次列表。
@@ -995,19 +996,21 @@ func y2CourseVideos(jwt, courseID, account string) (*y2CourseVideosResult, error
 
 	sessions := []y2Session{}
 	verified := true
-	// 讲次少的课逐讲验流（"有几讲"才准）；讲次多的课不能逐讲探 ——
-	// 40 讲就是 40 个请求，会被平台限流，之后整门课都像"没有视频"。
-	if len(candidates) > 0 && len(candidates) <= y2ProbeCap {
-		playable, failed, n := y2VerifySessions(jwt, courseID, candidates, 0, 6)
+	// 逐讲验流很贵：一门课 12 讲就是十几次请求，几十门课一起验会被限流，
+	// 用户也要等一分钟。判断"有没有录像"抽 4 讲就够；讲次 ≤ 4 的课才是准数。
+	probeLimit := 0
+	if len(candidates) > 3 {
+		probeLimit = 3
+	}
+	countExact := probeLimit == 0
+	if len(candidates) > 0 {
+		playable, failed, n := y2VerifySessions(jwt, courseID, candidates, probeLimit, 6)
 		sessions = playable
 		// 全部请求都失败（网络/权限）→ 退回状态判断，但标记未验证
 		if len(sessions) == 0 && failed > 0 && failed == n {
 			sessions = candidates
 			verified = false
 		}
-	} else if len(candidates) > 0 {
-		sessions = candidates
-		verified = false
 	}
 
 	// 教室：先用讲次自带的，没有就问 get-sub-info（只问最新一讲）
@@ -1036,6 +1039,7 @@ func y2CourseVideos(jwt, courseID, account string) (*y2CourseVideosResult, error
 		latestDate:    latest,
 		probed:        probed,
 		verified:      verified,
+		countExact:    countExact,
 	}, nil
 }
 
