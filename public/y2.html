@@ -106,6 +106,8 @@
   .menu{display:none;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:8px;
     font-size:16px;line-height:1;padding:7px 10px;margin-right:2px;cursor:pointer}
   .backdrop{display:none}
+  .dlentry{display:block;margin-top:9px;padding:9px 11px;border:1px solid #2f4a7a;background:#16233a;
+    color:#a9d4ff;border-radius:9px;font-size:13px;font-weight:600;text-decoration:none}
   .back a{color:#5c6678}
 
   /* ---------- 手机 / 窄屏：上下布局，控件换行，别把桌面排版硬塞进来 ---------- */
@@ -172,7 +174,7 @@
         <a id="oldlink" href="/" style="color:#5b9cff;margin-left:12px">← 回老平台</a>
       </div>
       <div class="fmeta" id="ytime" style="margin-top:2px"></div>
-      <div class="fmeta" style="margin-top:4px"><a href="#" id="dlnk" style="color:#5b9cff">⤓ 下载管理</a></div>
+      <a href="#" id="dlnk" class="dlentry">⤓ 下载管理</a>
     </div>
     <div class="list" id="list"></div>
   </aside>
@@ -704,6 +706,18 @@ if ($('#menu')) $('#menu').onclick = () => {
   wrapEl.classList.toggle('drawer');
 };
 if ($('#backdrop')) $('#backdrop').onclick = closeDrawer;
+
+// 汉堡栏里的「下载管理」：原生把任务数推过来时更新文字
+window.__yhktDl = (n) => {
+  const a = document.getElementById('dlnk');
+  if (a) a.textContent = '⤓ 下载管理' + (n > 0 ? '（' + n + ' 个）' : '');
+};
+if ($('#dlnk')) $('#dlnk').onclick = (e) => {
+  e.preventDefault();
+  closeDrawer();
+  if (window.yhktApp && window.yhktApp.openDownloads) window.yhktApp.openDownloads();
+  else toast('下载管理在 App 里可用');
+};
 
 // 全屏：手机上没有播放器控件，这个按钮就是唯一的入口
 $('#fs').onclick = () => {

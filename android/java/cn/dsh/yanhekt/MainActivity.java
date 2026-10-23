@@ -55,7 +55,6 @@ public class MainActivity extends Activity {
     private FrameLayout rootView;
     private android.widget.LinearLayout dlPanel;
     private android.widget.LinearLayout dlList;
-    private TextView dlChip;
     private android.widget.ScrollView dlScroll;
 
 
@@ -169,24 +168,6 @@ public class MainActivity extends Activity {
         root.addView(bar, lp);
 
         // 下载进度条（含取消按钮）：浮在底栏上方，不占页面空间
-        // 右上角「下载 N 个 · 查看」入口；点开是下载面板
-        dlChip = new TextView(this);
-        dlChip.setText("下载");
-        dlChip.setTextSize(12f);
-        dlChip.setTextColor(Color.parseColor("#06101f"));
-        dlChip.setBackgroundColor(Color.parseColor("#5b9cff"));
-        dlChip.setPadding(dp(10), dp(5), dp(10), dp(5));
-        dlChip.setVisibility(android.view.View.GONE);
-        dlChip.setOnClickListener(new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) { openDlPanel(); }
-        });
-        FrameLayout.LayoutParams lpChip = new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lpChip.gravity = Gravity.TOP | Gravity.END;
-        lpChip.topMargin = dp(6);
-        lpChip.rightMargin = dp(8);
-        root.addView(dlChip, lpChip);
-
         // 下载面板（盖住整页）：列出任务、进度、取消
         dlPanel = new android.widget.LinearLayout(this);
         dlPanel.setOrientation(android.widget.LinearLayout.VERTICAL);
@@ -979,12 +960,12 @@ public class MainActivity extends Activity {
         return n;
     }
 
+    /** 没有浮动入口了：把任务数推给页面，汉堡栏里的「下载管理」自己显示 (n) */
     private void updateChip() {
         final int n = activeCount();
         ui.post(new Runnable() { public void run() {
-            if (dlChip == null) return;
-            if (n > 0) { dlChip.setText("下载 " + n + " 个 · 查看"); dlChip.setVisibility(android.view.View.VISIBLE); }
-            else dlChip.setVisibility(android.view.View.GONE);
+            if (web == null) return;
+            try { web.evaluateJavascript("window.__yhktDl&&window.__yhktDl(" + n + ")", null); } catch (Exception ignored) {}
         }});
     }
 

@@ -83,14 +83,25 @@ func liveRow(l map[string]any) liveItem {
 	startedAt := orStr(jstr(l["schedule_started_at"]), orStr(jstr(l["started_at"]), jstr(sess["started_at"])))
 	endedAt := orStr(jstr(l["schedule_ended_at"]), orStr(jstr(l["ended_at"]), jstr(sess["ended_at"])))
 
+	// 真实开播时间（不是课表时间）—— 有的课提前开播，只看课表会误判"未开始"
+	aStart := parseLocalTime(orStr(jstr(l["started_at"]), jstr(sess["started_at"])))
+	hasStream := unescapeUrl(jstr(l["target"])) != "" || unescapeUrl(jstr(l["target_vga"])) != ""
 	s := parseLocalTime(startedAt)
 	e := parseLocalTime(endedAt)
 	now := time.Now().UnixNano() / int64(time.Millisecond)
 	phase := "live"
-	if s != 0 && now < s {
-		phase = "upcoming"
-	} else if e != 0 && now > e {
+	switch {
+	case e != 0 && now > e:
 		phase = "ended"
+	case aStart != 0 && now >= aStart:
+		phase = "live" // 已经真的开播了
+	case s != 0 && now < s:
+		// 有流、且离上课不到 15 分钟，就按"可进"算，别显示成未开始
+		if hasStream && now >= s-int64((15*time.Minute)/time.Millisecond) {
+			phase = "live"
+		} else {
+			phase = "upcoming"
+		}
 	}
 
 	id := orStr(jstr(l["id"]), jstr(sess["id"]))

@@ -181,6 +181,8 @@
   .menu{display:none;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:8px;
     font-size:16px;line-height:1;padding:6px 9px;margin-right:8px;cursor:pointer}
   .backdrop{display:none}
+  .dlentry{display:inline-block;padding:3px 9px;border:1px solid #2f4a7a;background:#16233a;color:#a9d4ff;
+    border-radius:7px;font-size:12px;font-weight:600;text-decoration:none}
   details.help .box{padding:8px 0 0;line-height:1.8}
 
   @media (max-width:900px){
@@ -223,7 +225,7 @@
         <select id="dterm" title="按学期筛选"><option value="">全部学期</option></select>
       </div>
     </div>
-    <div class="userline"><span class="who" id="who">未登录</span><a id="btnSetup" title="重新打开登录引导">登录设置</a><a id="btnLogout" style="display:none">退出</a><a href="#" id="btnDl2" title="查看下载任务">下载管理</a><a href="/y2" id="btnY2" title="新版平台：单独登录，覆盖最近几个学期，那边播放快 3~5 倍，也能下载">新版平台 →</a></div>
+    <div class="userline"><span class="who" id="who">未登录</span><a id="btnSetup" title="重新打开登录引导">登录设置</a><a id="btnLogout" style="display:none">退出</a><a href="#" id="btnDl2" class="dlentry" title="查看下载任务">⤓ 下载管理</a><a href="/y2" id="btnY2" title="新版平台：单独登录，覆盖最近几个学期，那边播放快 3~5 倍，也能下载">新版平台 →</a></div>
     <div class="list" id="list"></div>
   </aside>
 
@@ -878,8 +880,13 @@ const wrapEl = $('#wrap');
 const closeDrawer = () => { if (wrapEl) wrapEl.classList.remove('drawer'); };
 if ($('#menu')) $('#menu').onclick = () => { if (wrapEl) wrapEl.classList.toggle('drawer'); };
 if ($('#backdrop')) $('#backdrop').onclick = closeDrawer;
+window.__yhktDl = (n) => {
+  const a = document.getElementById('btnDl2');
+  if (a) a.textContent = '⤓ 下载管理' + (n > 0 ? '（' + n + ' 个）' : '');
+};
 if ($('#btnDl2')) $('#btnDl2').onclick = (e) => {
   e.preventDefault();
+  closeDrawer();
   if (window.yhktApp && window.yhktApp.openDownloads) window.yhktApp.openDownloads();
   else alert('下载管理在 App 里可用；电脑版请直接看文件。');
 };
