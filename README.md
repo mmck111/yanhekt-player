@@ -1,6 +1,7 @@
 # 延河课堂 在线播放器
 
-北京理工大学「延河课堂」课程录像的本地播放器：**双击一个 exe，把地址粘到浏览器，搜课程名就能看录播**。
+北京理工大学「延河课堂」课程录像的本地播放器：**电脑上双击一个 exe，手机上装一个 APK**，
+搜课程名就能看录播 / 直播；另有一个单文件网页，专门在手机上查旧版课程代号。
 
 ![播放界面](docs/03-player.png)
 
@@ -20,9 +21,19 @@
 | **自检** | 页面右下角「自检」和 `/diag`：把一门课的接口原始返回、每讲状态、取流结果打出来，出问题直接看 |
 | **只在本机** | 服务只监听 `127.0.0.1`，不对外、不上传任何数据；账号密码不经过程序 |
 
+## 下载哪几个文件
+
+| 文件 | 给谁 | 说明 |
+|---|---|---|
+| `yanhekt.exe` | 电脑（Windows） | 双击就用，零依赖、免安装；首次启动 Windows 会拦一下，右键「解除锁定」即可 |
+| `yanhekt.apk` | 手机（Android 6.0+，arm64） | 和电脑端**同一个引擎**，界面是手机版；装的时候允许「未知来源」 |
+| `codes.html` | 手机 / 电脑浏览器 | 查旧版延河的**课程代号**：单文件、离线、不要服务器；输入课名就能看到 `yanhekt.cn/course/<代号>` |
+
+三个都是绿色文件，不放任何东西进系统目录（手机端下载的文件存系统「下载」里，面板里可删）。
+
 ## 手机版（APK）
 
-`dist/yanhekt.apk`（5.6 MB，Android 6.0+，arm64）—— 和电脑版**同一个引擎**：Go 后端交叉编译成
+`dist/yanhekt.apk`（6.3 MB，Android 6.0+，arm64）—— 和电脑版**同一个引擎**：Go 后端交叉编译成
 `android/arm64`、以 `lib/arm64-v8a/libyhkt.so` 打进 APK，启动时拉起来监听 `127.0.0.1:8799`，
 WebView 打开它。所以功能、界面、课程库、无权限课都和 exe 一致。
 
@@ -188,7 +199,7 @@ ffmpeg -i 数值分析_2026-09-08_全景.ts -c copy 数值分析.mp4
 - **自动登录**：读本机浏览器 profile 下 `Local Storage` 的 leveldb，捞出延河站点已存的 token，`/v1/user` 验过才种进 cookie
 - **签名**：视频接口要动态签名，程序运行时从官网 bundle 现扒算法（goja 执行），官网改版可自愈
 - **视频代理**：`/p?u=<base64url>` 把上游 m3u8 / 分片转成本地地址，按 CDN 域名串行 + 分片缓存（学校 CDN 对并发很敏感）
-- **课程库**：`public/catalog.json.gz`（578 KB，来自学校公开课程信息表），本地搜索不发请求
+- **课程库**：`public/catalog.json.gz`（592 KB，老平台 7.9 万门）+ `public/y2-catalog.json.gz`（617 KB，新版 2.7 万门），都随二进制内置，本地搜索不发请求
 - **单一实现**：仓库里只有 Go 一条线。早期用于对拍的 Node 参考实现（`server.js` / `yanhe2.js` /
   `signer.js`）与 `tools/parity*.js` 已经移除，需要查旧逻辑时看 git 历史
 
@@ -207,8 +218,9 @@ yanhekt-player/
 │  ├─ signer.go           运行时从官网提取签名（goja）
 │  ├─ y2*.go              新版平台
 │  └─ build.ps1           构建脚本（同步页面 → 编译）
-├─ public/                页面（index.html / y2.html / codes.html / hls.min.js / 课程库）
-├─ test/                  页面静态检查（id / html / 标签 / 书签 / JWT）
+├─ public/                页面（index.html / y2.html / codes.html / hls.min.js / 两份课程库）
+├─ android/               手机端（清单 + MainActivity.java + 一个 build.ps1 出 APK）
+├─ test/                  页面静态检查（id / html / 标签 / 书签）
 ├─ tools/                 发布、课程库生成、单文件课程代号页打包
 └─ docs/                  README 截图
 ```
@@ -220,19 +232,24 @@ yanhekt-player/
 #   构建缓存默认放 %LOCALAPPDATA%\yanhekt-build，可用 $env:YHKT_BUILD_DIR 改
 powershell -ExecutionPolicy Bypass -File go/build.ps1
 
+# 构建手机端 APK（不需要 Gradle：aapt2 + javac + d8 + zipalign + apksigner）
+#   工具链：JDK 17 + android.jar + build-tools 34（约 500 MB，见 android\build.ps1 顶部）
+powershell -ExecutionPolicy Bypass -File android/build.ps1   # 产出 android\build\yanhekt.apk
+
 # 手机上的「课程代号查询」单文件版（自带课程库，不需要服务器）
 node tools/make-codes.js      # 产出 dist/codes.html，拷到手机用浏览器打开即可
 
 # 测试
-cd go && go test ./...        # y2 纯函数 + 解析层 fixture
-node test/checkhtml.js public/index.html public/y2.html public/codes.html   # 页面静态检查
+cd go && go test ./...        # y2 纯函数 + 解析层 fixture + 时区/内置课程库
+node tools/check-inline.js public/index.html public/y2.html   # 页面内联脚本语法检查
+node test/checkids.js && node test/checktags.js public/index.html   # id / 标签配对
 ```
 
-发布：
+发布（当前版本 `v1.5.0`：exe + apk + codes.html 三个附件）：
 
 ```bash
 $env:GITHUB_TOKEN="ghp_..."; node tools/release.js v1.5.0
-node tools/release.js v1.5.0 --dry    # 只看要传什么
+node tools/release.js v1.5.0 --dry    # 只看要传什么（不改 GitHub）
 ```
 
 ## 说明

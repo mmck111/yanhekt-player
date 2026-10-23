@@ -18,7 +18,7 @@ const fnSrc = /function loginScript\(\)\{[\s\S]*?\n\}/.exec(block);
 if (!fnSrc) { console.log('✗ 找不到 loginScript()'); process.exit(1); }
 
 const PLAYER = 'http://127.0.0.1:8788';
-const JWT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MTQ4MjI2fQ.abc+/def-ghi_jkl=';
+const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MTIzNDV9.k3Jh-dEf_9xQ';
 const serialized = 'a:2:{i:0;s:6:"_token";i:1;s:' + JWT.length + ':"' + JWT + '";}';
 
 function run({ hostname, cookie, storage, here }) {
