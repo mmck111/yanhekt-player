@@ -117,6 +117,37 @@ public class MainActivity extends Activity {
 
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density); }
 
+    /**
+     * 取系统当前 DNS 传给引擎。Android 没有 /etc/resolv.conf，纯 Go 解析器在那边
+     * 解析不出任何域名（表现就是 signer 退回 default + 所有接口 Get 失败）。
+     */
+    private String dnsServersEnv() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            android.net.ConnectivityManager cm =
+                (android.net.ConnectivityManager) getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+            android.net.Network net = cm.getActiveNetwork();
+            if (net != null) {
+                android.net.LinkProperties lp = cm.getLinkProperties(net);
+                if (lp != null) {
+                    for (java.net.InetAddress a : lp.getDnsServers()) {
+                        String ip = a == null ? null : a.getHostAddress();
+                        if (ip == null || ip.indexOf(':') >= 0) continue;   // 先只给 IPv4
+                        if (sb.indexOf(ip) >= 0) continue;
+                        if (sb.length() > 0) sb.append(',');
+                        sb.append(ip).append(":53");
+                    }
+                }
+            }
+        } catch (Exception e) { Log.w(TAG, "dns lookup failed", e); }
+        for (String s : new String[]{"223.5.5.5:53", "119.29.29.29:53"}) {
+            if (sb.indexOf(s) >= 0) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(s);
+        }
+        return sb.toString();
+    }
+
     // ---------------------------------------------------------------- 引擎
 
     private void startEngine() {
@@ -131,6 +162,9 @@ public class MainActivity extends Activity {
                 pb.environment().put("FORCE_NEW", "1");
                 pb.environment().put("HOME", getFilesDir().getAbsolutePath());
                 pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
+                String dns = dnsServersEnv();
+                if (dns.length() > 0) pb.environment().put("YHKT_DNS", dns);
+                Log.i(TAG, "YHKT_DNS=" + dns);
                 proc = pb.start();
                 final BufferedReader r = new BufferedReader(new InputStreamReader(proc.getInputStream()));
                 new Thread(new Runnable() { public void run() {
@@ -189,10 +223,10 @@ public class MainActivity extends Activity {
             if (tok != null) {
                 String r = postLogin("/api/login", "{\"token\":" + json(tok) + "}");
                 oldOk = r != null && r.indexOf("\"ok\":true") >= 0;
-                oldMsg = r == null ? "请求失败" : brief(r);
+                oldMsg = r == null ? "请求失败" : r;
                 Log.i(TAG, "old login -> " + r);
                 final String t1 = oldOk ? "老平台已登录。接下来登录新版平台（同一个账号再登一次）"
-                                        : "老平台登录被引擎拒绝：" + oldMsg + "。继续试新版平台…";
+                                        : "老平台登录被引擎拒绝：" + brief(oldMsg) + "。继续试新版平台…";
                 ui.post(new Runnable() { public void run() {
                     bar.setText(t1);
                     web.loadUrl(Y2_SITE + "/portal/");
@@ -205,7 +239,7 @@ public class MainActivity extends Activity {
             if (ck != null) {
                 String r2 = postLogin("/api/y2/login", "{\"jwt\":" + json(ck) + "}");
                 newOk = r2 != null && r2.indexOf("\"ok\":true") >= 0;
-                newMsg = r2 == null ? "请求失败" : brief(r2);
+                newMsg = r2 == null ? "请求失败" : r2;
                 Log.i(TAG, "y2 login -> " + r2);
             }
             final boolean fOld = oldOk, fNew = newOk;
@@ -215,7 +249,7 @@ public class MainActivity extends Activity {
                 if (fNew) { openPlayer("/y2"); return; }
                 if (fOld) { openPlayer("/"); return; }
                 bar.setVisibility(TextView.VISIBLE);
-                bar.setText("两个平台都没登录成功。点这里重试；屏幕上是诊断信息");
+                bar.setText("两个平台都没登录成功：" + brief(fMsg) + "（点这里重试，屏幕上是诊断信息）");
                 bar.setOnClickListener(new android.view.View.OnClickListener() {
                     @Override public void onClick(android.view.View v) { startLogin(); }
                 });

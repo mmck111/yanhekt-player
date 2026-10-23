@@ -5,6 +5,8 @@
 package main
 
 import (
+	"context"
+	"sync"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -29,6 +31,45 @@ var (
 	lan  = false
 )
 
+// installDNS 用环境变量指定 DNS 服务器（逗号分隔，可带端口，默认 53）。
+//
+// Android 上没有 /etc/resolv.conf，纯 Go 解析器读不到 nameserver，于是所有域名都解析失败；
+// App 会把系统当前 DNS 通过 YHKT_DNS 传进来。桌面端不设这个变量，行为完全不变。
+func installDNS() {
+	spec := strings.TrimSpace(os.Getenv("YHKT_DNS"))
+	if spec == "" {
+		return
+	}
+	var servers []string
+	for _, s := range strings.Split(spec, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if !strings.Contains(s, ":") {
+			s += ":53"
+		}
+		servers = append(servers, s)
+	}
+	if len(servers) == 0 {
+		return
+	}
+	var mu sync.Mutex
+	next := 0
+	d := net.Dialer{Timeout: 3 * time.Second}
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			mu.Lock()
+			srv := servers[next%len(servers)]
+			next++
+			mu.Unlock()
+			return d.DialContext(ctx, "udp", srv)
+		},
+	}
+	fmt.Println("  DNS 解析走：" + strings.Join(servers, " "))
+}
+
 func main() {
 	if p := os.Getenv("PORT"); p != "" {
 		if n, err := strconv.Atoi(p); err == nil && n > 0 {
@@ -38,6 +79,7 @@ func main() {
 	lan = os.Getenv("LAN") == "1" || os.Getenv("HOST") == "0.0.0.0"
 
 	setUtf8Console()
+	installDNS()
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
