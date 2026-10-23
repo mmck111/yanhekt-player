@@ -978,8 +978,11 @@ public class MainActivity extends Activity {
             done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
             try { getContentResolver().update(t.target, done, null, null); } catch (Exception ignored) {}
         }
-        // 取消 / 失败：半截文件必须当场删干净，不能留在 Download 里越攒越多
-        if (!t.doneOk && (t.cancel || t.failed)) hardDelete(t);
+        // 取消 / 失败：半截文件必须当场删干净，不能留在 Download 里越攒越多；
+        // 系统偶尔不让删，返回值告诉调用方"可能还有残留"
+        boolean leftover = false;
+        if (!t.doneOk && (t.cancel || t.failed)) leftover = hardDelete(t);
+        final boolean fLeft = leftover;
         if (t.cancel) {
             // 列表里对应的那条也直接拿掉
             tasks.remove(t);
@@ -996,18 +999,36 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_LONG).show();
                 refreshOwnedCount();
             } else if (t.cancel) {
-                Toast.makeText(MainActivity.this, "已取消，没下完的文件已删除", Toast.LENGTH_SHORT).show();
+                if (fLeft) {
+                    Toast.makeText(MainActivity.this,
+                        "已取消。已下载的部分可能没删干净，请到「下载」目录看一下",
+                        Toast.LENGTH_LONG).show();
+                    showLeftoverHint();
+                }
             } else {
                 say("下载失败：" + t.error);
             }
         }});
     }
 
+    /** 取消后系统没让删干净：留一条能直接跳到下载目录的提示 */
+    private void showLeftoverHint() {
+        bar.setVisibility(TextView.VISIBLE);
+        bar.setText("取消后还留着半截文件 —— 点这里打开「下载」目录删掉");
+        bar.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) {
+                bar.setOnClickListener(null);
+                bar.setVisibility(TextView.GONE);
+                openDownloadFolder();
+            }
+        });
+    }
+
     /**
      * 把没下完的文件彻底删掉。MediaStore 的行删掉就等于删文件；
      * Android 9 及以下是自己 new File 写的，直接 delete。
      */
-    private void hardDelete(DlTask t) {
+    private boolean hardDelete(DlTask t) {
         Uri u = t.target;
         if (u != null) {
             int n = -1;
@@ -1028,6 +1049,18 @@ public class MainActivity extends Activity {
             boolean ok = f.delete();
             Log.i(TAG, "delete file " + f.getAbsolutePath() + " -> " + ok);
         }
+        // 回头验一遍：还在不在（有些 ROM 删了也留着影子，得靠这个判断告诉用户）
+        boolean left = false;
+        if (u != null) {
+            android.database.Cursor c = null;
+            try {
+                c = getContentResolver().query(u, new String[]{"_id"}, null, null, null);
+                if (c != null && c.getCount() > 0) left = true;
+            } catch (Exception ignored) {
+            } finally { if (c != null) try { c.close(); } catch (Exception ignored) {} }
+        }
+        if (f != null && f.exists()) left = true;
+        return left;
     }
 
     // ---- 下载面板 UI ----
@@ -1226,7 +1259,8 @@ public class MainActivity extends Activity {
         tasks.remove(t);
         rebuildDlRows();
         updateChip();
-        Toast.makeText(this, "已取消，没下完的文件正在删除", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "已取消下载。已下载的部分可能没删干净，可在「下载管理 → 打开目录」里看一眼",
+            Toast.LENGTH_LONG).show();
     }
 
     private void confirmDelete(final DlTask t) {
