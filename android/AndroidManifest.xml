@@ -6,6 +6,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 9 及以下写公共下载目录需要；10+ 走 MediaStore 不需要 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="34" />
 

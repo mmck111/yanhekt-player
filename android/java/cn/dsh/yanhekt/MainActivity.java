@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -49,6 +50,7 @@ public class MainActivity extends Activity {
     private Process proc;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private volatile boolean loggingIn = false;
+    private String pendingUrl = null;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -73,7 +75,12 @@ public class MainActivity extends Activity {
         s.setSupportMultipleWindows(false);
         cm.setAcceptThirdPartyCookies(web, true);
 
+        web.addJavascriptInterface(this, "yhktApp");
         web.setWebViewClient(new WebViewClient() {
+            @Override public void onPageFinished(WebView v, String url) {
+                v.evaluateJavascript(DL_HOOK, null);
+            }
+
             @Override public boolean shouldOverrideUrlLoading(WebView v, String url) {
                 if (url == null) return false;
                 boolean ours = url.startsWith(BASE) || url.contains("yanhekt.cn");
@@ -85,7 +92,7 @@ public class MainActivity extends Activity {
         web.setWebChromeClient(new WebChromeClient());
         web.setDownloadListener(new DownloadListener() {
             @Override public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long len) {
-                Toast.makeText(MainActivity.this, "手机版暂不支持下载，请在电脑上点「下载」", Toast.LENGTH_LONG).show();
+                download(url);
             }
         });
 
@@ -347,6 +354,101 @@ public class MainActivity extends Activity {
         r.close();
         return sb.toString();
     }
+
+    // ---------------------------------------------------------------- 下载
+
+    /**
+     * 页面里点「下载」会 window.open('/y2dl?...')；WebView 自己处理不了这种流，
+     * 这里把请求接过来：带上网关 cookie 直接拉，按响应里的文件名存进系统下载目录。
+     */
+    @JavascriptInterface
+    public void download(final String url) {
+        Log.i(TAG, "download " + url);
+        if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != 0) {
+            pendingUrl = url;
+            requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 41);
+            return;
+        }
+        startDownload(url);
+    }
+
+    @Override public void onRequestPermissionsResult(int req, String[] perms, int[] granted) {
+        super.onRequestPermissionsResult(req, perms, granted);
+        if (req == 41 && pendingUrl != null) {
+            String u = pendingUrl; pendingUrl = null;
+            if (granted.length > 0 && granted[0] == 0) startDownload(u);
+            else say("没有存储权限，下载不了");
+        }
+    }
+
+    private void startDownload(final String url) {
+        Toast.makeText(this, "开始下载，别关这个页面", Toast.LENGTH_LONG).show();
+        new Thread(new Runnable() { public void run() {
+            HttpURLConnection c = null;
+            Uri target = null;
+            try {
+                c = (HttpURLConnection) new URL(url).openConnection();
+                String cookie = CookieManager.getInstance().getCookie(BASE);
+                if (cookie != null) c.setRequestProperty("Cookie", cookie);
+                c.setConnectTimeout(6000);
+                c.setReadTimeout(60000);
+                int code = c.getResponseCode();
+                if (code >= 400) throw new java.io.IOException("HTTP " + code);
+                String name = fileName(c.getHeaderField("content-disposition"));
+                if (name == null) name = "lecture_" + System.currentTimeMillis() + ".mp4";
+                String mime = name.endsWith(".ts") ? "video/mp2t" : "video/mp4";
+                OutputStream os;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    android.content.ContentValues cv = new android.content.ContentValues();
+                    cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+                    cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+                    cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS);
+                    cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+                    target = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    if (target == null) throw new java.io.IOException("建不了下载文件");
+                    os = getContentResolver().openOutputStream(target);
+                } else {
+                    File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+                    if (!dir.exists()) dir.mkdirs();
+                    os = new java.io.FileOutputStream(new File(dir, name));
+                }
+                if (os == null) throw new java.io.IOException("写不了文件");
+                java.io.InputStream in = c.getInputStream();
+                byte[] buf = new byte[64 * 1024];
+                long total = 0;
+                int n;
+                while ((n = in.read(buf)) > 0) { os.write(buf, 0, n); total += n; }
+                os.flush(); os.close(); in.close();
+                if (Build.VERSION.SDK_INT >= 29 && target != null) {
+                    android.content.ContentValues done = new android.content.ContentValues();
+                    done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                    getContentResolver().update(target, done, null, null);
+                }
+                final String msg = "下载完成：" + name + "（" + (total / 1048576.0) + " MB，在系统「下载」里）";
+                Log.i(TAG, msg);
+                ui.post(new Runnable() { public void run() { Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show(); } });
+            } catch (Exception e) {
+                Log.e(TAG, "download failed", e);
+                say("下载失败：" + e.getMessage());
+            } finally { if (c != null) c.disconnect(); }
+        }}).start();
+    }
+
+    private static String fileName(String cd) {
+        if (cd == null) return null;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("filename\\*=UTF-8''([^;]+)").matcher(cd);
+        if (m.find()) { try { return java.net.URLDecoder.decode(m.group(1), "UTF-8"); } catch (Exception ignored) {} }
+        m = java.util.regex.Pattern.compile("filename=\"?([^\";]+)\"?").matcher(cd);
+        if (m.find()) return m.group(1);
+        return null;
+    }
+
+    // 页面里 window.open('/y2dl…') 劫持到原生下载；其它 window.open 原样放行
+    private static final String DL_HOOK =
+        "(function(){if(window.__yhktDlHook)return;window.__yhktDlHook=1;"
+        + "var o=window.open;window.open=function(u,n,f){"
+        + "try{if(u&&/^(\\/y2dl|\\/dl)/.test(u)){yhktApp.download(new URL(u,location.href).href);return null;}}catch(e){}"
+        + "try{return o.call(window,u,n,f);}catch(e){return null;}};})();";
 
     // ---------------------------------------------------------------- 生命周期
 

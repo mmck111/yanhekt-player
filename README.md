@@ -38,8 +38,12 @@ WebView 打开它。所以功能、界面、课程库、无权限课都和 exe �
 powershell -ExecutionPolicy Bypass -File android\build.ps1   # 产出 android\build\yanhekt.apk
 ```
 
-已知限制：只有 arm64（绝大多数手机）；下载（`/y2dl`）在手机版会提示"请在电脑上下载"；
-登录态约 24 小时，过期后底部会出现「点这里重新登录」。
+已知限制：只有 arm64（绝大多数手机）；登录态约 24 小时，过期后底部会出现「点这里重新登录」。
+
+下载：页面里的「下载」走原生通道 —— JS 桥接把 `/y2dl` `/dl` 的 `window.open` 拦下来，
+带上本地会话 cookie 直接拉流，按引擎给的 `Content-Disposition` 命名，存进系统「下载」目录
+（Android 10+ 走 MediaStore，无需权限；9 及以下会要一次存储权限）。下载在 App 进程里跑，
+期间最好别让系统回收 App；不支持断点续传。
 
 
 
