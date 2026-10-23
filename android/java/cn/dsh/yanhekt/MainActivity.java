@@ -831,7 +831,7 @@ public class MainActivity extends Activity {
         TextView line = null;
     }
 
-    private final java.util.List<DlTask> tasks = new java.util.ArrayList<DlTask>();
+    private final java.util.List<DlTask> tasks = new java.util.concurrent.CopyOnWriteArrayList<DlTask>();
     private volatile DlTask lastTask = null;
 
     /**
@@ -952,14 +952,24 @@ public class MainActivity extends Activity {
 
     // ---- 下载面板 UI ----
 
+    /** 页面汉堡栏里可以调这个打开下载面板 */
+    @JavascriptInterface
+    public void openDownloads() {
+        openDlPanel();
+    }
+
     private void openDlPanel() {
-        if (dlPanel == null) return;
-        rebuildDlRows();
-        dlPanel.setVisibility(android.view.View.VISIBLE);
+        ui.post(new Runnable() { public void run() {
+            if (dlPanel == null) return;
+            rebuildDlRows();
+            dlPanel.setVisibility(android.view.View.VISIBLE);
+        }});
     }
 
     private void closeDlPanel() {
-        if (dlPanel != null) dlPanel.setVisibility(android.view.View.GONE);
+        ui.post(new Runnable() { public void run() {
+            if (dlPanel != null) dlPanel.setVisibility(android.view.View.GONE);
+        }});
         updateChip();
     }
 
@@ -970,10 +980,12 @@ public class MainActivity extends Activity {
     }
 
     private void updateChip() {
-        if (dlChip == null) return;
-        int n = activeCount();
-        if (n > 0) { dlChip.setText("下载 " + n + " 个 · 查看"); dlChip.setVisibility(android.view.View.VISIBLE); }
-        else dlChip.setVisibility(android.view.View.GONE);
+        final int n = activeCount();
+        ui.post(new Runnable() { public void run() {
+            if (dlChip == null) return;
+            if (n > 0) { dlChip.setText("下载 " + n + " 个 · 查看"); dlChip.setVisibility(android.view.View.VISIBLE); }
+            else dlChip.setVisibility(android.view.View.GONE);
+        }});
     }
 
     private void rebuildDlRows() {

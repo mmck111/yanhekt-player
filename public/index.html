@@ -178,17 +178,27 @@
   /* 折叠式说明（不占地方） */
   details.help{margin:0 0 12px;font-size:12px;color:var(--dim)}
   details.help summary{cursor:pointer;color:var(--accent)}
+  .menu{display:none;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:8px;
+    font-size:16px;line-height:1;padding:6px 9px;margin-right:8px;cursor:pointer}
+  .backdrop{display:none}
   details.help .box{padding:8px 0 0;line-height:1.8}
 
   @media (max-width:900px){
-    .wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr;height:100dvh}
-    aside{max-height:40vh}
+    .wrap{grid-template-columns:1fr;grid-template-rows:1fr;height:100dvh}
+    .menu{display:inline-block}
+    /* 侧栏变抽屉 */
+    aside{position:fixed;left:0;top:0;bottom:0;width:88%;max-width:360px;height:100%;max-height:none;
+      z-index:8;transform:translateX(-103%);transition:transform .22s ease;
+      box-shadow:8px 0 26px rgba(0,0,0,.5)}
+    .wrap.drawer aside{transform:translateX(0)}
+    .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:7}
+    .wrap.drawer .backdrop{display:block}
     .stage.dual{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
-    .bar .who span{max-width:62vw}
+    .bar .who span{max-width:52vw}
     .finder input{font-size:16px}
     .ctrl{flex-wrap:wrap;gap:6px}
     .hint{display:none}
-    .stagewrap{min-height:40vh}
+    .stagewrap{min-height:60vh}
     .brand h1{font-size:14px}
     .listnote{font-size:11px}
   }
@@ -196,7 +206,8 @@
 </head>
 <body>
 <div class="toast" id="toast"></div>
-<div class="wrap">
+<div class="wrap" id="wrap">
+<div class="backdrop" id="backdrop"></div>
   <aside>
     <div class="brand">
       <h1><span class="dot" id="dot"></span><span id="stateTxt">延河课堂 · 在线播放</span></h1>
@@ -212,12 +223,13 @@
         <select id="dterm" title="按学期筛选"><option value="">全部学期</option></select>
       </div>
     </div>
-    <div class="userline"><span class="who" id="who">未登录</span><a id="btnSetup" title="重新打开登录引导">登录设置</a><a id="btnLogout" style="display:none">退出</a><a href="/y2" id="btnY2" title="新版平台：单独登录，覆盖最近几个学期，那边播放快 3~5 倍，也能下载">新版平台 →</a></div>
+    <div class="userline"><span class="who" id="who">未登录</span><a id="btnSetup" title="重新打开登录引导">登录设置</a><a id="btnLogout" style="display:none">退出</a><a href="#" id="btnDl2" title="查看下载任务">下载管理</a><a href="/y2" id="btnY2" title="新版平台：单独登录，覆盖最近几个学期，那边播放快 3~5 倍，也能下载">新版平台 →</a></div>
     <div class="list" id="list"></div>
   </aside>
 
   <main>
     <div class="bar">
+      <button class="menu" id="menu" type="button" title="课程列表">☰</button>
       <div class="who"><b id="cname">延河课堂在线播放器</b><span id="cmeta">搜课程名开始，可按学期筛</span></div>
       <button class="tab on" data-mode="main">全景</button>
       <button class="tab" data-mode="vga">课件</button>
@@ -598,7 +610,7 @@ async function openCourse(input, { force = false } = {}){
     el.dataset.id = s.id;
     el.innerHTML = `<div class="d">${s.date || '—'}${s.week ? `<span class="w">第${s.week}周</span>` : ''}<span class="t">${s.title}</span></div>
       <div class="m"><span>${playable ? mins(s.duration) : '无录像'}</span>${s.vga ? '<span>全景+课件</span>' : (playable ? '<span>仅全景</span>' : '')}${s.location ? '<span>' + s.location + '</span>' : ''}</div>`;
-    if (playable) el.onclick = () => loadSession(s);
+    if (playable) el.onclick = () => { closeDrawer(); loadSession(s); };
     list.appendChild(el);
   });
   const first = data.sessions.find(s => s.main || s.vga);
@@ -767,7 +779,7 @@ function dbRow(c){
   else if (c.verified === false) meta.push(`<span title="${(c.note || '').replace(/"/g, '')}">未确认</span>`);
   el.innerHTML = `<div class="d">${esc(c.name)}${c.code ? `<span class="t">${esc(c.code)}</span>` : ''}</div>`
     + `<div class="m">${meta.join('') || '<span>' + esc(c.id) + '</span>'}</div>`;
-  el.onclick = () => { openCourse(c.id); };
+  el.onclick = () => { closeDrawer(); openCourse(c.id); };
   return el;
 }
 
@@ -861,6 +873,17 @@ $('#btnLogout').onclick = async () => {
   showLogin('已退出登录');
 };
 $('#btnPlay').onclick = () => vids.main.paused ? vids.main.play() : vids.main.pause();
+// 手机版：课程列表收进抽屉
+const wrapEl = $('#wrap');
+const closeDrawer = () => { if (wrapEl) wrapEl.classList.remove('drawer'); };
+if ($('#menu')) $('#menu').onclick = () => { if (wrapEl) wrapEl.classList.toggle('drawer'); };
+if ($('#backdrop')) $('#backdrop').onclick = closeDrawer;
+if ($('#btnDl2')) $('#btnDl2').onclick = (e) => {
+  e.preventDefault();
+  if (window.yhktApp && window.yhktApp.openDownloads) window.yhktApp.openDownloads();
+  else alert('下载管理在 App 里可用；电脑版请直接看文件。');
+};
+
 document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
   vids.main.currentTime = Math.max(0, vids.main.currentTime + Number(b.dataset.jump));
   if (mode === 'dual') { try { vids.vga.currentTime = vids.main.currentTime; } catch(e){} }
