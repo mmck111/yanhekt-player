@@ -56,6 +56,8 @@ public class MainActivity extends Activity {
     private android.widget.LinearLayout dlPanel;
     private android.widget.LinearLayout dlList;
     private android.widget.ScrollView dlScroll;
+    private android.widget.Button cleanBtn;
+    private volatile int ownedCount = -1;
 
 
     private volatile String lastReqDump = "";
@@ -187,6 +189,13 @@ public class MainActivity extends Activity {
         title.setTextColor(Color.parseColor("#e8eaed"));
         title.setTextSize(16f);
         head.addView(title, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        android.widget.Button openBtn = new android.widget.Button(this);
+        openBtn.setText("打开目录");
+        openBtn.setTextSize(12f);
+        openBtn.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { openDownloadFolder(); }
+        });
+        head.addView(openBtn);
         android.widget.Button closeBtn = new android.widget.Button(this);
         closeBtn.setText("关闭");
         closeBtn.setTextSize(12f);
@@ -198,11 +207,23 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView tip = new TextView(this);
-        tip.setText("下载完成后文件在 内部存储/Download（系统「下载」目录）");
+        tip.setText("文件存到 内部存储/Download。取消下载会当场删掉没下完的文件；"
+            + "下完的在这里点「删除」也能删干净，不用去文件管理器翻。");
         tip.setTextColor(Color.parseColor("#6f7889"));
         tip.setTextSize(11f);
         tip.setPadding(0, dp(4), 0, dp(8));
         dlPanel.addView(tip);
+
+        // 一键清理：把这台手机里本 App 下载过的文件全删掉（老版本留下的也在内）
+        cleanBtn = new android.widget.Button(this);
+        cleanBtn.setText("清理本 App 下载的文件");
+        cleanBtn.setTextSize(12f);
+        cleanBtn.setAllCaps(false);
+        cleanBtn.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { confirmCleanAll(); }
+        });
+        dlPanel.addView(cleanBtn, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         dlScroll = new android.widget.ScrollView(this);
         dlList = new android.widget.LinearLayout(this);
@@ -973,6 +994,7 @@ public class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this,
                     "下载完成：" + fName + "\n" + (total / 1048576.0) + " MB → 内部存储/Download",
                     Toast.LENGTH_LONG).show();
+                refreshOwnedCount();
             } else if (t.cancel) {
                 Toast.makeText(MainActivity.this, "已取消，没下完的文件已删除", Toast.LENGTH_SHORT).show();
             } else {
@@ -1022,6 +1044,77 @@ public class MainActivity extends Activity {
             rebuildDlRows();
             dlPanel.setVisibility(android.view.View.VISIBLE);
         }});
+        refreshOwnedCount();
+    }
+
+    /** 数一下本 App 在 Downloads 里还留着多少个文件（老版本留下的也算） */
+    private void refreshOwnedCount() {
+        new Thread(new Runnable() { public void run() {
+            final int n = ownedRows().size();
+            ownedCount = n;
+            ui.post(new Runnable() { public void run() {
+                if (cleanBtn == null) return;
+                cleanBtn.setText(n > 0 ? "清理本 App 下载的文件（" + n + " 个）" : "清理本 App 下载的文件");
+                cleanBtn.setEnabled(n > 0);
+            }});
+        }}).start();
+    }
+
+    /** 本 App 创建、还留在 Downloads 里的那些行（Android 10+ 才有 owner 信息） */
+    private java.util.List<Uri> ownedRows() {
+        java.util.List<Uri> out = new java.util.ArrayList<Uri>();
+        if (Build.VERSION.SDK_INT < 29) return out;
+        android.database.Cursor c = null;
+        try {
+            c = getContentResolver().query(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                new String[]{ android.provider.MediaStore.MediaColumns._ID },
+                android.provider.MediaStore.MediaColumns.OWNER_PACKAGE_NAME + "=?",
+                new String[]{ getPackageName() }, null);
+            if (c != null) {
+                while (c.moveToNext()) {
+                    out.add(android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)));
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "query owned rows failed", e);
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignored) {}
+        }
+        return out;
+    }
+
+    private void confirmCleanAll() {
+        if (ownedCount <= 0) { refreshOwnedCount(); return; }
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("清理下载文件")
+            .setMessage("把这个 App 在「下载」里留下的 " + ownedCount + " 个文件全部删掉？\n\n"
+                + "包括以前版本没下完的残片。删了要重新下。")
+            .setNegativeButton("算了", null)
+            .setPositiveButton("全删掉", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface d, int which) { cleanAllOwned(); }
+            })
+            .show();
+    }
+
+    private void cleanAllOwned() {
+        new Thread(new Runnable() { public void run() {
+            int n = 0;
+            for (Uri u : ownedRows()) {
+                try { if (getContentResolver().delete(u, null, null) > 0) n++; } catch (Exception ignored) {}
+            }
+            // 列表清空（文件都没了，行也没意义）
+            tasks.clear();
+            final int fn = n;
+            ownedCount = 0;
+            ui.post(new Runnable() { public void run() {
+                rebuildDlRows();
+                updateChip();
+                if (cleanBtn != null) { cleanBtn.setText("清理本 App 下载的文件"); cleanBtn.setEnabled(false); }
+                Toast.makeText(MainActivity.this, "已清理 " + fn + " 个文件", Toast.LENGTH_SHORT).show();
+            }});
+        }}).start();
     }
 
     private void closeDlPanel() {
@@ -1072,6 +1165,15 @@ public class MainActivity extends Activity {
         for (DlTask t : tasks) dlList.addView(rowOf(t));
     }
 
+    private android.widget.Button mkBtn(String text, android.view.View.OnClickListener l) {
+        android.widget.Button b = new android.widget.Button(this);
+        b.setText(text);
+        b.setTextSize(12f);
+        b.setAllCaps(false);
+        b.setOnClickListener(l);
+        return b;
+    }
+
     private android.view.View rowOf(final DlTask t) {
         android.widget.LinearLayout box = new android.widget.LinearLayout(this);
         box.setOrientation(android.widget.LinearLayout.VERTICAL);
@@ -1084,36 +1186,99 @@ public class MainActivity extends Activity {
         box.addView(line, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        android.widget.Button btn = new android.widget.Button(this);
+        android.widget.LinearLayout row = new android.widget.LinearLayout(this);
+        row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         final boolean active = !t.doneOk && !t.failed && !t.cancel;
-        btn.setText(active ? "取消" : (t.doneOk ? "打开" : "移除"));
-        btn.setTextSize(12f);
-        btn.setOnClickListener(new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) {
-                // 点下去的这一刻重新判断：别把刚下完的文件当"取消"删了
-                if (!t.doneOk && !t.failed && !t.cancel) {
-                    // 取消：先从列表里拿掉，再让下载线程收尾；文件一律删掉不留残渣
-                    t.cancel = true;
-                    try { if (t.file != null && t.file.exists()) t.file.delete(); } catch (Exception ignored) {}
-                    HttpURLConnection c = t.conn;
-                    if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
-                    tasks.remove(t);
-                    rebuildDlRows();
-                    updateChip();
-                    Toast.makeText(MainActivity.this, "已取消，没下完的文件正在删除", Toast.LENGTH_SHORT).show();
-                } else if (t.doneOk) {
-                    openDownloadFolder();
-                } else {
+        if (active) {
+            row.addView(mkBtn("取消", new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { cancelTask(t); }
+            }));
+        } else if (t.doneOk) {
+            row.addView(mkBtn("打开", new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { openDownloadFolder(); }
+            }));
+            row.addView(mkBtn("删除", new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { confirmDelete(t); }
+            }));
+        } else {
+            row.addView(mkBtn("删除", new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
                     tasks.remove(t);
                     rebuildDlRows();
                     updateChip();
                 }
-            }
-        });
-        box.addView(btn, new android.widget.LinearLayout.LayoutParams(
+            }));
+        }
+        box.addView(row, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         fillRowText(t);
         return box;
+    }
+
+    /** 取消：立刻从列表里拿掉，文件中途删 + 线程收尾时再删一次 */
+    private void cancelTask(final DlTask t) {
+        if (t.doneOk || t.failed || t.cancel) return;      // 点下去这一刻再判断，别误删刚下完的
+        t.cancel = true;
+        HttpURLConnection c = t.conn;
+        if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
+        tasks.remove(t);
+        rebuildDlRows();
+        updateChip();
+        Toast.makeText(this, "已取消，没下完的文件正在删除", Toast.LENGTH_SHORT).show();
+    }
+
+    private void confirmDelete(final DlTask t) {
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("删除文件？")
+            .setMessage(t.name + "\n\n文件会从「下载」里一起删掉，想看要重新下载。")
+            .setNegativeButton("留着", null)
+            .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface d, int which) { deleteTask(t); }
+            })
+            .show();
+    }
+
+    /** 已完成的下载：把文件从 Downloads 里删干净，列表里那条也去掉 */
+    private void deleteTask(final DlTask t) {
+        new Thread(new Runnable() { public void run() {
+            final Uri u = t.target;
+            File f = t.file;
+            int n = -1;
+            if (u != null) {
+                try { n = getContentResolver().delete(u, null, null); } catch (Exception e) { Log.w(TAG, "delete row failed", e); }
+            }
+            boolean fd = false;
+            if (f != null && f.exists()) fd = f.delete();
+            Log.i(TAG, "delete task row=" + n + " file=" + fd);
+            final boolean askSystem = (u != null && n <= 0 && !fd && Build.VERSION.SDK_INT >= 30);
+            tasks.remove(t);
+            ui.post(new Runnable() { public void run() {
+                rebuildDlRows();
+                updateChip();
+                if (askSystem) { askSystemDelete(u); return; }
+                Toast.makeText(MainActivity.this, "已删除", Toast.LENGTH_SHORT).show();
+                refreshOwnedCount();
+            }});
+        }}).start();
+    }
+
+    /** 系统不让删（部分 ROM）：请求系统弹一次删除确认 */
+    private void askSystemDelete(Uri u) {
+        try {
+            android.app.PendingIntent pi = android.provider.MediaStore.createDeleteRequest(
+                getContentResolver(), java.util.Collections.singletonList(u));
+            startIntentSenderForResult(pi.getIntentSender(), 42, null, 0, 0, 0);
+        } catch (Exception e) {
+            say("系统不让脚本删这个文件，请去「下载」目录删");
+            openDownloadFolder();
+        }
+    }
+
+    @Override protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == 42 && res == RESULT_OK) {
+            Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void fillRowText(final DlTask t) {
