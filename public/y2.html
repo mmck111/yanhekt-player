@@ -276,7 +276,7 @@ function loginScript(){
 }
 const bookmarkletUrl = () => 'javascript:' + loginScript();
 
-// App（手机版）里不用书签：点一下按钮跳去官网登录，登好自动回到这里
+// App（手机版）里不用书签：点一下跳去官网登录，登录好后按返回键回播放器
 const APP = !!(window.yhktApp && window.yhktApp.login);
 let y2ok = false, oldok = false;
 

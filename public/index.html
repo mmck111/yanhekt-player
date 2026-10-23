@@ -466,7 +466,7 @@ function bookmarklet() {
   return "javascript:(()=>{const a=JSON.parse(localStorage.getItem('auth')||'{}');if(!a.token){alert('请先登录延河课堂再点这个书签');return}location.href='" + origin + "/#t='+encodeURIComponent(a.token)})()";
 }
 
-// App（手机版）里不用书签：点一下按钮跳去官网登录，登好自动回到这里
+// App（手机版）里不用书签：点一下跳去官网登录，登录好后按返回键回播放器
 const APP = !!(window.yhktApp && window.yhktApp.login);
 let oldok = false, y2ok = false;
 
@@ -506,7 +506,7 @@ function showAppLogin(msg, keep){
     $('#who').textContent = '未登录';
     $('#btnLogout').style.display = 'none';
     $('#cname').textContent = '延河课堂在线播放器';
-    $('#cmeta').textContent = '点顶栏「登录」按钮登录，登录完自动回来';
+    $('#cmeta').textContent = '点顶栏「登录」，登录好后按返回键回到这里';
     $('#list').innerHTML = '';
     const sp = $('#splash');
     if (!cur) {

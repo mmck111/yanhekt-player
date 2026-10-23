@@ -180,6 +180,13 @@ public class MainActivity extends Activity {
         bar.setPadding(dp(14), dp(10), dp(14), dp(10));
         bar.setBackgroundColor(Color.parseColor("#2a1f1f"));
         bar.setText("正在启动本地引擎…");
+        // 长按底栏看诊断（接口原文 / 拦截到的 token / cookie / 引擎 status），平时不占地方
+        bar.setOnLongClickListener(new android.view.View.OnLongClickListener() {
+            @Override public boolean onLongClick(android.view.View v) {
+                showDiag("手动触发");
+                return true;
+            }
+        });
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.BOTTOM;
         root.addView(bar, lp);
