@@ -784,7 +784,7 @@ public class MainActivity extends Activity {
                 name = fileName(c.getHeaderField("content-disposition"));
                 if (name == null) name = "lecture_" + System.currentTimeMillis() + ".mp4";
                 final String fName = name;
-                ui.post(new Runnable() { public void run() { dlText("正在下载：" + fName + "…"); } });
+                ui.post(new Runnable() { public void run() { dlText("正在下载：" + fName + " → 内部存储/Download"); } });
                 String mime = name.endsWith(".ts") ? "video/mp2t" : "video/mp4";
                 if (Build.VERSION.SDK_INT >= 29) {
                     android.content.ContentValues cv = new android.content.ContentValues();
@@ -837,7 +837,7 @@ public class MainActivity extends Activity {
                         getContentResolver().update(fTarget, done, null, null);
                     }
                     Toast.makeText(MainActivity.this,
-                        "下载完成：" + fName + "（" + (total / 1048576.0) + " MB，在系统「下载」里）",
+                        "下载完成：" + fName + "\n" + (total / 1048576.0) + " MB → 内部存储/Download",
                         Toast.LENGTH_LONG).show();
                 } else if (fMsg != null && fMsg.indexOf("已取消") >= 0) {
                     if (Build.VERSION.SDK_INT >= 29 && fTarget != null) {
@@ -855,8 +855,8 @@ public class MainActivity extends Activity {
     private void pushProgress() {
         final long done = dlDone, total = dlTotal;
         ui.post(new Runnable() { public void run() {
-            if (total > 0) dlText("正在下载 " + (done * 100 / total) + "%（" + (done / 1048576.0) + " / " + (total / 1048576.0) + " MB）· 点「取消」可中断");
-            else dlText("正在下载 " + (done / 1048576.0) + " MB · 点「取消」可中断");
+            if (total > 0) dlText("正在下载 " + (done * 100 / total) + "%（" + (done / 1048576.0) + " / " + (total / 1048576.0) + " MB）→ 内部存储/Download");
+            else dlText("正在下载 " + (done / 1048576.0) + " MB → 内部存储/Download");
         }});
     }
 
