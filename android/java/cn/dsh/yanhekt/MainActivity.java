@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     private android.view.View customView;
     private WebChromeClient.CustomViewCallback customCb;
     private volatile boolean forceNext = false;
+    private volatile boolean loginCancelled = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -93,6 +94,8 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView v, String url) {
                 v.evaluateJavascript(DL_HOOK, null);
+                // 登录状态推给页面（汉堡栏里的登录按钮显示「已登录 · 切换账号」）
+                if (url != null && url.startsWith(BASE)) pushStatus();
             }
 
             // 从页面自己发出的 API 请求里截 Authorization —— 比在 localStorage 里猜可靠得多
@@ -300,9 +303,11 @@ public class MainActivity extends Activity {
         boolean oldOk = oldSt != null && oldSt.indexOf("\"loggedIn\":true") >= 0;
         boolean newOk = newSt != null && newSt.indexOf("\"loggedIn\":true") >= 0;
         Log.i(TAG, "loggedIn old=" + oldOk + " y2=" + newOk);
-        if (newOk) { openPlayer("/y2"); return; }
-        if (oldOk) { openPlayer("/"); return; }
-        startLogin();
+        // 不再先跑登录页：直接进播放器。要登录就点页面里的按钮，登录完自动回来
+        if (newOk) { openPlayer("/y2"); watchExpiry(); }
+        else if (oldOk) { openPlayer("/"); watchExpiry(); }
+        else openPlayer("/y2");
+        pushStatus();
     }
 
     /** 把 WebView 里现存的会话 cookie 交回引擎（App 重启后免登录） */
@@ -323,59 +328,81 @@ public class MainActivity extends Activity {
         } catch (Exception e) { Log.w(TAG, "restore failed", e); }
     }
 
-    // ---------------------------------------------------------------- 登录（两步：老平台 → 新版平台）
+    // ---------------------------------------------------------------- 登录（单平台，按需跳转）
 
-    private void startLogin() {
-        if (loggingIn) return;
+    /**
+     * 页面里的「登录」按钮都走这里：which = "y2"（新版）或 "old"（老平台）。
+     * 会先跳到官网登录页，截到 token 后写进本地引擎，再自动回到播放器。
+     */
+    @JavascriptInterface
+    public void login(final String which) {
+        final String w = "old".equals(which) ? "old" : "y2";
+        ui.post(new Runnable() { public void run() { startLoginOne(w); } });
+    }
+
+    private void startLoginOne(final String which) {
+        if (loggingIn) { say("正在登录中，先把当前这个登完"); return; }
         loggingIn = true;
+        loginCancelled = false;
+        forceNext = false;
+        final boolean y2 = "y2".equals(which);
+        final String tag = y2 ? "新版平台" : "老平台";
+        if (y2) capturedY2 = null; else capturedOld = null;
+        // 一次登录重新开始：旧的截获 token 全部作废，避免用上次的过期串
+        capturedOld = null; capturedY2 = null;
         bar.setVisibility(TextView.VISIBLE);
-        bar.setText("请在下方登录延河课堂；老平台、新版平台各登录一次。检测不到就点这条跳过");
+        bar.setText(tag + "：在下面的页面登录，登好自动返回（不想登就点这条）");
         bar.setOnClickListener(new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) {
+                loginCancelled = true;
                 forceNext = true;
-                bar.setText("跳过这一步…");
+                bar.setOnClickListener(null);
+                bar.setText("已取消登录");
             }
         });
-        web.loadUrl(OLD_SITE);
+        web.loadUrl(y2 ? Y2_SITE + "/portal/" : OLD_SITE);
         new Thread(new Runnable() { public void run() {
-            // 1) 老平台：cookie yht（或 localStorage.auth.token）
-            String tok = waitOldToken(120000);
-            boolean oldOk = false;
-            String oldMsg = "";
+            String tok = y2 ? waitY2Token(180000) : waitOldToken(180000);
+            boolean ok = false;
+            String msg = "没在页面里找到登录态（登到能看见课程列表才算成功）";
             if (tok != null) {
-                String res = postLoginCandidates("/api/login", "token", tok);
-                oldOk = "OK".equals(res);
-                oldMsg = oldOk ? "" : res;
-                Log.i(TAG, "old login -> " + res);
-                final String t1 = oldOk ? "老平台已登录。接下来登录新版平台（同一个账号再登一次）"
-                                        : "老平台登录被引擎拒绝：" + brief(oldMsg) + "。继续试新版平台…";
-                ui.post(new Runnable() { public void run() {
-                    bar.setText(t1);
-                    web.loadUrl(Y2_SITE + "/portal/");
-                }});
+                String res = postLoginCandidates(y2 ? "/api/y2/login" : "/api/login", y2 ? "jwt" : "token", tok);
+                ok = "OK".equals(res);
+                if (!ok) msg = res;
+                Log.i(TAG, which + " login -> " + res);
             }
-            // 2) 新版平台：cookie _token / document.cookie
-            String ck = waitY2Token(150000);
-            boolean newOk = false;
-            String newMsg = "";
-            if (ck != null) {
-                String res2 = postLoginCandidates("/api/y2/login", "jwt", ck);
-                newOk = "OK".equals(res2);
-                newMsg = newOk ? "" : res2;
-                Log.i(TAG, "y2 login -> " + res2);
+            // 老平台的登录页现在多半会被重定向到新版的统一登录（aita）：那边登进去了也算数
+            boolean viaY2 = false;
+            if (!ok && !y2 && capturedY2 != null) {
+                String r2 = postLoginCandidates("/api/y2/login", "jwt", capturedY2);
+                Log.i(TAG, "old->y2 fallback -> " + r2);
+                if ("OK".equals(r2)) { ok = true; viaY2 = true; }
             }
-            final boolean fOld = oldOk, fNew = newOk;
-            final String fMsg = (oldMsg + " / " + newMsg).trim();
+            final boolean cancelled = loginCancelled;
+            loginCancelled = false;
             loggingIn = false;
+            final boolean fOk = ok;
+            final boolean fViaY2 = viaY2;
+            final String fMsg = msg;
             ui.post(new Runnable() { public void run() {
-                if (fNew) { openPlayer("/y2"); if (!fOld) ui.postDelayed(offerOldLogin, 4000); return; }
-                if (fOld) { openPlayer("/"); return; }
+                bar.setOnClickListener(null);
+                if (cancelled) { openPlayer(y2 ? "/y2" : "/"); return; }
+                if (fOk) {
+                    bar.setText(fViaY2 ? "新版已登录（老平台现在走统一登录）" : tag + "已登录");
+                    ensureSessionCookies();
+                    openPlayer((y2 || fViaY2) ? "/y2" : "/");
+                    watchExpiry();
+                    pushStatus();
+                    return;
+                }
                 bar.setVisibility(TextView.VISIBLE);
-                bar.setText("两个平台都没登录成功：" + brief(fMsg) + "（点这里重试，屏幕上是诊断信息）");
+                bar.setText(tag + "没登录成功：" + brief(fMsg) + "（点这里重试）");
                 bar.setOnClickListener(new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View v) { startLogin(); }
+                    @Override public void onClick(android.view.View v) {
+                        bar.setOnClickListener(null);
+                        startLoginOne(which);
+                    }
                 });
-                showDiag(fMsg);
             }});
         }}).start();
     }
@@ -449,6 +476,8 @@ public class MainActivity extends Activity {
         int tick = 0;
         while (System.currentTimeMillis() - t0 < ms) {
             if (forceNext) { forceNext = false; return null; }
+            // 被重定向到新版的统一登录（aita）了：老平台这条路走不通，交给调用方回退
+            if (capturedY2 != null) return null;
             // 0) 优先用从网络请求里截下来的 Authorization（最可信）
             if (capturedOld != null) return capturedOld + "\n" + (jsEval(TOKEN_JS) == null ? "" : jsEval(TOKEN_JS));
             // 1) 某些环境下老平台确实会种 yht cookie
@@ -526,10 +555,15 @@ public class MainActivity extends Activity {
             // 否则页面可能在 cookie 到位之前就请求 /api/status，显示"未登录"
             ensureSessionCookies();
             web.loadUrl(BASE + path);
+            ui.postDelayed(probe, 2500);
+        }});
+    }
+
+    /** 24 小时登录态：登录成功之后才盯着它过期，没登录过就别弹"过期" */
+    private void watchExpiry() {
+        ui.post(new Runnable() { public void run() {
             ui.removeCallbacks(watch);
             ui.postDelayed(watch, 60000);
-            ui.postDelayed(probe, 2500);
-            ui.postDelayed(probe, 8000);
         }});
     }
 
@@ -551,7 +585,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 显示本地引擎认为的登录状态，出问题时一眼能看出卡在哪一边 */
+    /** 登录状态交给页面显示（汉堡栏里的登录按钮），不在底栏弹字打扰 */
     private final Runnable probe = new Runnable() { public void run() {
         new Thread(new Runnable() { public void run() {
             String a = tryHttp(BASE + "/api/status", null);
@@ -559,22 +593,15 @@ public class MainActivity extends Activity {
             final boolean ao = a != null && a.indexOf("\"loggedIn\":true") >= 0;
             final boolean bo = b != null && b.indexOf("\"loggedIn\":true") >= 0;
             Log.i(TAG, "probe old=" + ao + " y2=" + bo + " cookies=" + CookieManager.getInstance().getCookie(BASE));
+            pushStatus();
             ui.post(new Runnable() { public void run() {
-                if (ao && bo) {
-                    // 两边都通了：别留下任何"未登录"的提示
-                    ui.removeCallbacks(offerOldLogin);
-                    bar.setOnClickListener(null);
-                    bar.setVisibility(TextView.GONE);
-                    return;
-                }
-                bar.setVisibility(TextView.VISIBLE);
-                bar.setText("本地状态：老平台" + (ao ? "已登录" : "未登录") + " · 新版" + (bo ? "已登录" : "未登录"));
-                ui.postDelayed(new Runnable() { public void run() { bar.setVisibility(TextView.GONE); } }, 7000);
+                if (loggingIn) return;
+                if (ao || bo) bar.setVisibility(TextView.GONE);
             }});
         }}).start();
     }};
 
-    /** 登录态约 24 小时；过期后页面上的书签登录在手机上没用，这里给一个"点一下重登"的入口 */
+    /** 登录态约 24 小时；过期后给一个"点一下重登"的入口 */
     private final Runnable watch = new Runnable() { public void run() {
         if (loggingIn) return;
         new Thread(new Runnable() { public void run() {
@@ -584,11 +611,11 @@ public class MainActivity extends Activity {
                 if (loggingIn) return;
                 if (ok) { ui.postDelayed(watch, 60000); return; }
                 bar.setVisibility(TextView.VISIBLE);
-                bar.setText("登录已过期 —— 点这里重新登录");
+                bar.setText("新版登录已过期 —— 点这里重新登录");
                 bar.setOnClickListener(new android.view.View.OnClickListener() {
                     @Override public void onClick(android.view.View v) {
                         bar.setOnClickListener(null);
-                        startLogin();
+                        startLoginOne("y2");
                     }
                 });
             }});
@@ -616,57 +643,17 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    /** 新版成功了但老平台没成功时，给一个补登录入口（往年课要走老平台） */
-    private final Runnable offerOldLogin = new Runnable() { public void run() {
-        if (loggingIn) return;
+    /** 把两个平台的登录状态推给页面，汉堡栏里的登录按钮据此显示「已登录 · 切换账号」 */
+    private void pushStatus() {
         new Thread(new Runnable() { public void run() {
-            String st = tryHttp(BASE + "/api/status", null);
-            final boolean ok = st != null && st.indexOf("\"loggedIn\":true") >= 0;
+            String a = tryHttp(BASE + "/api/status", null);
+            String b = tryHttp(BASE + "/api/y2/status", null);
+            final int ao = a != null && a.indexOf("\"loggedIn\":true") >= 0 ? 1 : 0;
+            final int bo = b != null && b.indexOf("\"loggedIn\":true") >= 0 ? 1 : 0;
+            Log.i(TAG, "status push old=" + ao + " y2=" + bo);
             ui.post(new Runnable() { public void run() {
-                if (ok || loggingIn) return;                 // 已经登录了就别再提示
-                bar.setVisibility(TextView.VISIBLE);
-                bar.setText("老平台未登录（往年课要用）—— 点这里登录");
-                bar.setOnClickListener(new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View v) {
-                        bar.setOnClickListener(null);
-                        oldLoginFlow();
-                    }
-                });
-            }});
-        }}).start();
-    }};
-
-    private void oldLoginFlow() {
-        loggingIn = true;
-        bar.setVisibility(TextView.VISIBLE);
-        bar.setText("正在打开老平台，登录后会自动继续…");
-        web.loadUrl(OLD_SITE);
-        new Thread(new Runnable() { public void run() {
-            String tok = waitOldToken(180000);
-            boolean ok = false;
-            String msg = "没在页面里找到 token";
-            if (tok != null) {
-                String res = postLoginCandidates("/api/login", "token", tok);
-                ok = "OK".equals(res);
-                msg = ok ? "" : res;
-                Log.i(TAG, "old login only -> " + res);
-            }
-            final boolean fOk = ok;
-            final String fMsg = msg;
-            loggingIn = false;
-            ui.post(new Runnable() { public void run() {
-                if (fOk) {
-                    bar.setText("老平台已登录");
-                    ensureSessionCookies();
-                    openPlayer("/");
-                    ui.postDelayed(new Runnable() { public void run() { bar.setVisibility(TextView.GONE); } }, 2500);
-                } else {
-                    bar.setText("老平台还是不行：" + brief(fMsg) + "（点这里重试）");
-                    bar.setOnClickListener(new android.view.View.OnClickListener() {
-                        @Override public void onClick(android.view.View v) { bar.setOnClickListener(null); oldLoginFlow(); }
-                    });
-                    showDiag(fMsg);
-                }
+                if (web == null) return;
+                try { web.evaluateJavascript("window.__yhktStat&&window.__yhktStat(" + ao + "," + bo + ")", null); } catch (Exception ignored) {}
             }});
         }}).start();
     }
@@ -809,6 +796,8 @@ public class MainActivity extends Activity {
         volatile String error = null;
         volatile HttpURLConnection conn = null;
         volatile Thread th = null;
+        volatile Uri target = null;     // Android 10+：MediaStore 里的那一行
+        volatile File file = null;      // Android 9 及以下：直接写出去的文件
         TextView line = null;
     }
 
@@ -851,7 +840,6 @@ public class MainActivity extends Activity {
 
     private void runDownload(final String url, final DlTask t) {
         HttpURLConnection c = null;
-        Uri target = null;
         OutputStream os = null;
         String name = null;
         try {
@@ -875,13 +863,14 @@ public class MainActivity extends Activity {
                 cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
                 cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS);
                 cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
-                target = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-                if (target == null) throw new java.io.IOException("建不了下载文件");
-                os = getContentResolver().openOutputStream(target);
+                t.target = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (t.target == null) throw new java.io.IOException("建不了下载文件");
+                os = getContentResolver().openOutputStream(t.target);
             } else {
                 File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
                 if (!dir.exists()) dir.mkdirs();
-                os = new java.io.FileOutputStream(new File(dir, name));
+                t.file = new File(dir, name);
+                os = new java.io.FileOutputStream(t.file);
             }
             if (os == null) throw new java.io.IOException("写不了文件");
             java.io.InputStream in = c.getInputStream();
@@ -908,27 +897,60 @@ public class MainActivity extends Activity {
         }
         final String fName = t.name;
         final long total = t.done;
-        if (t.doneOk && Build.VERSION.SDK_INT >= 29 && target != null) {
+        if (t.doneOk && Build.VERSION.SDK_INT >= 29 && t.target != null) {
             android.content.ContentValues done = new android.content.ContentValues();
             done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
-            getContentResolver().update(target, done, null, null);
+            try { getContentResolver().update(t.target, done, null, null); } catch (Exception ignored) {}
         }
-        if ((t.failed || t.cancel) && Build.VERSION.SDK_INT >= 29 && target != null) {
-            try { getContentResolver().delete(target, null, null); } catch (Exception ignored) {}
+        // 取消 / 失败：半截文件必须当场删干净，不能留在 Download 里越攒越多
+        if (!t.doneOk && (t.cancel || t.failed)) hardDelete(t);
+        if (t.cancel) {
+            // 列表里对应的那条也直接拿掉
+            tasks.remove(t);
+            ui.post(new Runnable() { public void run() { rebuildDlRows(); } });
+            updateChip();
+        } else {
+            refreshTaskRow(t);
+            updateChip();
         }
-        refreshTaskRow(t);
-        updateChip();
         ui.post(new Runnable() { public void run() {
             if (t.doneOk) {
                 Toast.makeText(MainActivity.this,
                     "下载完成：" + fName + "\n" + (total / 1048576.0) + " MB → 内部存储/Download",
                     Toast.LENGTH_LONG).show();
             } else if (t.cancel) {
-                Toast.makeText(MainActivity.this, "已取消下载", Toast.LENGTH_SHORT).show();
+                Toast.makeText(MainActivity.this, "已取消，没下完的文件已删除", Toast.LENGTH_SHORT).show();
             } else {
                 say("下载失败：" + t.error);
             }
         }});
+    }
+
+    /**
+     * 把没下完的文件彻底删掉。MediaStore 的行删掉就等于删文件；
+     * Android 9 及以下是自己 new File 写的，直接 delete。
+     */
+    private void hardDelete(DlTask t) {
+        Uri u = t.target;
+        if (u != null) {
+            int n = -1;
+            try { n = getContentResolver().delete(u, null, null); } catch (Exception e) { Log.w(TAG, "delete row failed", e); }
+            if (n <= 0 && Build.VERSION.SDK_INT >= 29) {
+                // 极端情况：行被系统锁住，先把 pending 清掉再删一次
+                try {
+                    android.content.ContentValues cv = new android.content.ContentValues();
+                    cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                    getContentResolver().update(u, cv, null, null);
+                    n = getContentResolver().delete(u, null, null);
+                } catch (Exception ignored) {}
+            }
+            Log.i(TAG, "delete mediastore row -> " + n);
+        }
+        File f = t.file;
+        if (f != null && f.exists()) {
+            boolean ok = f.delete();
+            Log.i(TAG, "delete file " + f.getAbsolutePath() + " -> " + ok);
+        }
     }
 
     // ---- 下载面板 UI ----
@@ -969,6 +991,17 @@ public class MainActivity extends Activity {
         }});
     }
 
+    /** 下完的那条点「打开」→ 直接进系统「下载」目录 */
+    private void openDownloadFolder() {
+        try {
+            Intent i = new Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Exception e) {
+            say("打不开系统下载目录：" + e.getMessage());
+        }
+    }
+
     private void rebuildDlRows() {
         if (dlList == null) return;
         dlList.removeAllViews();
@@ -997,14 +1030,29 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         android.widget.Button btn = new android.widget.Button(this);
-        btn.setText("取消");
+        final boolean active = !t.doneOk && !t.failed && !t.cancel;
+        btn.setText(active ? "取消" : (t.doneOk ? "打开" : "移除"));
         btn.setTextSize(12f);
         btn.setOnClickListener(new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) {
-                t.cancel = true;
-                HttpURLConnection c = t.conn;
-                if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
-                if (t.line != null) t.line.setText(t.name + " · 正在取消…");
+                // 点下去的这一刻重新判断：别把刚下完的文件当"取消"删了
+                if (!t.doneOk && !t.failed && !t.cancel) {
+                    // 取消：先从列表里拿掉，再让下载线程收尾；文件一律删掉不留残渣
+                    t.cancel = true;
+                    try { if (t.file != null && t.file.exists()) t.file.delete(); } catch (Exception ignored) {}
+                    HttpURLConnection c = t.conn;
+                    if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
+                    tasks.remove(t);
+                    rebuildDlRows();
+                    updateChip();
+                    Toast.makeText(MainActivity.this, "已取消，没下完的文件正在删除", Toast.LENGTH_SHORT).show();
+                } else if (t.doneOk) {
+                    openDownloadFolder();
+                } else {
+                    tasks.remove(t);
+                    rebuildDlRows();
+                    updateChip();
+                }
             }
         });
         box.addView(btn, new android.widget.LinearLayout.LayoutParams(

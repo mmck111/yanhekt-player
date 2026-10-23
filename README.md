@@ -26,9 +26,9 @@
 `android/arm64`、以 `lib/arm64-v8a/libyhkt.so` 打进 APK，启动时拉起来监听 `127.0.0.1:8799`，
 WebView 打开它。所以功能、界面、课程库、无权限课都和 exe 一致。
 
-和电脑版唯一的差别是登录：电脑上是读浏览器 profile / 点一次书签，手机上是让用户在 WebView 里
-正常登录老平台和新版平台各一次，App 从 CookieManager 里取出 `yht` / `_token` 交给本地引擎，
-并把引擎下发的会话 cookie 抄回 WebView（不这么做页面会一直认为未登录）。
+和电脑版唯一的差别是登录：打开 App 直接进播放器，**不先跳登录页**。要登录就在汉堡栏（☰）里点
+「登录新版平台」或「登录老平台」，App 会跳到对应官网，登好自动取 `_token` / `yht` 交给本地引擎，
+并把引擎下发的会话 cookie 抄回 WebView（不这么做页面会一直认为未登录），然后自己跳回播放器。
 
 构建：
 
@@ -39,6 +39,7 @@ powershell -ExecutionPolicy Bypass -File android\build.ps1   # 产出 android\bu
 ```
 
 已知限制：只有 arm64（绝大多数手机）；登录态约 24 小时，过期后底部会出现「点这里重新登录」。
+下载取消会**当场把没下完的文件删掉**，列表里那条也一起消失，不在 Download 目录留碎片。
 
 下载：页面里的「下载」走原生通道 —— JS 桥接把 `/y2dl` `/dl` 的 `window.open` 拦下来，
 带上本地会话 cookie 直接拉流，按引擎给的 `Content-Disposition` 命名，存进系统「下载」目录
