@@ -446,6 +446,7 @@ func probeOldCourses(courses []courseRow, token string, concurrency int) ([]prob
 		}()
 	}
 	wg.Wait()
+	oldVerdictFlush(false)
 
 	// 结果按原顺序排好（Node 版也是这么排的）
 	order := map[string]int{}
@@ -458,6 +459,19 @@ func probeOldCourses(courses []courseRow, token string, concurrency int) ([]prob
 
 // probeOneCourse 探一门课：返回（要输出的行，是否算"藏掉"）
 func probeOneCourse(c courseRow, token string) ([]probedRow, bool) {
+	// 先看落盘缓存：手机端重开 App 后也能直接命中，不用把几十门课重新探一遍
+	if v, ok := oldVerdictGet(c.ID, token); ok {
+		return oldVerdictRow(c, v), v.Hide
+	}
+	rows, hide := probeOneCourseFresh(c, token)
+	if v, ok := oldVerdictFrom(rows, hide); ok {
+		oldVerdictSet(c.ID, token, v)
+	}
+	return rows, hide
+}
+
+// probeOneCourseFresh 真去上游探
+func probeOneCourseFresh(c courseRow, token string) ([]probedRow, bool) {
 	raw, err := rawSessions(c.ID, token)
 	if err != nil {
 		// 探测失败（没权限 / 网络）→ 保留，但不给结论
