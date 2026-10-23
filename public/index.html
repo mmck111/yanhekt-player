@@ -661,7 +661,15 @@ async function openCourse(input, { force = false } = {}){
     list.appendChild(el);
   });
   const first = data.sessions.find(s => s.main || s.vga);
-  if (first) loadSession(first);
+  if (first) {
+    // 手机抽屉还开着：只把第一讲标成当前，等用户自己点讲次（点了讲次才收抽屉）
+    if (document.getElementById('wrap') && document.getElementById('wrap').classList.contains('drawer')) {
+      const row = list.querySelector('.item[data-id="' + first.id + '"]');
+      if (row) row.classList.add('on');
+    } else {
+      loadSession(first);
+    }
+  }
   else splashEmpty('这些节次都没有录像', data);
 }
 
@@ -743,7 +751,7 @@ function renderLive(){
       : '<span class="livebadge up">' + (it.phase === 'upcoming' ? '未开始' : '已结束') + '</span>';
     el.innerHTML = `<div class="d">${badge}<span class="t">${esc(it.title)}</span></div>
       <div class="m">${it.teacher ? '<span>' + esc(it.teacher) + '</span>' : ''}${it.room ? '<span>' + esc(it.room) + '</span>' : ''}<span>${String(it.startedAt).slice(11, 16)}–${String(it.endedAt).slice(11, 16)}</span></div>`;
-    el.onclick = () => playLive(it);
+    el.onclick = () => { closeDrawer(); playLive(it); };
     list.appendChild(el);
   }
   // 一进来就先放最靠前的"直播中"，省得再点一下（搜索时不自动切）
@@ -826,7 +834,8 @@ function dbRow(c){
   else if (c.verified === false) meta.push(`<span title="${(c.note || '').replace(/"/g, '')}">未确认</span>`);
   el.innerHTML = `<div class="d">${esc(c.name)}${c.code ? `<span class="t">${esc(c.code)}</span>` : ''}</div>`
     + `<div class="m">${meta.join('') || '<span>' + esc(c.id) + '</span>'}</div>`;
-  el.onclick = () => { closeDrawer(); openCourse(c.id); };
+  // 点课程只展开讲次，抽屉留着 —— 等点完讲次再收
+  el.onclick = () => { openCourse(c.id); };
   return el;
 }
 

@@ -586,7 +586,8 @@ async function doFind(){
           + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
           + '<span class="bd">' + badges(c) + '</span>'
           + '</div>';
-        el.onclick = ()=>{ closeDrawer(); loadSessions(c, el); };
+        // 点课程只展开讲次，抽屉留着 —— 等点完讲次再收
+        el.onclick = ()=>{ loadSessions(c, el); };
         list.appendChild(el);
         if (c.verified !== true) pending.push({ c, el });
       });
