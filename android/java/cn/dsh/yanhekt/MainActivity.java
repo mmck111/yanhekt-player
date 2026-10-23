@@ -53,6 +53,12 @@ public class MainActivity extends Activity {
     private String pendingUrl = null;
     private final java.util.List<String> sessionCookies = new java.util.ArrayList<String>();
     private FrameLayout rootView;
+    private android.widget.LinearLayout dlBar;
+    private TextView dlText2;
+    private volatile Thread dlThread;
+    private volatile boolean dlCancel;
+    private volatile long dlDone, dlTotal = -1;
+    private volatile HttpURLConnection dlConn;
     private android.view.View customView;
     private WebChromeClient.CustomViewCallback customCb;
     private volatile boolean forceNext = false;
@@ -132,6 +138,28 @@ public class MainActivity extends Activity {
         lp.gravity = Gravity.BOTTOM;
         root.addView(bar, lp);
 
+        // 下载进度条（含取消按钮）：浮在底栏上方，不占页面空间
+        dlBar = new android.widget.LinearLayout(this);
+        dlBar.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        dlBar.setBackgroundColor(Color.parseColor("#1b2740"));
+        dlBar.setPadding(dp(12), dp(7), dp(8), dp(7));
+        dlBar.setGravity(Gravity.CENTER_VERTICAL);
+        dlBar.setVisibility(android.view.View.GONE);
+        dlText2 = new TextView(this);
+        dlText2.setTextColor(Color.parseColor("#e8eaed"));
+        dlText2.setTextSize(12f);
+        dlBar.addView(dlText2, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        android.widget.Button dlBtn = new android.widget.Button(this);
+        dlBtn.setText("取消");
+        dlBtn.setTextSize(12f);
+        dlBtn.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { cancelDownload(); }
+        });
+        dlBar.addView(dlBtn, new android.widget.LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        FrameLayout.LayoutParams lpDl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lpDl.gravity = Gravity.BOTTOM;
+        lpDl.bottomMargin = dp(46);
+        root.addView(dlBar, lpDl);
         setContentView(root);
         startEngine();
     }
@@ -686,22 +714,37 @@ public class MainActivity extends Activity {
     }
 
     private void startDownload(final String url) {
-        Toast.makeText(this, "开始下载，别关这个页面", Toast.LENGTH_LONG).show();
-        new Thread(new Runnable() { public void run() {
+        if (dlThread != null && dlThread.isAlive()) {
+            Toast.makeText(this, "已经有一个下载在跑了，先等它完成或点「取消」", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        dlCancel = false;
+        dlDone = 0;
+        dlTotal = -1;
+        showDlBar("下载准备中…");
+        dlThread = new Thread(new Runnable() { public void run() {
             HttpURLConnection c = null;
             Uri target = null;
+            OutputStream os = null;
+            boolean ok = false;
+            String failMsg = null;
+            String name = null;
             try {
                 c = (HttpURLConnection) new URL(url).openConnection();
+                dlConn = c;
                 String cookie = CookieManager.getInstance().getCookie(BASE);
                 if (cookie != null) c.setRequestProperty("Cookie", cookie);
                 c.setConnectTimeout(6000);
                 c.setReadTimeout(60000);
+                c.setRequestProperty("Accept-Encoding", "identity");
                 int code = c.getResponseCode();
                 if (code >= 400) throw new java.io.IOException("HTTP " + code);
-                String name = fileName(c.getHeaderField("content-disposition"));
+                dlTotal = c.getContentLength();      // 引擎会带 content-length
+                name = fileName(c.getHeaderField("content-disposition"));
                 if (name == null) name = "lecture_" + System.currentTimeMillis() + ".mp4";
+                final String fName = name;
+                ui.post(new Runnable() { public void run() { dlText("正在下载：" + fName + "…"); } });
                 String mime = name.endsWith(".ts") ? "video/mp2t" : "video/mp4";
-                OutputStream os;
                 if (Build.VERSION.SDK_INT >= 29) {
                     android.content.ContentValues cv = new android.content.ContentValues();
                     cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
@@ -719,23 +762,84 @@ public class MainActivity extends Activity {
                 if (os == null) throw new java.io.IOException("写不了文件");
                 java.io.InputStream in = c.getInputStream();
                 byte[] buf = new byte[64 * 1024];
-                long total = 0;
+                long lastPush = 0;
                 int n;
-                while ((n = in.read(buf)) > 0) { os.write(buf, 0, n); total += n; }
-                os.flush(); os.close(); in.close();
-                if (Build.VERSION.SDK_INT >= 29 && target != null) {
-                    android.content.ContentValues done = new android.content.ContentValues();
-                    done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
-                    getContentResolver().update(target, done, null, null);
+                while ((n = in.read(buf)) > 0) {
+                    if (dlCancel) throw new java.io.IOException("已取消");
+                    os.write(buf, 0, n);
+                    dlDone += n;
+                    long now = System.currentTimeMillis();
+                    if (now - lastPush > 400) { lastPush = now; pushProgress(); }
                 }
-                final String msg = "下载完成：" + name + "（" + (total / 1048576.0) + " MB，在系统「下载」里）";
-                Log.i(TAG, msg);
-                ui.post(new Runnable() { public void run() { Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show(); } });
+                if (dlCancel) throw new java.io.IOException("已取消");
+                os.flush();
+                ok = true;
             } catch (Exception e) {
+                failMsg = e.getMessage();
                 Log.e(TAG, "download failed", e);
-                say("下载失败：" + e.getMessage());
-            } finally { if (c != null) c.disconnect(); }
-        }}).start();
+            } finally {
+                try { if (os != null) os.close(); } catch (Exception ignored) {}
+                if (c != null) c.disconnect();
+                dlConn = null;
+            }
+            final boolean fOk = ok;
+            final String fName = name == null ? "文件" : name;
+            final String fMsg = failMsg;
+            final Uri fTarget = target;
+            final long total = dlDone;
+            ui.post(new Runnable() { public void run() {
+                hideDlBar();
+                if (fOk) {
+                    if (Build.VERSION.SDK_INT >= 29 && fTarget != null) {
+                        android.content.ContentValues done = new android.content.ContentValues();
+                        done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                        getContentResolver().update(fTarget, done, null, null);
+                    }
+                    Toast.makeText(MainActivity.this,
+                        "下载完成：" + fName + "（" + (total / 1048576.0) + " MB，在系统「下载」里）",
+                        Toast.LENGTH_LONG).show();
+                } else if (fMsg != null && fMsg.indexOf("已取消") >= 0) {
+                    if (Build.VERSION.SDK_INT >= 29 && fTarget != null) {
+                        try { getContentResolver().delete(fTarget, null, null); } catch (Exception ignored) {}
+                    }
+                    Toast.makeText(MainActivity.this, "已取消下载（已下载 " + (total / 1048576.0) + " MB 已丢弃）", Toast.LENGTH_SHORT).show();
+                } else {
+                    say("下载失败：" + fMsg);
+                }
+            }});
+        }});
+        dlThread.start();
+    }
+
+    private void pushProgress() {
+        final long done = dlDone, total = dlTotal;
+        ui.post(new Runnable() { public void run() {
+            if (total > 0) dlText("正在下载 " + (done * 100 / total) + "%（" + (done / 1048576.0) + " / " + (total / 1048576.0) + " MB）· 点「取消」可中断");
+            else dlText("正在下载 " + (done / 1048576.0) + " MB · 点「取消」可中断");
+        }});
+    }
+
+    private void showDlBar(String text) {
+        if (dlBar == null) return;
+        dlBar.setVisibility(android.view.View.VISIBLE);
+        dlText(text);
+    }
+
+    private void dlText(String text) {
+        if (dlText2 == null) return;
+        dlText2.setText(text);
+        dlBar.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void hideDlBar() {
+        if (dlBar != null) dlBar.setVisibility(android.view.View.GONE);
+    }
+
+    private void cancelDownload() {
+        dlCancel = true;
+        final HttpURLConnection c = dlConn;
+        if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
+        dlText("正在取消…");
     }
 
     private static String fileName(String cd) {
