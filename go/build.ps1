@@ -1,4 +1,4 @@
-# 构建 Go 版：同步页面资源 → 编译 Windows 单文件
+﻿# 构建 Go 版：同步页面资源 → 编译 Windows 单文件
 # 用法：powershell -ExecutionPolicy Bypass -File go\build.ps1
 #   $env:YHKT_BUILD_DIR 可指定构建缓存目录（默认 %LOCALAPPDATA%\yanhekt-build）
 $ErrorActionPreference = 'Stop'
@@ -24,7 +24,7 @@ $env:GOCACHE = "$tools\gocache"; $env:GOPATH = "$tools\gopath"
 $web = Join-Path $PSScriptRoot 'web'
 if (Test-Path $web) { Remove-Item $web -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $web | Out-Null
-foreach ($f in 'index.html', 'y2.html', 'hls.min.js', 'catalog.json.gz') {
+foreach ($f in 'index.html', 'y2.html', 'icon.png', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
   Copy-Item (Join-Path $root "public\$f") (Join-Path $web $f)
 }
 

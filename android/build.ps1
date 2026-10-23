@@ -35,7 +35,7 @@ $env:TMP = "$buildDir\tmp"; $env:TEMP = "$buildDir\tmp"
 $env:GOCACHE = "$buildDir\gocache"; $env:GOPATH = "$buildDir\gopath"
 if (Test-Path $web) { Remove-Item $web -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $web | Out-Null
-foreach ($f in 'index.html', 'y2.html', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
+foreach ($f in 'index.html', 'y2.html', 'icon.png', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
   $src = Join-Path $root "public\$f"
   if (Test-Path $src) { Copy-Item $src (Join-Path $web $f) }
 }
@@ -50,12 +50,24 @@ try {
 } finally { Pop-Location; Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue }
 Write-Host ('引擎 ' + [math]::Round((Get-Item $so).Length / 1MB, 2) + ' MB (android/arm64)')
 
+# ---- 资源（图标）----
+# aapt2 要先把 res/ 编译成 flat 文件，再跟清单一起 link
+$resDir = Join-Path $apkDir 'res'
+$resZip = Join-Path $out 'res.zip'
+$linkArgs = @()
+if (Test-Path $resDir) {
+  if (Test-Path $resZip) { Remove-Item $resZip -Force }
+  & (Join-Path $bt 'aapt2.exe') compile --dir $resDir -o $resZip
+  if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile 失败' }
+  $linkArgs = @($resZip)
+}
+
 # ---- 资源 / 清单 ----
 $baseApk = Join-Path $out 'base.apk'
 if (Test-Path $baseApk) { Remove-Item $baseApk -Force }
 & (Join-Path $bt 'aapt2.exe') link -o $baseApk -I $androidJar `
   --manifest (Join-Path $apkDir 'AndroidManifest.xml') `
-  --min-sdk-version 23 --target-sdk-version 34 --version-code 1 --version-name 1.5.0
+  --min-sdk-version 23 --target-sdk-version 34 --version-code 1 --version-name 1.5.0 @linkArgs
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link 失败' }
 
 # ---- Java ----

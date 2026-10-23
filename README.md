@@ -1,7 +1,7 @@
 # 延河课堂 在线播放器
 
 北京理工大学「延河课堂」课程录像的本地播放器：**电脑上双击一个 exe，手机上装一个 APK**，
-搜课程名就能看录播 / 直播；另有一个单文件网页，专门在手机上查旧版课程代号。
+搜课程名就能看录播 / 直播；另有一个单文件网页，可以查旧版课程代号，可以跳转旧版延河官方网站看往年课程。
 
 ![播放界面](docs/03-player.png)
 
@@ -17,7 +17,7 @@
 | **新版平台** | 另一个入口 `/y2`，接 `aita.yanhekt.cn`：同一讲三路画面、播放快 3~5 倍、MP4 / HLS 都能下 |
 | **自动登录** | 从本机浏览器（Edge / Chrome / Brave / Vivaldi）已存的登录态里取凭证；读不到才需要手动点一次书签 |
 | **离线课程库** | 79564 门课的名称 / 教师 / 学期 / 教室都在本地，不联网也能先搜出结果 |
-| **手机查代号** | 独立的一个网页（`dist/codes.html`，0.8 MB 单文件）：手机上本地搜课程代号，点开就是 `yanhekt.cn/course/<代号>`。不需要电脑、不需要装 exe、不需要服务器；往年课只要代号就能看。<br>生成：`node tools/make-codes.js`；给同学用就把这个文件丢到任意静态站点 |
+| **查代号网页** | 独立的一个网页（`dist/codes.html`，0.8 MB 单文件）：支持查询往年课程代号并跳转相应旧延河网页观看。（无权限课程无法通过代号查看课程） |
 | **自检** | 页面右下角「自检」和 `/diag`：把一门课的接口原始返回、每讲状态、取流结果打出来，出问题直接看 |
 | **只在本机** | 服务只监听 `127.0.0.1`，不对外、不上传任何数据；账号密码不经过程序 |
 
@@ -257,3 +257,22 @@ node tools/release.js v1.5.0 --dry    # 只看要传什么（不改 GitHub）
 - 只监听 `127.0.0.1`，只有你自己这台机器能访问。
 - 课程内容版权归学校与授课教师所有，下载的文件自己看，别传给别人或公开网站。
 - 登录状态存在你自己的浏览器 cookie 里，程序不保存密码、不上传任何数据。
+- **非官方工具**：和学校 / 延河课堂官方无关。exe、APK、网页图标都用的是延河课堂的官方标志，
+  只为了一眼认出来；标志版权归北京理工大学所有，需要下架随时可以换掉。
+
+## 图标
+
+三处用同一个标志（官方 logo 里的图形部分）：
+
+- `yanhekt.exe`：`go/rsrc_windows_amd64.syso`（`rsrc -ico android/icon/icon.ico` 生成，`go build` 自动链进去）
+- `yanhekt.apk`：`android/res/mipmap-*/ic_launcher.png`（48/72/96/144/192）
+- 网页标签页：`public/icon.png` → `/icon.png`
+
+重新生成（官网 logo 变了才需要）：
+
+```bash
+node tools/make-icon.js        # 从 android/icon/logo_full.svg 抠出图形 → mark.svg
+# 用 Edge 无头截一张 1024 透明 PNG：android/icon/icon_1024.png
+python tools/make-icon-png.py  # 生成 icon.ico + 各密度 mipmap + public/icon.png
+rsrc -ico android/icon/icon.ico -o go/rsrc_windows_amd64.syso
+```
