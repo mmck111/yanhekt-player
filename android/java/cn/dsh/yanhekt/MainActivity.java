@@ -401,13 +401,20 @@ public class MainActivity extends Activity {
                 if (!ok) msg = res;
                 Log.i(TAG, which + " login -> " + res);
             }
-            // 老平台的登录页现在多半会被重定向到新版的统一登录（aita）：那边登进去了也算数
+            // 老平台的网页现在就是新版那套（登录已经统一）：同一个 token 拿去试新版，
+            // 过了说明用户拿到的本来就是新版登录态，不该报"token 无效"
             boolean viaY2 = false;
-            if (!ok && !y2 && capturedY2 != null) {
-                String r2 = postLoginCandidates("/api/y2/login", "jwt", capturedY2);
-                Log.i(TAG, "old->y2 fallback -> " + r2);
-                if ("OK".equals(r2)) { ok = true; viaY2 = true; }
+            if (!ok && !y2) {
+                for (String blob : new String[]{ tok, capturedY2 }) {
+                    if (blob == null) continue;
+                    String r2 = postLoginCandidates("/api/y2/login", "jwt", blob);
+                    Log.i(TAG, "old->y2 fallback -> " + r2);
+                    if ("OK".equals(r2)) { ok = true; viaY2 = true; msg = ""; break; }
+                }
             }
+            // 还是不行，但引擎里本来就有可用的老平台登录态（之前登过、还能用）：别报错，直接进去
+            final boolean already = !ok && !y2
+                && String.valueOf(tryHttp(BASE + "/api/status", null)).contains("\"loggedIn\":true");
             final boolean cancelled = loginCancelled;
             loginCancelled = false;
             loggingIn = false;
@@ -417,8 +424,16 @@ public class MainActivity extends Activity {
             ui.post(new Runnable() { public void run() {
                 bar.setOnClickListener(null);
                 if (cancelled) { openPlayer(y2 ? "/y2" : "/"); return; }
+                // 老平台本来就有能用的登录态（网页这么显示也就是它自己已经登录了）：
+                // 这次抓到的 token 是别的（新版）登录态也没关系，别报失败，直接回播放器
+                if (already) {
+                    bar.setText("老平台已登录（沿用现有登录态）");
+                    Toast.makeText(MainActivity.this, "老平台登录态仍然有效", Toast.LENGTH_SHORT).show();
+                    ui.postDelayed(new Runnable() { public void run() { openPlayer("/"); pushStatus(); } }, 900);
+                    return;
+                }
                 if (fOk) {
-                    final String okMsg = fViaY2 ? "新版已登录（老平台现在走统一登录）" : tag + "已登录";
+                    final String okMsg = fViaY2 ? "新版已登录（延河课堂的登录已经统一到新版了）" : tag + "已登录";
                     bar.setText(okMsg);
                     Toast.makeText(MainActivity.this, okMsg, Toast.LENGTH_SHORT).show();
                     // 先把"登录成功"亮一下再跳回播放器，否则一闪就没了
