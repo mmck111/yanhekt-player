@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private volatile boolean loggingIn = false;
     private String pendingUrl = null;
+    private final java.util.List<String> sessionCookies = new java.util.ArrayList<String>();
     private volatile boolean forceNext = false;
 
     @Override
@@ -182,32 +183,54 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() { public void run() {
             // 1) 老平台：cookie yht（或 localStorage.auth.token）
             String tok = waitOldToken(120000);
+            boolean oldOk = false;
+            String oldMsg = "";
             if (tok != null) {
                 String r = postLogin("/api/login", "{\"token\":" + json(tok) + "}");
+                oldOk = r != null && r.indexOf("\"ok\":true") >= 0;
+                oldMsg = r == null ? "请求失败" : brief(r);
                 Log.i(TAG, "old login -> " + r);
+                final String t1 = oldOk ? "老平台已登录。接下来登录新版平台（同一个账号再登一次）"
+                                        : "老平台登录被引擎拒绝：" + oldMsg + "。继续试新版平台…";
                 ui.post(new Runnable() { public void run() {
-                    bar.setText("老平台已登录。接下来登录新版平台（浏览器里同一个账号再登一次）");
+                    bar.setText(t1);
                     web.loadUrl(Y2_SITE + "/portal/");
                 }});
             }
-            // 2) 新版平台：cookie _token
+            // 2) 新版平台：cookie _token / document.cookie
             String ck = waitY2Cookie(150000);
+            boolean newOk = false;
+            String newMsg = "";
             if (ck != null) {
                 String r2 = postLogin("/api/y2/login", "{\"cookie\":" + json(ck) + "}");
+                newOk = r2 != null && r2.indexOf("\"ok\":true") >= 0;
+                newMsg = r2 == null ? "请求失败" : brief(r2);
                 Log.i(TAG, "y2 login -> " + r2);
             }
+            final boolean fOld = oldOk, fNew = newOk;
+            final String fMsg = (oldMsg + " / " + newMsg).trim();
             loggingIn = false;
             ui.post(new Runnable() { public void run() {
-                if (tok == null && ck == null) {
-                    bar.setText("没检测到登录。登录完成后点这里重试");
-                    bar.setOnClickListener(new android.view.View.OnClickListener() {
-                        @Override public void onClick(android.view.View v) { startLogin(); }
-                    });
-                    return;
-                }
-                openPlayer();
+                if (fOld || fNew) { openPlayer(); return; }
+                bar.setVisibility(TextView.VISIBLE);
+                bar.setText("两个平台都没登录成功：" + (fMsg.length() > 40 ? fMsg.substring(0, 40) + "…" : fMsg) + "。点这里重试");
+                bar.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override public void onClick(android.view.View v) { startLogin(); }
+                });
             }});
         }}).start();
+    }
+
+    /** 把引擎返回的 JSON 压成一行短提示 */
+    private static String brief(String s) {
+        if (s == null) return "";
+        int i = s.indexOf("\"error\"");
+        if (i >= 0) {
+            int a = s.indexOf('"', s.indexOf(':', i));
+            int b = a >= 0 ? s.indexOf('"', a + 1) : -1;
+            if (a >= 0 && b > a) return s.substring(a + 1, b);
+        }
+        return s.length() > 60 ? s.substring(0, 60) : s;
     }
 
     private String waitOldToken(int ms) {
@@ -286,11 +309,50 @@ public class MainActivity extends Activity {
         loggingIn = false;
         ui.post(new Runnable() { public void run() {
             bar.setVisibility(TextView.GONE);
+            // setCookie 是异步落盘的：先把会话 cookie 重新写一遍并读回确认，再导航，
+            // 否则页面可能在 cookie 到位之前就请求 /api/status，显示"未登录"
+            ensureSessionCookies();
             web.loadUrl(BASE + "/");
             ui.removeCallbacks(watch);
             ui.postDelayed(watch, 60000);
+            ui.postDelayed(probe, 2500);
+            ui.postDelayed(probe, 8000);
         }});
     }
+
+    /** 把登录拿到的 Set-Cookie 重新种一遍，并等它真正可读 */
+    private void ensureSessionCookies() {
+        for (String pair : sessionCookies) {
+            CookieManager.getInstance().setCookie(BASE, pair);
+        }
+        CookieManager.getInstance().flush();
+        for (int i = 0; i < 10; i++) {
+            String have = CookieManager.getInstance().getCookie(BASE);
+            boolean all = true;
+            for (String pair : sessionCookies) {
+                String name = pair.split("=", 2)[0];
+                if (have == null || !have.contains(name + "=")) { all = false; break; }
+            }
+            if (all || sessionCookies.isEmpty()) return;
+            sleep(100);
+        }
+    }
+
+    /** 显示本地引擎认为的登录状态，出问题时一眼能看出卡在哪一边 */
+    private final Runnable probe = new Runnable() { public void run() {
+        new Thread(new Runnable() { public void run() {
+            String a = tryHttp(BASE + "/api/status", null);
+            String b = tryHttp(BASE + "/api/y2/status", null);
+            final boolean ao = a != null && a.indexOf("\"loggedIn\":true") >= 0;
+            final boolean bo = b != null && b.indexOf("\"loggedIn\":true") >= 0;
+            Log.i(TAG, "probe old=" + ao + " y2=" + bo + " cookies=" + CookieManager.getInstance().getCookie(BASE));
+            ui.post(new Runnable() { public void run() {
+                bar.setVisibility(TextView.VISIBLE);
+                bar.setText("本地状态：老平台" + (ao ? "已登录" : "未登录") + " · 新版" + (bo ? "已登录" : "未登录"));
+                ui.postDelayed(new Runnable() { public void run() { bar.setVisibility(TextView.GONE); } }, 7000);
+            }});
+        }}).start();
+    }};
 
     /** 登录态约 24 小时；过期后页面上的书签登录在手机上没用，这里给一个"点一下重登"的入口 */
     private final Runnable watch = new Runnable() { public void run() {
@@ -362,6 +424,9 @@ public class MainActivity extends Activity {
                 for (String sc : e.getValue()) {
                     String pair = sc.split(";", 2)[0];
                     CookieManager.getInstance().setCookie(BASE, pair);
+                    String cname = pair.split("=", 2)[0];
+                    for (int i = sessionCookies.size() - 1; i >= 0; i--) { if (sessionCookies.get(i).startsWith(cname + "=")) sessionCookies.remove(i); }
+                    sessionCookies.add(pair);
                     Log.i(TAG, "cookie <- " + pair.split("=", 2)[0]);
                 }
             }
