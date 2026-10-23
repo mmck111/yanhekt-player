@@ -162,7 +162,8 @@ public class MainActivity extends Activity {
         boolean oldOk = oldSt != null && oldSt.indexOf("\"loggedIn\":true") >= 0;
         boolean newOk = newSt != null && newSt.indexOf("\"loggedIn\":true") >= 0;
         Log.i(TAG, "loggedIn old=" + oldOk + " y2=" + newOk);
-        if (oldOk) { openPlayer(); return; }
+        if (newOk) { openPlayer("/y2"); return; }
+        if (oldOk) { openPlayer("/"); return; }
         startLogin();
     }
 
@@ -198,11 +199,11 @@ public class MainActivity extends Activity {
                 }});
             }
             // 2) 新版平台：cookie _token / document.cookie
-            String ck = waitY2Cookie(150000);
+            String ck = waitY2Token(150000);
             boolean newOk = false;
             String newMsg = "";
             if (ck != null) {
-                String r2 = postLogin("/api/y2/login", "{\"cookie\":" + json(ck) + "}");
+                String r2 = postLogin("/api/y2/login", "{\"jwt\":" + json(ck) + "}");
                 newOk = r2 != null && r2.indexOf("\"ok\":true") >= 0;
                 newMsg = r2 == null ? "请求失败" : brief(r2);
                 Log.i(TAG, "y2 login -> " + r2);
@@ -211,16 +212,52 @@ public class MainActivity extends Activity {
             final String fMsg = (oldMsg + " / " + newMsg).trim();
             loggingIn = false;
             ui.post(new Runnable() { public void run() {
-                if (fOld || fNew) { openPlayer(); return; }
+                if (fNew) { openPlayer("/y2"); return; }
+                if (fOld) { openPlayer("/"); return; }
                 bar.setVisibility(TextView.VISIBLE);
-                bar.setText("两个平台都没登录成功：" + (fMsg.length() > 40 ? fMsg.substring(0, 40) + "…" : fMsg) + "。点这里重试");
+                bar.setText("两个平台都没登录成功。点这里重试；屏幕上是诊断信息");
                 bar.setOnClickListener(new android.view.View.OnClickListener() {
                     @Override public void onClick(android.view.View v) { startLogin(); }
                 });
+                showDiag(fMsg);
             }});
         }}).start();
     }
 
+    /** 两边都失败时把诊断画在屏幕上（截图就能发出去） */
+    private void showDiag(final String err) {
+        new Thread(new Runnable() { public void run() {
+            final String keys = jsEval(KEYS_JS);
+            final String ck = jsEval("(document.cookie||'').slice(0,400)");
+            final String st = tryHttp(BASE + "/api/status", null);
+            final String st2 = tryHttp(BASE + "/api/y2/status", null);
+            ui.post(new Runnable() { public void run() {
+                StringBuilder h = new StringBuilder();
+                h.append("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>")
+                 .append("<style>body{background:#0f1115;color:#e8eaed;font:13px/1.6 -apple-system,system-ui;margin:0;padding:14px}")
+                 .append("h3{font-size:13px;margin:14px 0 5px;color:#9aa3b2}")
+                 .append("pre{white-space:pre-wrap;word-break:break-all;background:#171a21;border:1px solid #2a2f3a;")
+                 .append("border-radius:8px;padding:9px;font:11.5px/1.5 ui-monospace,Consolas,monospace;margin:0}</style></head><body>")
+                 .append("<h3>引擎返回</h3><pre>").append(esc(err)).append("</pre>")
+                 .append("<h3>页面存储的键名</h3><pre>").append(esc(keys)).append("</pre>")
+                 .append("<h3>document.cookie</h3><pre>").append(esc(ck)).append("</pre>")
+                 .append("<h3>本地 status</h3><pre>").append(esc(cut(st, 260))).append("\n")
+                 .append(esc(cut(st2, 260))).append("</pre>")
+                 .append("<p style='color:#6f7889'>把这一屏截图发给我就行。</p></body></html>");
+                web.loadDataWithBaseURL(BASE, h.toString(), "text/html", "utf-8", null);
+            }});
+        }}).start();
+    }
+
+    private static String cut(String s, int n) {
+        if (s == null) return "(null)";
+        return s.length() > n ? s.substring(0, n) + "…" : s;
+    }
+
+    private static String esc(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
     /** 把引擎返回的 JSON 压成一行短提示 */
     private static String brief(String s) {
         if (s == null) return "";
@@ -276,16 +313,15 @@ public class MainActivity extends Activity {
         }
     }
 
-    private String waitY2Cookie(int ms) {
+    private String waitY2Token(int ms) {
         long t0 = System.currentTimeMillis();
         int tick = 0;
         while (System.currentTimeMillis() - t0 < ms) {
             if (forceNext) { forceNext = false; return null; }
-            String ck = CookieManager.getInstance().getCookie(Y2_SITE);
-            if (ck != null && ck.indexOf("_token") >= 0) return ck;
-            // 兜底：直接从页面里读 document.cookie（新版平台的 _token 是 JS 可读的）
-            String page = jsEval("document.cookie||''");
-            if (page != null && page.indexOf("_token") >= 0) return page;
+            // _token 是 PHP 序列化串，里面有分号 —— 当 cookie header 发会被截断，
+            // 所以在页面里按官网 getToken 的逻辑把 JWT 抠出来
+            String tk = jsEval(Y2_TOKEN_JS);
+            if (tk != null && tk.length() > 40) return tk;
             if (++tick % 5 == 0) {
                 final String t = "新版平台：等你登录…（已等 " + ((System.currentTimeMillis() - t0) / 1000) + " 秒）";
                 ui.post(new Runnable() { public void run() { if (loggingIn) bar.setText(t); } });
@@ -305,14 +341,14 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private void openPlayer() {
+    private void openPlayer(final String path) {
         loggingIn = false;
         ui.post(new Runnable() { public void run() {
             bar.setVisibility(TextView.GONE);
             // setCookie 是异步落盘的：先把会话 cookie 重新写一遍并读回确认，再导航，
             // 否则页面可能在 cookie 到位之前就请求 /api/status，显示"未登录"
             ensureSessionCookies();
-            web.loadUrl(BASE + "/");
+            web.loadUrl(BASE + path);
             ui.removeCallbacks(watch);
             ui.postDelayed(watch, 60000);
             ui.postDelayed(probe, 2500);
@@ -469,19 +505,33 @@ public class MainActivity extends Activity {
     }
 
     // 老平台的 token 藏在 localStorage.auth 里（电脑版为此去读浏览器 leveldb），cookie 不保险
+    // 老平台 token 藏在 localStorage 里（电脑版为此去读浏览器 leveldb）。
+    // 键名各版本不一样，索性把所有键值拼起来捞 eyJ 开头的 JWT。
     private static final String TOKEN_JS =
-        "(function(){try{"
-        + "var l='',t='',s='',c='';"
-        + "try{l=localStorage.getItem('auth')||''}catch(e){}"
-        + "try{t=localStorage.getItem('token')||''}catch(e){}"
-        + "try{s=sessionStorage.getItem('auth')||''}catch(e){}"
-        + "try{c=document.cookie||''}catch(e){}"
-        + "var all=l+' '+t+' '+s+' '+c;"
+        "(function(){var all='';"
+        + "try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);all+=' '+k+'='+localStorage.getItem(k);}}catch(e){}"
+        + "try{for(var j=0;j<sessionStorage.length;j++){var k2=sessionStorage.key(j);all+=' '+k2+'='+sessionStorage.getItem(k2);}}catch(e){}"
+        + "try{all+=' '+document.cookie;}catch(e){}"
         + "var m=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(all);"
-        + "if(m)return m[1];"
-        + "try{var j=JSON.parse(l||'{}');if(j&&j.token)return String(j.token);}catch(e){}"
-        + "return '';}catch(e){return ''}})()";
+        + "return m?m[1]:'';})()";
 
+    // 新版平台 token：_token 是 PHP 序列化串（里面有分号，直接当 cookie header 发会被截断），
+    // 所以在页面里按官网 getToken 的写法把 JWT 抠出来
+    private static final String Y2_TOKEN_JS =
+        "(function(){var ck='';try{ck=document.cookie||''}catch(e){}"
+        + "var p=ck.match(/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/);if(p)return p[1];"
+        + "var q=ck.match(/(?:^|;\\s*)_token=([^;]+)/);if(q){var v=q[1];try{v=decodeURIComponent(v)}catch(e){}"
+        + "var w=v.match(/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/);return w?w[1]:v;}"
+        + "var l='';try{l=localStorage.getItem('_token')||''}catch(e){}"
+        + "if(l){var x=l.match(/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/);return x?x[1]:l;}"
+        + "var j=/eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*/.exec(ck);return j?j[0]:'';})()";
+
+    // 诊断用：把当前页面的存储键名列出来
+    private static final String KEYS_JS =
+        "(function(){var o=[];try{for(var i=0;i<localStorage.length;i++){o.push('LS:'+localStorage.key(i));}}catch(e){}"
+        + "try{for(var j=0;j<sessionStorage.length;j++){o.push('SS:'+sessionStorage.key(j));}}catch(e){}"
+        + "try{o.push('CK:'+(document.cookie||'').split(';').map(function(x){return x.split('=')[0].trim()}).join(','));}catch(e){}"
+        + "return o.join('  ');})()";
     // ---------------------------------------------------------------- 下载
 
     /**
