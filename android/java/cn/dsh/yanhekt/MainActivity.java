@@ -52,6 +52,9 @@ public class MainActivity extends Activity {
     private volatile boolean loggingIn = false;
     private String pendingUrl = null;
     private final java.util.List<String> sessionCookies = new java.util.ArrayList<String>();
+    private FrameLayout rootView;
+    private android.view.View customView;
+    private WebChromeClient.CustomViewCallback customCb;
     private volatile boolean forceNext = false;
 
     @Override
@@ -62,6 +65,7 @@ public class MainActivity extends Activity {
         cm.setAcceptCookie(true);
 
         FrameLayout root = new FrameLayout(this);
+        rootView = root;
         root.setBackgroundColor(Color.parseColor("#0f1115"));
 
         web = new WebView(this);
@@ -91,7 +95,24 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
-        web.setWebChromeClient(new WebChromeClient());
+        // HTML5 全屏：WebView 自己不会处理 requestFullscreen，必须接这两个回调
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override public void onShowCustomView(android.view.View view, WebChromeClient.CustomViewCallback cb) {
+                if (customView != null) { cb.onCustomViewHidden(); return; }
+                customView = view; customCb = cb;
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                rootView.addView(view, lp);
+                web.setVisibility(android.view.View.GONE);
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                hideSystemBars();
+            }
+            @Override public void onHideCustomView() { exitFullscreen(); }
+            @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                Log.d(TAG, "js> " + m.message());
+                return true;
+            }
+        });
         web.setDownloadListener(new DownloadListener() {
             @Override public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long len) {
                 download(url);
@@ -246,7 +267,7 @@ public class MainActivity extends Activity {
             final String fMsg = (oldMsg + " / " + newMsg).trim();
             loggingIn = false;
             ui.post(new Runnable() { public void run() {
-                if (fNew) { openPlayer("/y2"); return; }
+                if (fNew) { openPlayer("/y2"); if (!fOld) ui.postDelayed(offerOldLogin, 4000); return; }
                 if (fOld) { openPlayer("/"); return; }
                 bar.setVisibility(TextView.VISIBLE);
                 bar.setText("两个平台都没登录成功：" + brief(fMsg) + "（点这里重试，屏幕上是诊断信息）");
@@ -447,6 +468,74 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- 工具
 
+    private void exitFullscreen() {
+        if (customView == null) return;
+        try { rootView.removeView(customView); } catch (Exception ignored) {}
+        customView = null;
+        if (web != null) web.setVisibility(android.view.View.VISIBLE);
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (customCb != null) { customCb.onCustomViewHidden(); customCb = null; }
+    }
+
+    private void hideSystemBars() {
+        try {
+            getWindow().getDecorView().setSystemUiVisibility(
+                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        } catch (Exception ignored) {}
+    }
+
+    /** 新版成功了但老平台没成功时，给一个补登录入口（往年课要走老平台） */
+    private final Runnable offerOldLogin = new Runnable() { public void run() {
+        ui.post(new Runnable() { public void run() {
+            if (loggingIn) return;
+            bar.setVisibility(TextView.VISIBLE);
+            bar.setText("老平台未登录（往年课要用）—— 点这里登录");
+            bar.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    bar.setOnClickListener(null);
+                    oldLoginFlow();
+                }
+            });
+        }});
+    }};
+
+    private void oldLoginFlow() {
+        loggingIn = true;
+        bar.setVisibility(TextView.VISIBLE);
+        bar.setText("正在打开老平台，登录后会自动继续…");
+        web.loadUrl(OLD_SITE);
+        new Thread(new Runnable() { public void run() {
+            String tok = waitOldToken(180000);
+            boolean ok = false;
+            String msg = "没在页面里找到 token";
+            if (tok != null) {
+                String r = postLogin("/api/login", "{\"token\":" + json(tok) + "}");
+                ok = r != null && r.indexOf("\"ok\":true") >= 0;
+                msg = r == null ? "请求失败" : r;
+                Log.i(TAG, "old login only -> " + r);
+            }
+            final boolean fOk = ok;
+            final String fMsg = msg;
+            loggingIn = false;
+            ui.post(new Runnable() { public void run() {
+                if (fOk) {
+                    bar.setText("老平台已登录");
+                    ensureSessionCookies();
+                    web.reload();
+                    ui.postDelayed(new Runnable() { public void run() { bar.setVisibility(TextView.GONE); } }, 2500);
+                } else {
+                    bar.setText("老平台还是不行：" + brief(fMsg) + "（点这里重试）");
+                    bar.setOnClickListener(new android.view.View.OnClickListener() {
+                        @Override public void onClick(android.view.View v) { bar.setOnClickListener(null); oldLoginFlow(); }
+                    });
+                    showDiag(fMsg);
+                }
+            }});
+        }}).start();
+    }
     private void say(final String msg) {
         Log.w(TAG, msg);
         ui.post(new Runnable() { public void run() { bar.setVisibility(TextView.VISIBLE); bar.setText(msg); } });
@@ -546,8 +635,12 @@ public class MainActivity extends Activity {
         + "try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);all+=' '+k+'='+localStorage.getItem(k);}}catch(e){}"
         + "try{for(var j=0;j<sessionStorage.length;j++){var k2=sessionStorage.key(j);all+=' '+k2+'='+sessionStorage.getItem(k2);}}catch(e){}"
         + "try{all+=' '+document.cookie;}catch(e){}"
-        + "var m=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(all);"
-        + "return m?m[1]:'';})()";
+        + "var m=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(all);if(m)return m[1];"
+        + "try{for(var i2=0;i2<localStorage.length;i2++){var k3=localStorage.key(i2);"
+        + "if(/token/i.test(k3)){var v3=localStorage.getItem(k3)||'';"
+        + "var m3=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(v3);if(m3)return m3[1];"
+        + "if(v3.length>40&&v3.indexOf(' ')<0)return v3;}}}catch(e){}"
+        + "return '';})()";
 
     // 新版平台 token：_token 是 PHP 序列化串（里面有分号，直接当 cookie header 发会被截断），
     // 所以在页面里按官网 getToken 的写法把 JWT 抠出来
@@ -664,6 +757,7 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- 生命周期
 
     @Override public void onBackPressed() {
+        if (customView != null) { exitFullscreen(); return; }
         if (web != null && web.canGoBack()) { web.goBack(); return; }
         super.onBackPressed();
     }

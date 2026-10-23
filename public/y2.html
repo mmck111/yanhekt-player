@@ -177,6 +177,7 @@
         <option value="1.5">1.5×</option><option value="2">2×</option>
       </select>
       <button id="dl" title="把当前这一路画面下载成 mp4（新版本来就是 MP4，直接存）">下载</button>
+      <button id="fs" title="全屏">全屏</button>
     </div>
     <div class="overlay" id="overlay"></div>
   </main>
@@ -676,6 +677,22 @@ $('#dl').onclick = () => {
     + '&title=' + encodeURIComponent(title);
   window.open(url, '_blank');
   toast('开始下载' + label + '，先别关这个页面', 6000);
+};
+
+// 全屏：手机上没有播放器控件，这个按钮就是唯一的入口
+$('#fs').onclick = () => {
+  const el = v;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.webkitEnterFullscreen;
+  try{
+    if (document.fullscreenElement || document.webkitFullscreenElement){
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) exit.call(document);
+      return;
+    }
+    if (!req) { toast('这个设备不支持全屏'); return; }
+    const r = req.call(el);
+    if (r && r.catch) r.catch(() => toast('全屏被拒绝'));
+  }catch(e){ toast('全屏失败：' + e.message); }
 };
 
 function updateTabs(){

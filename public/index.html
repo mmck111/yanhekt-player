@@ -867,7 +867,16 @@ $('#rate').onchange = e => {
   const r = Number(e.target.value);
   vids.main.playbackRate = r; vids.vga.playbackRate = r;
 };
-$('#btnFs').onclick = () => { const s = $('#stage'); s.requestFullscreen && s.requestFullscreen(); };
+$('#btnFs').onclick = () => {
+  const s = $('#stage');
+  if (document.fullscreenElement || document.webkitFullscreenElement){
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (exit) exit.call(document);
+    return;
+  }
+  const req = s.requestFullscreen || s.webkitRequestFullscreen;
+  if (req) { const r = req.call(s); if (r && r.catch) r.catch(()=>{}); }
+};
 $('#btnDl').onclick = () => downloadCurrent('');
 document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
   mode = b.dataset.mode;
