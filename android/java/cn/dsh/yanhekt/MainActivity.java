@@ -51,6 +51,7 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private volatile boolean loggingIn = false;
     private String pendingUrl = null;
+    private volatile boolean forceNext = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -170,7 +171,13 @@ public class MainActivity extends Activity {
         if (loggingIn) return;
         loggingIn = true;
         bar.setVisibility(TextView.VISIBLE);
-        bar.setText("请在下方登录延河课堂；老平台、新版平台各登录一次，之后会自动进入播放器");
+        bar.setText("请在下方登录延河课堂；老平台、新版平台各登录一次。检测不到就点这条跳过");
+        bar.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) {
+                forceNext = true;
+                bar.setText("跳过这一步…");
+            }
+        });
         web.loadUrl(OLD_SITE);
         new Thread(new Runnable() { public void run() {
             // 1) 老平台：cookie yht（或 localStorage.auth.token）
@@ -205,20 +212,61 @@ public class MainActivity extends Activity {
 
     private String waitOldToken(int ms) {
         long t0 = System.currentTimeMillis();
+        int tick = 0;
         while (System.currentTimeMillis() - t0 < ms) {
+            if (forceNext) { forceNext = false; return null; }
+            // 1) 某些环境下老平台确实会种 yht cookie
             String ck = CookieManager.getInstance().getCookie(OLD_SITE);
             String tok = cookieValue(ck, "yht");
             if (tok != null && tok.length() > 20) return Uri.decode(tok);
+            // 2) 主要还是 localStorage.auth —— 电脑版去读 leveldb 拿的就是这个
+            String js = jsEval(TOKEN_JS);
+            if (js != null && js.length() > 20) return js;
+            if (++tick % 5 == 0) {
+                final String t = "老平台：等你登录…（已等 " + ((System.currentTimeMillis() - t0) / 1000) + " 秒）";
+                ui.post(new Runnable() { public void run() { if (loggingIn) bar.setText(t); } });
+            }
             sleep(1200);
         }
         return null;
     }
 
+    /** 在页面里同步取一个值（evaluateJavascript 是异步的，用 latch 等结果） */
+    private String jsEval(String code) {
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        final String[] out = new String[1];
+        ui.post(new Runnable() { public void run() {
+            try {
+                web.evaluateJavascript(code, new android.webkit.ValueCallback<String>() {
+                    @Override public void onReceiveValue(String v) { out[0] = v; latch.countDown(); }
+                });
+            } catch (Exception e) { latch.countDown(); }
+        }});
+        try { latch.await(5, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        String v = out[0];
+        if (v == null || v.equals("null") || v.equals("undefined")) return "";
+        try {
+            Object o = new org.json.JSONTokener(v).nextValue();
+            return o == null ? "" : String.valueOf(o);
+        } catch (Exception e) {
+            return v.replaceAll("^\"|\"$", "");
+        }
+    }
+
     private String waitY2Cookie(int ms) {
         long t0 = System.currentTimeMillis();
+        int tick = 0;
         while (System.currentTimeMillis() - t0 < ms) {
+            if (forceNext) { forceNext = false; return null; }
             String ck = CookieManager.getInstance().getCookie(Y2_SITE);
             if (ck != null && ck.indexOf("_token") >= 0) return ck;
+            // 兜底：直接从页面里读 document.cookie（新版平台的 _token 是 JS 可读的）
+            String page = jsEval("document.cookie||''");
+            if (page != null && page.indexOf("_token") >= 0) return page;
+            if (++tick % 5 == 0) {
+                final String t = "新版平台：等你登录…（已等 " + ((System.currentTimeMillis() - t0) / 1000) + " 秒）";
+                ui.post(new Runnable() { public void run() { if (loggingIn) bar.setText(t); } });
+            }
             sleep(1200);
         }
         return null;
@@ -354,6 +402,20 @@ public class MainActivity extends Activity {
         r.close();
         return sb.toString();
     }
+
+    // 老平台的 token 藏在 localStorage.auth 里（电脑版为此去读浏览器 leveldb），cookie 不保险
+    private static final String TOKEN_JS =
+        "(function(){try{"
+        + "var l='',t='',s='',c='';"
+        + "try{l=localStorage.getItem('auth')||''}catch(e){}"
+        + "try{t=localStorage.getItem('token')||''}catch(e){}"
+        + "try{s=sessionStorage.getItem('auth')||''}catch(e){}"
+        + "try{c=document.cookie||''}catch(e){}"
+        + "var all=l+' '+t+' '+s+' '+c;"
+        + "var m=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(all);"
+        + "if(m)return m[1];"
+        + "try{var j=JSON.parse(l||'{}');if(j&&j.token)return String(j.token);}catch(e){}"
+        + "return '';}catch(e){return ''}})()";
 
     // ---------------------------------------------------------------- 下载
 
