@@ -857,7 +857,7 @@ function showLoginModal(msg){
   }
   box.innerHTML = `<div class="login">
       <h2>登录 / 切换平台</h2>
-      <p class="sub">点平台按钮 → 跳去官网登录 → 自动回到这里。两个都登最好。</p>
+      <p class="sub">点下面的按钮跳到官网登录，登录好后按返回键回到播放器即可。</p>
       <button class="autobtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课，播放快 3~5 倍</i></button>
       <button class="autobtn" id="mOld" style="background:linear-gradient(135deg,#3a4256,#2a3140)"><b>${oldok ? '✓ 老平台已登录（点一下重登）' : '登录老平台'}</b><i>往年（2024 以前）的课要走这边</i></button>
       <div class="msg ${msg?'err':''}">${esc(msg||'')}</div>

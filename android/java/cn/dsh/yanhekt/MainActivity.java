@@ -49,7 +49,8 @@ public class MainActivity extends Activity {
     private TextView bar;
     private Process proc;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private volatile boolean loggingIn = false;
+    private volatile String pendingLogin = null;   // 正在跳官网登录的平台（"old"/"y2"）
+    private volatile boolean loginSiteSeen = false; // 是否已经站到官网登录页上了
     private String pendingUrl = null;
     private final java.util.List<String> sessionCookies = new java.util.ArrayList<String>();
     private FrameLayout rootView;
@@ -66,7 +67,6 @@ public class MainActivity extends Activity {
     private android.view.View customView;
     private WebChromeClient.CustomViewCallback customCb;
     private volatile boolean forceNext = false;
-    private volatile boolean loginCancelled = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -96,8 +96,20 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override public void onPageFinished(WebView v, String url) {
                 v.evaluateJavascript(DL_HOOK, null);
-                // 登录状态推给页面（汉堡栏里的登录按钮显示「已登录 · 切换账号」）
-                if (url != null && url.startsWith(BASE)) pushStatus();
+                boolean onPlayer = url != null && url.startsWith(BASE);
+                if (onPlayer) {
+                    // 登录状态推给页面（顶栏的登录按钮据此显示「✓ 已登录」）
+                    pushStatus();
+                    // 用户从登录页按返回键回来了：把底部那条提示收掉
+                    if (loginSiteSeen && pendingLogin != null) {
+                        loginSiteSeen = false;
+                        pendingLogin = null;
+                        bar.setOnClickListener(null);
+                        bar.setVisibility(TextView.GONE);
+                    }
+                } else {
+                    loginSiteSeen = true;   // 已经真的站到官网登录页上了
+                }
             }
 
             // 从页面自己发出的 API 请求里截 Authorization —— 比在 localStorage 里猜可靠得多
@@ -381,100 +393,92 @@ public class MainActivity extends Activity {
         } catch (Exception e) { Log.w(TAG, "restore failed", e); }
     }
 
-    // ---------------------------------------------------------------- 登录（单平台，按需跳转）
+    // ---------------------------------------------------------------- 登录（跳官网登录 → 回来自动生效）
 
     /**
      * 页面里的「登录」按钮都走这里：which = "y2"（新版）或 "old"（老平台）。
-     * 会先跳到官网登录页，截到 token 后写进本地引擎，再自动回到播放器。
+     * 只做一件事：跳到官网登录页，提示「登好按返回键回播放器」。
+     * token 在后台静默截获并写进引擎，不弹进度、不弹结果，不打断用户。
      */
     @JavascriptInterface
     public void login(final String which) {
         final String w = "old".equals(which) ? "old" : "y2";
-        ui.post(new Runnable() { public void run() { startLoginOne(w); } });
+        ui.post(new Runnable() { public void run() { startLoginSite(w); } });
     }
 
-    private void startLoginOne(final String which) {
-        if (loggingIn) { say("正在登录中，先把当前这个登完"); return; }
-        loggingIn = true;
-        loginCancelled = false;
-        forceNext = false;
+    private void startLoginSite(final String which) {
         final boolean y2 = "y2".equals(which);
-        final String tag = y2 ? "新版平台" : "老平台";
-        // 一次登录重新开始：旧的截获 token 全部作废，避免拿上次过期的串去试
+        pendingLogin = which;
+        loginSiteSeen = false;
         capturedOld = null; capturedY2 = null;
         bar.setVisibility(TextView.VISIBLE);
-        bar.setText(tag + "：在下面的页面登录，登好自动返回（不想登就点这条）");
+        bar.setText(y2 ? "在新版登录页登录，登录好后按返回键回到播放器"
+                       : "在老平台登录页登录，登录好后按返回键回到播放器");
         bar.setOnClickListener(new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) {
-                loginCancelled = true;
-                forceNext = true;
-                bar.setOnClickListener(null);
-                bar.setText("已取消登录");
-            }
+            @Override public void onClick(android.view.View v) { backToPlayer(); }
         });
         web.loadUrl(y2 ? Y2_SITE + "/portal/" : OLD_SITE);
+
+        // 后台默默把登录态交给引擎；用户在网站那边登完、返回时已经生效
         new Thread(new Runnable() { public void run() {
-            String tok = y2 ? waitY2Token(180000) : waitOldToken(180000);
-            boolean ok = false;
-            String msg = "没在页面里找到登录态（登到能看见课程列表才算成功）";
-            if (tok != null) {
-                String res = postLoginCandidates(y2 ? "/api/y2/login" : "/api/login", y2 ? "jwt" : "token", tok);
-                ok = "OK".equals(res);
-                if (!ok) msg = res;
-                Log.i(TAG, which + " login -> " + res);
+            String tok = y2 ? waitY2Token(300000) : waitOldToken(300000);
+            if (tok == null) return;
+            String res = postLoginCandidates(y2 ? "/api/y2/login" : "/api/login", y2 ? "jwt" : "token", tok);
+            Log.i(TAG, "login(" + which + ") -> " + res);
+            if (!"OK".equals(res) && !y2) {
+                // 老平台的网页现在发的可能已经是新版登录态，静默再试一次
+                String r2 = postLoginCandidates("/api/y2/login", "jwt", tok);
+                Log.i(TAG, "login(old)->y2 -> " + r2);
             }
-            // 老平台的网页现在就是新版那套（登录已经统一）：同一个 token 拿去试新版，
-            // 过了说明用户拿到的本来就是新版登录态，不该报"token 无效"
-            boolean viaY2 = false;
-            if (!ok && !y2) {
-                for (String blob : new String[]{ tok, capturedY2 }) {
-                    if (blob == null) continue;
-                    String r2 = postLoginCandidates("/api/y2/login", "jwt", blob);
-                    Log.i(TAG, "old->y2 fallback -> " + r2);
-                    if ("OK".equals(r2)) { ok = true; viaY2 = true; msg = ""; break; }
-                }
-            }
-            // 还是不行，但引擎里本来就有可用的老平台登录态（之前登过、还能用）：别报错，直接进去
-            final boolean already = !ok && !y2
-                && String.valueOf(tryHttp(BASE + "/api/status", null)).contains("\"loggedIn\":true");
-            final boolean cancelled = loginCancelled;
-            loginCancelled = false;
-            loggingIn = false;
-            final boolean fOk = ok;
-            final boolean fViaY2 = viaY2;
-            final String fMsg = msg;
             ui.post(new Runnable() { public void run() {
-                bar.setOnClickListener(null);
-                if (cancelled) { openPlayer(y2 ? "/y2" : "/"); return; }
-                // 老平台本来就有能用的登录态（网页这么显示也就是它自己已经登录了）：
-                // 这次抓到的 token 是别的（新版）登录态也没关系，别报失败，直接回播放器
-                if (already) {
-                    bar.setText("老平台已登录（沿用现有登录态）");
-                    Toast.makeText(MainActivity.this, "老平台登录态仍然有效", Toast.LENGTH_SHORT).show();
-                    ui.postDelayed(new Runnable() { public void run() { openPlayer("/"); pushStatus(); } }, 900);
-                    return;
+                pendingLogin = null;
+                // 用户已经回到播放器了：刷新一下，让页面看到新的登录态
+                if (onPlayerPage()) {
+                    ensureSessionCookies();
+                    openPlayer(y2 ? "/y2" : "/");
+                    watchExpiry();
                 }
-                if (fOk) {
-                    final String okMsg = fViaY2 ? "新版已登录（延河课堂的登录已经统一到新版了）" : tag + "已登录";
-                    bar.setText(okMsg);
-                    Toast.makeText(MainActivity.this, okMsg, Toast.LENGTH_SHORT).show();
-                    // 先把"登录成功"亮一下再跳回播放器，否则一闪就没了
-                    ui.postDelayed(new Runnable() { public void run() {
-                        ensureSessionCookies();
-                        openPlayer((y2 || fViaY2) ? "/y2" : "/");
-                        watchExpiry();
-                        pushStatus();
-                    }}, 1200);
-                    return;
+            }});
+        }}).start();
+    }
+
+    /** 当前是不是停在播放器页面（而不是官网登录页） */
+    private boolean onPlayerPage() {
+        try {
+            String u = web == null ? null : web.getUrl();
+            return u != null && u.startsWith(BASE);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 从登录页回播放器（返回键 / 点底部提示条）：回来之前再抓一次登录态，别等后台轮询 */
+    private void backToPlayer() {
+        final String which = pendingLogin;
+        final boolean y2 = "y2".equals(which);
+        pendingLogin = null;
+        forceNext = true;              // 后台的等待循环可以停了
+        bar.setOnClickListener(null);
+        bar.setVisibility(TextView.GONE);
+        new Thread(new Runnable() { public void run() {
+            if (which != null) {
+                String tok = null;
+                if (y2) {
+                    String all = (capturedY2 == null ? "" : capturedY2 + "\n") + jsEval(Y2_TOKEN_JS);
+                    if (all.length() > 40) tok = all;
+                } else {
+                    String all = (capturedOld == null ? "" : capturedOld + "\n") + jsEval(TOKEN_JS);
+                    if (all.length() > 20) tok = all;
                 }
-                bar.setVisibility(TextView.VISIBLE);
-                bar.setText(tag + "没登录成功：" + brief(fMsg) + "（点这里重试）");
-                bar.setOnClickListener(new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View v) {
-                        bar.setOnClickListener(null);
-                        startLoginOne(which);
-                    }
-                });
+                if (tok != null) {
+                    String res = postLoginCandidates(y2 ? "/api/y2/login" : "/api/login", y2 ? "jwt" : "token", tok);
+                    Log.i(TAG, "back-login(" + which + ") -> " + res);
+                    if (!"OK".equals(res) && !y2) postLoginCandidates("/api/y2/login", "jwt", tok);
+                }
+            }
+            ui.post(new Runnable() { public void run() {
+                ensureSessionCookies();
+                openPlayer(y2 ? "/y2" : "/");
             }});
         }}).start();
     }
@@ -531,17 +535,6 @@ public class MainActivity extends Activity {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
-    /** 把引擎返回的 JSON 压成一行短提示 */
-    private static String brief(String s) {
-        if (s == null) return "";
-        int i = s.indexOf("\"error\"");
-        if (i >= 0) {
-            int a = s.indexOf('"', s.indexOf(':', i));
-            int b = a >= 0 ? s.indexOf('"', a + 1) : -1;
-            if (a >= 0 && b > a) return s.substring(a + 1, b);
-        }
-        return s.length() > 60 ? s.substring(0, 60) : s;
-    }
 
     private String waitOldToken(int ms) {
         long t0 = System.currentTimeMillis();
@@ -559,10 +552,6 @@ public class MainActivity extends Activity {
             // 2) 主要还是 localStorage.auth —— 电脑版去读 leveldb 拿的就是这个
             String js = jsEval(TOKEN_JS);
             if (js != null && js.length() > 20) return js;
-            if (++tick % 5 == 0) {
-                final String t = "老平台：等你登录…（已等 " + ((System.currentTimeMillis() - t0) / 1000) + " 秒）";
-                ui.post(new Runnable() { public void run() { if (loggingIn) bar.setText(t); } });
-            }
             sleep(1200);
         }
         return null;
@@ -600,10 +589,6 @@ public class MainActivity extends Activity {
             String all = (capturedY2 == null ? "" : capturedY2 + "\n") + jsEval(Y2_TOKEN_JS);
             String tk = all;
             if (tk != null && tk.length() > 40) return tk;
-            if (++tick % 5 == 0) {
-                final String t = "新版平台：等你登录…（已等 " + ((System.currentTimeMillis() - t0) / 1000) + " 秒）";
-                ui.post(new Runnable() { public void run() { if (loggingIn) bar.setText(t); } });
-            }
             sleep(1200);
         }
         return null;
@@ -620,7 +605,6 @@ public class MainActivity extends Activity {
     }
 
     private void openPlayer(final String path) {
-        loggingIn = false;
         ui.post(new Runnable() { public void run() {
             bar.setVisibility(TextView.GONE);
             // setCookie 是异步落盘的：先把会话 cookie 重新写一遍并读回确认，再导航，
@@ -667,7 +651,6 @@ public class MainActivity extends Activity {
             Log.i(TAG, "probe old=" + ao + " y2=" + bo + " cookies=" + CookieManager.getInstance().getCookie(BASE));
             pushStatus();
             ui.post(new Runnable() { public void run() {
-                if (loggingIn) return;
                 if (ao || bo) bar.setVisibility(TextView.GONE);
             }});
         }}).start();
@@ -675,19 +658,17 @@ public class MainActivity extends Activity {
 
     /** 登录态约 24 小时；过期后给一个"点一下重登"的入口 */
     private final Runnable watch = new Runnable() { public void run() {
-        if (loggingIn) return;
         new Thread(new Runnable() { public void run() {
             String st = tryHttp(BASE + "/api/y2/status", null);
             final boolean ok = st != null && st.indexOf("\"loggedIn\":true") >= 0;
             ui.post(new Runnable() { public void run() {
-                if (loggingIn) return;
                 if (ok) { ui.postDelayed(watch, 60000); return; }
                 bar.setVisibility(TextView.VISIBLE);
                 bar.setText("新版登录已过期 —— 点这里重新登录");
                 bar.setOnClickListener(new android.view.View.OnClickListener() {
                     @Override public void onClick(android.view.View v) {
                         bar.setOnClickListener(null);
-                        startLoginOne("y2");
+                        startLoginSite("y2");
                     }
                 });
             }});
