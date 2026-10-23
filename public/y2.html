@@ -24,8 +24,15 @@
   .filters select:focus{border-color:var(--accent)}
   .fmeta{font-size:11px;color:#6f7889;margin-top:6px;min-height:14px}
   .list{overflow:auto;padding:8px;flex:1}
-  .item{padding:9px 11px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
-  .item:hover{background:var(--panel2)}
+  .item{padding:9px 11px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}  .item:hover{background:var(--panel2)}
+  /* 讲次页顶部的返回条：回到选门（选课）界面 */
+  .backrow{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:7px;padding:8px 10px;
+    margin:0 0 6px;background:#16233a;border:1px solid #2f4a7a;border-radius:9px;
+    color:#a9d4ff;font-size:12.5px;cursor:pointer}
+  .backrow:hover{background:#1b2740}
+  .backrow .ar{font-size:14px;line-height:1}
+  .backrow .bk{font-weight:600;white-space:nowrap}
+  .backrow b{margin-left:auto;font-weight:500;color:#c9d6e6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .item.on{background:#1b2740;border-color:#2f4a7a}
   .item.dim{opacity:.55}
   .item.dead{opacity:.45}
@@ -665,7 +672,49 @@ async function fillVerdicts(pending){
 }
 
 // ---------------- 讲次 ----------------
+// 选课列表整棵 DOM 挪进隐藏容器存着（保留 onclick），从讲次返回时原样搬回来
+let courseListBackup = null, fmetaBackup = '';
+
+function pushCourseList(){
+  if (courseListBackup) return;            // 已经在讲次里了，别把讲次页当成选课页
+  const list = $('#list');
+  if (!list.firstElementChild) return;     // 列表是空的（直接开某门课）：没有可回的选课页
+  courseListBackup = document.createElement('div');
+  courseListBackup.style.display = 'none';
+  document.body.appendChild(courseListBackup);
+  while (list.firstChild) courseListBackup.appendChild(list.firstChild);
+  fmetaBackup = $('#fmeta').textContent;
+}
+
+function backToCourseList(){
+  const list = $('#list');
+  if (!courseListBackup) {
+    // 直接开某门课（深链 / 上次的课）进来的：没有列表可回，退回搜索状态
+    curCourse = null;
+    $('#fmeta').textContent = '找工作 / 教师名开始搜课';
+    list.innerHTML = '<div class="splash"><span style="font-size:12px">↑ 上面输入课程名或教师名，点「查找」</span></div>';
+    return;
+  }
+  list.innerHTML = '';
+  while (courseListBackup.firstChild) list.appendChild(courseListBackup.firstChild);
+  document.body.removeChild(courseListBackup);
+  courseListBackup = null;
+  curCourse = null;
+  $('#fmeta').textContent = fmetaBackup;
+  list.scrollTop = 0;
+}
+
+function rowBack(c){
+  const el = document.createElement('div');
+  el.className = 'backrow';
+  el.innerHTML = '<span class="ar">←</span><span class="bk">返回课程列表</span>'
+    + (c && c.title ? '<b>' + esc(c.title) + '</b>' : '');
+  el.onclick = () => { backToCourseList(); };
+  return el;
+}
+
 async function loadSessions(c, el, opts){
+  pushCourseList();
   curCourse = c;
   if (el) document.querySelectorAll('.item').forEach(x=>x.classList.toggle('on', x===el));
   remember(c, curQuery);
@@ -677,13 +726,23 @@ async function loadSessions(c, el, opts){
       + '&termName=' + encodeURIComponent(c.termName || '')
       + (curTerm() ? '&term=' + encodeURIComponent(curTerm()) : '');
     const j = await jget(url);
-    if(!j.ok){ $('#list').innerHTML = '<div class="splash"><b>取讲次失败</b><span>'+ esc(j.error||'') +'</span></div>'; return; }
-    const list = $('#list'); list.innerHTML='';
+    const list = $('#list');
+    if(!j.ok){
+      list.innerHTML = '';
+      list.appendChild(rowBack(c));
+      list.insertAdjacentHTML('beforeend', '<div class="splash"><b>取讲次失败</b><span>'+ esc(j.error||'') +'</span></div>');
+      return;
+    }
+    list.innerHTML = '';
+    list.appendChild(rowBack(c));
     if(!j.sessions.length){
-      list.innerHTML = '<div class="splash"><b>没有可看的讲次</b><span>这门课在 ' + (curTerm()?'这个学期':'任何学期') + ' 都没有录像</span>'
+      const empty = document.createElement('div');
+      empty.className = 'splash';
+      empty.innerHTML = '<b>没有可看的讲次</b><span>这门课在 ' + (curTerm()?'这个学期':'任何学期') + ' 都没有录像</span>'
         + (j.hidden ? '<span class="tiny">' + j.hidden + ' 讲里没有一节有录像</span>' : '')
         + (j.notes && j.notes.length ? '<span class="tiny">' + esc(j.notes.join('；')) + '</span>' + diagHint(j.notes) : '')
-        + (curTerm() ? '<span class="tiny">把学期改成「全部学期」再看一眼</span>' : '') + '</div>';
+        + (curTerm() ? '<span class="tiny">把学期改成「全部学期」再看一眼</span>' : '');
+      list.appendChild(empty);
       return;
     }
     if (j.source === 'schedule') $('#fmeta').textContent = '讲次来自扫课表（' + j.sessions.length + ' 节有录像）';
@@ -709,7 +768,12 @@ async function loadSessions(c, el, opts){
       firstPlayable.el2.classList.add('on');
       play(firstPlayable.s, firstPlayable.el2);
     }
-  }catch(e){ $('#list').innerHTML = '<div class="splash"><b>出错</b><span>'+ esc(e.message) +'</span></div>'; }
+  }catch(e){
+    const list = $('#list');
+    list.innerHTML = '';
+    list.appendChild(rowBack(c));
+    list.insertAdjacentHTML('beforeend', '<div class="splash"><b>出错</b><span>'+ esc(e.message) +'</span></div>');
+  }
 }
 
 async function play(s, el){

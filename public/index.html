@@ -41,6 +41,14 @@
   .userline a#btnY2:hover{color:#8fb4e8}
 
   .list{overflow:auto;padding:8px;flex:1}
+  /* 讲次页顶部的返回条：回到选门（选课）界面 */
+  .backrow{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:7px;padding:8px 10px;
+    margin:0 0 6px;background:#16233a;border:1px solid #2f4a7a;border-radius:9px;
+    color:#a9d4ff;font-size:12.5px;cursor:pointer}
+  .backrow:hover{background:#1b2740}
+  .backrow .ar{font-size:14px;line-height:1}
+  .backrow .bk{font-weight:600;white-space:nowrap}
+  .backrow b{margin-left:auto;font-weight:500;color:#c9d6e6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .item{padding:9px 11px;border-radius:8px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
   .item:hover{background:var(--panel2)}
   .item.on{background:#1b2740;border-color:#2f4a7a}
@@ -624,6 +632,48 @@ function signedIn(user){
 }
 
 /* ---------- 课程 ---------- */
+// 选课列表整棵 DOM 挪进隐藏容器存着（保留 onclick），从讲次返回时原样搬回来
+let courseListBackup = null, headBackup = null;
+
+function pushCourseList(){
+  if (courseListBackup) return;              // 已经在讲次里了，别把讲次页当成选课页
+  const list = $('#list');
+  if (!list.firstElementChild) return;       // 空列表（直接开某门课）：没有可回的选课页
+  courseListBackup = document.createElement('div');
+  courseListBackup.style.display = 'none';
+  document.body.appendChild(courseListBackup);
+  while (list.firstChild) courseListBackup.appendChild(list.firstChild);
+  headBackup = { name: $('#cname').textContent, meta: $('#cmeta').textContent };
+}
+
+function backToCourseList(){
+  const list = $('#list');
+  if (!courseListBackup) {
+    // 直接开某门课（深链 / 上次看的那门）进来的：没有列表可回，退回搜索状态
+    curCourse = null;
+    $('#cname').textContent = '延河课堂在线播放器';
+    $('#cmeta').textContent = '搜课程名开始，可按学期筛';
+    list.innerHTML = '<div class="splash" style="padding:20px"><span style="font-size:12px">↑ 左上角输入课程名 / 教师名，点「搜课」</span></div>';
+    return;
+  }
+  list.innerHTML = '';
+  while (courseListBackup.firstChild) list.appendChild(courseListBackup.firstChild);
+  document.body.removeChild(courseListBackup);
+  courseListBackup = null;
+  curCourse = null;
+  if (headBackup) { $('#cname').textContent = headBackup.name; $('#cmeta').textContent = headBackup.meta; }
+  list.scrollTop = 0;
+}
+
+function rowBack(title){
+  const el = document.createElement('div');
+  el.className = 'backrow';
+  el.innerHTML = '<span class="ar">←</span><span class="bk">返回课程列表</span>'
+    + (title ? '<b>' + esc(title) + '</b>' : '');
+  el.onclick = () => { backToCourseList(); };
+  return el;
+}
+
 async function openCourse(input, { force = false } = {}){
   if (!me) { showLogin(); return; }
   const raw = String(input || '').trim();
@@ -631,6 +681,7 @@ async function openCourse(input, { force = false } = {}){
   const id = m ? m[1] : '';
   if (!id) { $('#cmeta').textContent = '请输入课程编号'; return; }
 
+  pushCourseList();
   history.replaceState(null, '', '?course=' + id);
   try { localStorage.setItem('yhkt_last_course', id); } catch(e){}
 
@@ -664,6 +715,7 @@ async function openCourse(input, { force = false } = {}){
   $('#cmeta').textContent = bits.join(' · ') + `　｜　${data.stats.playable}/${data.stats.total} 讲有录像`;
 
   const list = $('#list'); list.innerHTML = '';
+  list.appendChild(rowBack(c.name));
   // 有录像记录却没算出可播讲次时，别让人一头雾水：直接说清是"没录像"还是"取不到地址"
   if (data.stats && data.stats.total > 0 && data.stats.playable === 0) {
     const n = document.createElement('div');
@@ -676,7 +728,11 @@ async function openCourse(input, { force = false } = {}){
     if (a) a.onclick = () => showLogin('', true);
   }
   if (!data.sessions.length) {
-    list.innerHTML = '<div class="splash" style="padding:20px"><span style="font-size:12px">该课程暂无节次记录</span></div>';
+    const empty = document.createElement('div');
+    empty.className = 'splash';
+    empty.style.padding = '20px';
+    empty.innerHTML = '<span style="font-size:12px">该课程暂无节次记录</span>';
+    list.appendChild(empty);
     splashEmpty('这门课没有可播放的节次', data);
     return;
   }
