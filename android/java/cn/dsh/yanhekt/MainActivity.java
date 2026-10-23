@@ -218,6 +218,36 @@ public class MainActivity extends Activity {
         startEngine();
     }
 
+    /**
+     * App 被杀 / 崩溃时，MediaStore 里的 pending 行会留下 0 字节的半截文件。
+     * 启动时把自己包名下还没完成的都删掉，免得 Download 目录越攒越脏。
+     */
+    private void cleanupStalePending() {
+        if (Build.VERSION.SDK_INT < 29) return;
+        try {
+            android.database.Cursor c = getContentResolver().query(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                new String[]{ android.provider.MediaStore.MediaColumns._ID },
+                android.provider.MediaStore.MediaColumns.IS_PENDING + "=1 AND "
+                    + android.provider.MediaStore.MediaColumns.OWNER_PACKAGE_NAME + "=?",
+                new String[]{ getPackageName() }, null);
+            if (c == null) return;
+            java.util.List<Long> ids = new java.util.ArrayList<Long>();
+            while (c.moveToNext()) ids.add(c.getLong(0));
+            c.close();
+            for (long id : ids) {
+                Uri u = android.content.ContentUris.withAppendedId(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, id);
+                try {
+                    int n = getContentResolver().delete(u, null, null);
+                    Log.i(TAG, "cleanup pending " + id + " -> " + n);
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "cleanup pending failed", e);
+        }
+    }
+
     private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density); }
 
     /**
@@ -255,6 +285,7 @@ public class MainActivity extends Activity {
 
     private void startEngine() {
         new Thread(new Runnable() { public void run() {
+            cleanupStalePending();
             File bin = new File(getApplicationInfo().nativeLibraryDir, "libyhkt.so");
             Log.i(TAG, "engine " + bin.getAbsolutePath() + " exists=" + bin.exists());
             if (!bin.exists()) { say("找不到内置引擎，安装包可能被改动"); return; }
@@ -347,8 +378,7 @@ public class MainActivity extends Activity {
         forceNext = false;
         final boolean y2 = "y2".equals(which);
         final String tag = y2 ? "新版平台" : "老平台";
-        if (y2) capturedY2 = null; else capturedOld = null;
-        // 一次登录重新开始：旧的截获 token 全部作废，避免用上次的过期串
+        // 一次登录重新开始：旧的截获 token 全部作废，避免拿上次过期的串去试
         capturedOld = null; capturedY2 = null;
         bar.setVisibility(TextView.VISIBLE);
         bar.setText(tag + "：在下面的页面登录，登好自动返回（不想登就点这条）");

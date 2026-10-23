@@ -290,7 +290,7 @@ window.__yhktStat = (ao, bo) => {
   y2ok = !!bo; oldok = !!ao;
   window.__yhktStat._ao = ao ? 1 : 0; window.__yhktStat._bo = bo ? 1 : 0;
   const a = document.getElementById('loginY2'), b = document.getElementById('loginOld');
-  if (a) { a.textContent = bo ? '✓ 新版已登录（点一下换账号）' : '登录新版平台'; a.classList.toggle('on', !!bo); }
+  if (a) { a.textContent = bo ? '✓ 新版已登录（点一下重登）' : '登录新版平台'; a.classList.toggle('on', !!bo); }
   if (b) { b.textContent = ao ? '✓ 老平台已登录' : '登录老平台（往年课）'; b.classList.toggle('on', !!ao); }
   if (bo) $('#sdot').classList.remove('off');
   if (bo && $('#overlay').style.display === 'flex' && document.getElementById('appY2')) $('#overlay').style.display = 'none';
