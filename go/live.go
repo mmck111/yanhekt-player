@@ -44,11 +44,12 @@ var reBackslashSlash = strings.NewReplacer(`\/`, `/`)
 // unescapeUrl JSON 里的地址有时带 \/ 转义
 func unescapeUrl(s string) string { return reBackslashSlash.Replace(s) }
 
-// parseLocalTime 按"本地时间"解析 2026-10-22 18:30:00（和 JS 的 Date.parse 行为一致）
+// parseLocalTime 解析平台给的北京时间串 2026-10-22 18:30:00
+// （固定 +08:00；不能用 time.Local —— 手机上找不到 tzdata 会退化成 UTC，整体偏 8 小时）
 func parseLocalTime(s string) int64 {
 	t := strings.ReplaceAll(s, "-", "/")
 	for _, layout := range []string{"2006/01/02 15:04:05", "2006/01/02 15:04", "2006/01/02"} {
-		if v, err := time.ParseInLocation(layout, t, time.Local); err == nil {
+		if v, err := time.ParseInLocation(layout, t, bj); err == nil {
 			return v.UnixNano() / int64(time.Millisecond)
 		}
 	}
@@ -88,7 +89,7 @@ func liveRow(l map[string]any) liveItem {
 	hasStream := unescapeUrl(jstr(l["target"])) != "" || unescapeUrl(jstr(l["target_vga"])) != ""
 	s := parseLocalTime(startedAt)
 	e := parseLocalTime(endedAt)
-	now := time.Now().UnixNano() / int64(time.Millisecond)
+	now := nowMillis()
 	phase := "live"
 	switch {
 	case e != 0 && now > e:
@@ -207,7 +208,7 @@ func liveListOld() ([]liveItem, int64, string) {
 		}
 	}
 
-	now := time.Now().UnixNano() / int64(time.Millisecond)
+	now := nowMillis()
 	items := make([]liveItem, 0, len(merged))
 	for _, id := range order {
 		x := merged[id]
@@ -239,7 +240,7 @@ func liveListOld() ([]liveItem, int64, string) {
 		return parseLocalTime(a.StartedAt) < parseLocalTime(b.StartedAt)
 	})
 
-	at := time.Now().UnixNano() / int64(time.Millisecond)
+	at := nowMillis()
 	liveMu.Lock()
 	liveItems, liveAt, liveValid = items, time.Now(), true
 	liveMu.Unlock()

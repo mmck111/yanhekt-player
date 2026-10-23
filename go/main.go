@@ -306,7 +306,7 @@ func registerAPI(mux *http.ServeMux) {
 		if items == nil {
 			items = []liveItem{}
 		}
-		writeJSON(w, 200, liveOK{Ok: true, Items: items, At: &at, Err: lerr})
+		writeJSON(w, 200, liveOK{Ok: true, Items: items, At: &at, Err: lerr, Tz: bj.String()})
 	}))
 
 	// 直播流代理（不缓存、不排队）
@@ -377,6 +377,8 @@ type liveOK struct {
 	Items []liveItem `json:"items"`
 	At    *int64     `json:"at,omitempty"`
 	Err   string     `json:"err,omitempty"`
+	// Tz 引擎解析"北京时间串"用的偏移，排查"手机上没有直播"时一眼能看出是不是时区问题
+	Tz string `json:"tz"`
 }
 
 // ---------------------------------------------------------------- 工具

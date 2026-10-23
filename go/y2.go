@@ -232,7 +232,7 @@ func y2TsOf(v any) int64 {
 		return int64(n)
 	}
 
-	// 其余当成日期字符串：Node 会把 '-' 换成 '/' 之后交给 Date.parse（本地时区）
+	// 其余当成日期字符串：平台给的是北京时间墙钟串，固定按 +08:00 解析
 	s := strings.Replace(strings.TrimSpace(y2Text(v)), "T", " ", 1)
 	ss := strings.ReplaceAll(s, "-", "/")
 	if y2DateOnly.MatchString(ss) {
@@ -242,7 +242,7 @@ func y2TsOf(v any) int64 {
 		"2006/01/02 15:04:05", "2006/01/02 15:04", "2006/01/02",
 		"2006/1/2 15:04:05", "2006/1/2 15:04", "2006/1/2",
 	} {
-		if t, err := time.ParseInLocation(layout, ss, time.Local); err == nil {
+		if t, err := time.ParseInLocation(layout, ss, bj); err == nil {
 			return t.Unix()
 		}
 	}
@@ -255,7 +255,7 @@ func y2DateOf(v any) string {
 	if ts == 0 {
 		return ""
 	}
-	return time.Unix(ts, 0).In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+	return time.Unix(ts, 0).In(bj).Format("2006-01-02")
 }
 
 // ---------------------------------------------------------------- 鉴权写法

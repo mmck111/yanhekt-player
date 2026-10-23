@@ -776,7 +776,7 @@ async function openCourse(input, { force = false } = {}){
 // 直播流是公开的 m3u8（clive*.yanhekt.cn），不用登录也能拉；
 // 统一走本地 /lp 代理，省得跟 CORS 和 CDN 行为打交道
 let srcMode = 'record';          // record | live
-let liveItems = [], liveCur = null, liveTimer = null, liveQuery = '', liveErr = '';
+let liveItems = [], liveCur = null, liveTimer = null, liveQuery = '', liveErr = '', liveTz = '';
 
 function setSrcMode(m){
   if (srcMode === m) return;
@@ -814,6 +814,7 @@ async function loadLive(){
     if (!j.ok) throw new Error(j.error || '取不到直播列表');
     liveItems = j.items || [];
     liveErr = j.err || '';
+    liveTz = j.tz || '';
     renderLive();
     clearInterval(liveTimer);
     liveTimer = setInterval(() => { if (srcMode === 'live') loadLive(); }, 60 * 1000);
@@ -838,7 +839,8 @@ function renderLive(){
   if (!view.length) {
     splash('<div class="big">' + (q ? '没有匹配的直播' : '现在没有直播') + '</div><div>'
       + (q ? '换个关键词，或把搜索框清空' : '直播一般在上课时段；切回「录播」看录像') + '</div>'
-      + (liveErr ? '<div class="tiny" style="color:#ff9b9b;max-width:80vw;word-break:break-all">接口报错：' + esc(liveErr) + '</div>' : ''));
+      + (liveErr ? '<div class="tiny" style="color:#ff9b9b;max-width:80vw;word-break:break-all">接口报错：' + esc(liveErr) + '</div>' : '')
+      + (liveTz ? '<div class="tiny">引擎按 ' + esc(liveTz) + ' 判时间</div>' : ''));
     return;
   }
   for (const it of view) {

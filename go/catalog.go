@@ -657,7 +657,7 @@ func termEndDate(termStr string) (time.Time, bool) {
 		if m == nil {
 			return time.Time{}, false
 		}
-		t, err := time.ParseInLocation("2006-01-02", m[2]+"-09-01", time.Local)
+		t, err := time.ParseInLocation("2006-01-02", m[2]+"-09-01", bj)
 		return t, err == nil
 	}
 	var yEnd int
@@ -669,7 +669,7 @@ func termEndDate(termStr string) (time.Time, bool) {
 	case 2:
 		end = fmt.Sprintf("%d-07-20", yEnd)
 	}
-	t, err := time.ParseInLocation("2006-01-02", end, time.Local)
+	t, err := time.ParseInLocation("2006-01-02", end, bj)
 	return t, err == nil
 }
 
