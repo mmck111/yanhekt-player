@@ -291,6 +291,7 @@ function showAppLogin(msg, keep){
 
 // 原生把登录状态推过来：顶栏按钮直接显示登到哪一步了
 window.__yhktStat = (ao, bo) => {
+  const prevA = window.__yhktStat._ao, prevB = window.__yhktStat._bo;
   y2ok = !!bo; oldok = !!ao;
   window.__yhktStat._ao = ao ? 1 : 0; window.__yhktStat._bo = bo ? 1 : 0;
   const lg = document.getElementById('lgbtn');
@@ -301,7 +302,18 @@ window.__yhktStat = (ao, bo) => {
   }
   if (bo) $('#sdot').classList.remove('off');
   const md = document.getElementById('lgmodal');
-  if (md && md.style.display === 'flex') showLoginModal();
+  if (md && md.style.display === 'flex'
+      && (prevA !== window.__yhktStat._ao || prevB !== window.__yhktStat._bo)) showLoginModal();
+};
+
+// App 里自己问一次两个平台的登录状态（不依赖原生推送的时序，刚登录完也能立刻亮起来）
+window.__yhktRefresh = () => {
+  Promise.all([
+    fetch('/api/status').then(r => r.json()).catch(() => null),
+    fetch('/api/y2/status').then(r => r.json()).catch(() => null),
+  ]).then(([a, b]) => {
+    window.__yhktStat(a && a.loggedIn ? 1 : 0, b && b.loggedIn ? 1 : 0);
+  }).catch(() => {});
 };
 
 function showLogin(msg){
@@ -968,8 +980,8 @@ v.addEventListener('seeked', ()=>{
     }
   } catch (e) {}
   if (logged) { $('#sdot').classList.remove('off'); refreshY2Status(); }
-  // App 里状态由原生推过来（__yhktStat）；这里只往上补，别把原生刚推的状态覆盖掉
-  if (APP && logged && !window.__yhktStat._bo) window.__yhktStat(window.__yhktStat._ao || 0, 1);
+  // App 里状态由自己问 + 原生推两条路都走，顶栏按钮立刻是准的
+  if (APP) { window.__yhktRefresh(); setTimeout(window.__yhktRefresh, 1200); setTimeout(window.__yhktRefresh, 5000); }
 
   // 从默认页点「新版平台」跳过来，带着课程名：自动搜一次
   const sp = new URLSearchParams(location.search);

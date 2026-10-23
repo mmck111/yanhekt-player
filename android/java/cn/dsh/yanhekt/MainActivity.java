@@ -418,11 +418,16 @@ public class MainActivity extends Activity {
                 bar.setOnClickListener(null);
                 if (cancelled) { openPlayer(y2 ? "/y2" : "/"); return; }
                 if (fOk) {
-                    bar.setText(fViaY2 ? "新版已登录（老平台现在走统一登录）" : tag + "已登录");
-                    ensureSessionCookies();
-                    openPlayer((y2 || fViaY2) ? "/y2" : "/");
-                    watchExpiry();
-                    pushStatus();
+                    final String okMsg = fViaY2 ? "新版已登录（老平台现在走统一登录）" : tag + "已登录";
+                    bar.setText(okMsg);
+                    Toast.makeText(MainActivity.this, okMsg, Toast.LENGTH_SHORT).show();
+                    // 先把"登录成功"亮一下再跳回播放器，否则一闪就没了
+                    ui.postDelayed(new Runnable() { public void run() {
+                        ensureSessionCookies();
+                        openPlayer((y2 || fViaY2) ? "/y2" : "/");
+                        watchExpiry();
+                        pushStatus();
+                    }}, 1200);
                     return;
                 }
                 bar.setVisibility(TextView.VISIBLE);
@@ -759,6 +764,11 @@ public class MainActivity extends Activity {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(4000);
         c.setReadTimeout(40000);
+        // 会话 cookie 在 CookieManager 里：不带上的话 /api/status 永远说"未登录"
+        try {
+            String ck = CookieManager.getInstance().getCookie(BASE);
+            if (ck != null && ck.length() > 0) c.setRequestProperty("Cookie", ck);
+        } catch (Exception ignored) {}
         if (body != null) {
             c.setRequestMethod("POST");
             c.setDoOutput(true);

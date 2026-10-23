@@ -471,6 +471,7 @@ let oldok = false, y2ok = false;
 
 // 原生把两个平台的登录状态推过来：顶栏按钮直接显示登到哪一步了
 window.__yhktStat = (ao, bo) => {
+  const prevA = window.__yhktStat._ao, prevB = window.__yhktStat._bo;
   oldok = !!ao; y2ok = !!bo;
   window.__yhktStat._ao = ao ? 1 : 0; window.__yhktStat._bo = bo ? 1 : 0;
   const lg = document.getElementById('lgbtn');
@@ -480,8 +481,20 @@ window.__yhktStat = (ao, bo) => {
     lg.classList.toggle('on', n > 0);
   }
   const md = document.getElementById('lgmodal');
-  if (md && md.style.display === 'flex') showLoginModal();
+  if (md && md.style.display === 'flex'
+      && (prevA !== window.__yhktStat._ao || prevB !== window.__yhktStat._bo)) showLoginModal();
 };
+
+// App 里自己问一次两个平台的登录状态（不依赖原生推送的时序，刚登录完也能立刻亮起来）
+window.__yhktRefresh = () => {
+  Promise.all([
+    fetch('/api/status').then(r => r.json()).catch(() => null),
+    fetch('/api/y2/status').then(r => r.json()).catch(() => null),
+  ]).then(([a, b]) => {
+    window.__yhktStat(a && a.loggedIn ? 1 : 0, b && b.loggedIn ? 1 : 0);
+  }).catch(() => {});
+};
+if (APP) { window.__yhktRefresh(); setTimeout(window.__yhktRefresh, 1200); setTimeout(window.__yhktRefresh, 5000); }
 
 function showAppLogin(msg, keep){
   // 不再用整屏登录页：页面照常进来，只在顶栏亮一个「登录」，这里顺手把弹窗打开
