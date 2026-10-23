@@ -24,7 +24,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const build = "1.5.0-go"
+const build = "2.0.0"
 
 var (
 	port = 8788

@@ -1,8 +1,8 @@
 /**
  * 把构建产物传到 GitHub Release（只发 Go 版单文件 exe）。
  *
- *   $env:GITHUB_TOKEN="ghp_..."; node tools/release.js v1.5.0
- *   node tools/release.js v1.5.0 --dry          # 只看要传什么，不需要 token
+ *   $env:GITHUB_TOKEN="ghp_..."; node tools/release.js v2.0.0
+ *   node tools/release.js v2.0.0 --dry          # 只看要传什么，不需要 token
  *
  * 只用 Node 内置 https，不依赖 gh CLI。已存在的同名附件会先删掉再传。
  */
@@ -14,7 +14,7 @@ const { execFileSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const DIST = path.join(root, 'dist');
 const DRY = process.argv.includes('--dry');
-const TAG = process.argv.slice(2).find(a => /^v?\d/.test(a)) || 'v1.5.0';
+const TAG = process.argv.slice(2).find(a => /^v?\d/.test(a)) || 'v2.0.0';
 const TOKEN = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
 
 // 仓库从 git remote 里读，避免写死
@@ -81,7 +81,7 @@ const NOTES = `## 支持的功能
 
 ## 本次更新
 
-- 手机端上线：APK 打包同一个 Go 引擎，功能与 exe 对齐（录播 / 直播 / 下载 / 新版平台）
+- **版本 2.0.0**：手机端正式上线 —— APK 打包同一个 Go 引擎，功能与 exe 对齐（录播 / 直播 / 下载 / 新版平台）
 - 手机端登录：点顶栏「登录」→ 跳对应官网登录 → 登好按返回键回播放器即可（登录态后台自动接手）
 - 手机端下载：取消即删文件、列表里可直接删、可一键清理，不再堆垃圾
 - 直播：修了手机端时区问题（以前会把正在直播的课判成「未开始」甚至整场过滤掉）

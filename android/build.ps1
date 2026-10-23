@@ -67,7 +67,7 @@ $baseApk = Join-Path $out 'base.apk'
 if (Test-Path $baseApk) { Remove-Item $baseApk -Force }
 & (Join-Path $bt 'aapt2.exe') link -o $baseApk -I $androidJar `
   --manifest (Join-Path $apkDir 'AndroidManifest.xml') `
-  --min-sdk-version 23 --target-sdk-version 34 --version-code 1 --version-name 1.5.0 @linkArgs
+  --min-sdk-version 23 --target-sdk-version 34 --version-code 2 --version-name 2.0.0 @linkArgs
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link 失败' }
 
 # ---- Java ----
