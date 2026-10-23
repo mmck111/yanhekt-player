@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>延河课程代号查询</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--line:#2a2f3a;--fg:#e8eaed;--dim:#9aa3b2;--accent:#5b9cff;--ok:#7ee0a8;--err:#ff6b6b}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--fg)}
+  body{font:15px/1.6 -apple-system,"Segoe UI",system-ui,"Microsoft YaHei",sans-serif;
+    padding:max(10px,env(safe-area-inset-top)) 12px max(18px,env(safe-area-inset-bottom))}
+  .hd h1{margin:2px 0 10px;font-size:17px;display:flex;align-items:center;gap:8px}
+  .hd h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--dim)}
+  .hd h1 .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .hd h1 .dot.err{background:var(--err)}
+  .search{display:flex;gap:8px}
+  .search input{flex:1;min-width:0;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+    border-radius:10px;padding:12px 13px;font-size:16px;outline:none}
+  .search input:focus{border-color:var(--accent)}
+  .search button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:10px;
+    padding:0 14px;font-size:14px;cursor:pointer}
+  .meta{font-size:12px;color:#6f7889;margin:9px 2px 4px;min-height:17px;line-height:1.5}
+  .item{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:8px}
+  .item .d{font-size:15.5px;font-weight:650;line-height:1.4;word-break:break-word}
+  .item .m{font-size:12.5px;color:var(--dim);margin-top:3px;display:flex;flex-wrap:wrap;gap:8px}
+  .item .row{display:flex;align-items:center;gap:8px;margin-top:9px}
+  .code{font:600 15px/1 ui-monospace,Consolas,monospace;letter-spacing:.4px;background:#16233a;color:#a9d4ff;
+    border:1px solid #2f4a7a;border-radius:8px;padding:9px 11px;cursor:pointer;user-select:all}
+  .code:active{background:#1b2740}
+  .open{margin-left:auto;background:var(--accent);color:#06101f;font-weight:700;border-radius:9px;
+    padding:9px 15px;text-decoration:none;font-size:14px;white-space:nowrap}
+  .hint{font-size:12px;color:#7d869a;margin:14px 2px 0;line-height:1.75}
+  .hint b{color:var(--dim);font-weight:600}
+  .hint code{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11.5px}
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:26px;background:rgba(20,24,32,.95);
+    border:1px solid var(--line);border-radius:10px;padding:9px 16px;font-size:13px;opacity:0;
+    transition:opacity .2s;pointer-events:none;z-index:9}
+  .toast.on{opacity:1}
+  .empty{color:var(--dim);font-size:13.5px;padding:14px 2px;line-height:1.8}
+</style>
+</head>
+<body>
+<div class="hd">
+  <h1><span class="dot" id="dot"></span>延河课程代号查询</h1>
+  <div class="search">
+    <input id="q" type="search" placeholder="课程名 / 教师名，如 数值分析 孙新" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button id="clr" type="button">清空</button>
+  </div>
+</div>
+<div class="meta" id="meta">正在加载课程库…</div>
+<div id="list"></div>
+<div class="hint">
+  <b>怎么用：</b>搜到课 → 点「打开」→ 在延河登录后就能看录像。往年课只要代号对，不需要选课权限。<br>
+  也可以点代号复制，然后自己拼地址：<code>www.yanhekt.cn/course/<代号></code><br>
+  <b>简称：</b>高数 / 大物 / 线代 / 概统 / 计网 / 大物实验 都能直接搜；空格分开则是「都要匹配」。
+  <b>范围：</b>老平台的公开课程信息表（<span id="cnt">—</span> 条），含往年课。本学期新版平台的课请用播放器搜。<br>
+  <b>说明：</b>这个页面只做本地匹配，不上传任何东西；登录态始终留在延河自己的域名里。
+</div>
+<div class="toast" id="toast"></div>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const norm = s => {
+  s = String(s || '').toLowerCase();
+  // 全角 → 半角
+  s = s.replace(/[\uff01-\uff5e]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+  // 罗马数字 → 阿拉伯（Ⅱ=II=2 这类是课程名最常见的重复变体）
+  s = s.replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]/g, c => String('ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ'.indexOf(c) + 1));
+  s = s.replace(/\b(i{1,3}|iv|v|vi{1,3}|ix|x)\b/g, m => String(['i','ii','iii','iv','v','vi','vii','viii','ix','x'].indexOf(m) + 1));
+  // 常见全角标点、括号、连字符统一，避免"大学物理（上）"和"大学物理(上)"对不上
+  s = s.replace(/[()（）\[\]【】《》〈〉·・、，,。．.\-—–_~～"'“”‘’/\\|]/g, ' ');
+  return s.replace(/\s+/g, ' ').trim();
+};
+
+// 层级标记（A1 / AII / AⅡ / 上册的 2）粘在字母后面时直接抹掉：
+// "大学物理AⅡ" 和 "大学物理AII"、"大物A2" 都能对上同一门课。数字本身没有检索价值，
+// 但标号不同常常是同一门课的重复登记，抹掉只会多几条结果，不会漏。
+const lv = s => s.replace(/([a-z])(?:ii|iii|iv|vi|vii|viii|ix|\d)+/g, '$1');
+
+// 手打方便：常见简称直接展开（键必须已经过 norm+lv，即小写、无标点）
+const ALIAS = {
+  '高数': '高等数学', '大物': '大学物理', '线代': '线性代数', '概统': '概率论',
+  '数分': '数学分析', '模电': '模拟电子技术', '数电': '数字电子技术', '计网': '计算机网络',
+  '大英': '大学英语', '马原': '马克思主义基本原理', '毛概': '毛泽东思想', '近现代史': '中国近现代史',
+  '大物实验': '大学物理实验', '物理实验': '大学物理实验', '信号': '信号与系统'
+};
+
+let NAMES = [], TCHS = [], TERMS = [], ROWS = [], NORM_NAME = [], NORM_TCH = [], TERM_YEAR = [];
+
+function toast(m, ms){
+  const t = $('#toast'); t.textContent = m; t.classList.add('on');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms || 1600);
+}
+
+async function gunzip(buf){
+  if (!('DecompressionStream' in window)) throw new Error('浏览器太旧，不支持解压');
+  const ds = new DecompressionStream('gzip');
+  const r = new Response(new Blob([buf]).stream().pipeThrough(ds));
+  return await r.text();
+}
+
+async function loadCatalogBytes(){
+  // 单文件版把课程库以 base64 内联进页面（window.__CAT_GZ__），不依赖同目录部署
+  if (typeof window !== 'undefined' && window.__CAT_GZ__){
+    const bin = atob(window.__CAT_GZ__);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  const resp = await fetch('catalog.json.gz', { cache: 'force-cache' });
+  if (!resp.ok) throw new Error('课程库拉取失败 HTTP ' + resp.status);
+  return new Uint8Array(await resp.arrayBuffer());
+}
+
+async function boot(){
+  try{
+    const txt = await gunzip(await loadCatalogBytes());
+    const cat = JSON.parse(txt);
+    NAMES = cat.names || []; TCHS = cat.teachers || []; TERMS = cat.terms || [];
+    ROWS = cat.rows || [];
+    NORM_NAME = NAMES.map(n => lv(norm(n)));
+    NORM_TCH = TCHS.map(norm);
+    TERM_YEAR = TERMS.map(t => parseInt(String(t).slice(0, 4), 10) || 0);
+    $('#dot').classList.add('on');
+    $('#cnt').textContent = ROWS.length.toLocaleString();
+    $('#meta').textContent = '课程库就绪：' + ROWS.length.toLocaleString() + ' 条，直接搜。';
+    // 有 #q 或 ?q= 就直接搜（方便分享链接）
+    const pre = new URLSearchParams(location.search).get('q') || decodeURIComponent((location.hash || '').replace(/^#(?:q=)?/, ''));
+    if (pre){ $('#q').value = pre; run(); }
+    $('#q').focus();
+  }catch(e){
+    $('#dot').classList.add('err');
+    $('#meta').innerHTML = '<span style="color:var(--err)">' + esc(e.message) + '</span>';
+  }
+}
+
+function score(i, qs){
+  const n = NORM_NAME[ROWS[i][0]] || '', t = NORM_TCH[ROWS[i][1]] || '';
+  let total = 0;
+  for (let k = 0; k < qs.length; k++){
+    const q = qs[k];
+    const inN = n.indexOf(q), inT = t.indexOf(q);
+    if (inN < 0 && inT < 0) return -1;
+    let s = 0;
+    if (inN === 0) s = n.length === q.length ? 200 : 150;   // 完全等于 > 前缀
+    else if (inN > 0) s = 60;
+    if (inT === 0) s = Math.max(s, t.length === q.length ? 90 : 70);
+    else if (inT > 0) s = Math.max(s, 20);
+    total += s;
+  }
+  return total;
+}
+
+let shown = 0, lastQ = '';
+function run(){
+  const raw = $('#q').value.trim();
+  if (raw === lastQ) return;
+  lastQ = raw;
+  const list = $('#list');
+  if (!ROWS.length){ return; }
+  if (!raw){ list.innerHTML = ''; $('#meta').textContent = '课程库就绪：' + ROWS.length.toLocaleString() + ' 条，直接搜。'; shown = 0; return; }
+
+  const qs = norm(raw).split(' ').map(lv).map(q => ALIAS[q] ? lv(norm(ALIAS[q])) : q).filter(Boolean);
+  if (!qs.length) return;
+  const hits = [];
+  for (let i = 0; i < ROWS.length; i++){
+    const s = score(i, qs);
+    if (s < 0) continue;
+    hits.push([s, i]);
+  }
+  hitSort(hits);
+  const LIMIT = 60;
+  const top = hits.slice(0, LIMIT);
+  shown = top.length;
+
+  $('#meta').textContent = hits.length
+    ? ('找到 ' + hits.length + ' 门课' + (hits.length > LIMIT ? '，显示前 ' + LIMIT + ' 个' : '') + ' · 点「打开」看录像')
+    : '没找到。试试只留课程名的前几个字，或者只搜老师名。';
+
+  if (!top.length){
+    list.innerHTML = '<div class="empty">没有匹配的课程。<br>课程库来自老平台公开课程信息表，如果没有，说明这门课没在表里。</div>';
+    return;
+  }
+  list.innerHTML = top.map(([s, i]) => {
+    const r = ROWS[i];
+    const name = NAMES[r[0]] || '(无名)';
+    const tch = TCHS[r[1]] || '';
+    const term = TERMS[r[2]] || '';
+    const code = r[3];
+    return '<div class="item">'
+      + '<div class="d">' + esc(name) + '</div>'
+      + '<div class="m">' + (tch ? '<span>' + esc(tch) + '</span>' : '') + (term ? '<span>' + esc(term) + '</span>' : '') + '</div>'
+      + '<div class="row">'
+        + '<span class="code" data-code="' + esc(code) + '">' + esc(code) + '</span>'
+        + '<a class="open" href="https://www.yanhekt.cn/course/' + encodeURIComponent(code) + '" target="_blank" rel="noopener">打开 ↗</a>'
+      + '</div></div>';
+  }).join('');
+}
+
+// 排序：匹配分高优先 → 学年新优先 → 同学年按学期 → 名字短优先（同名更"素"的那个通常是你想要的课）
+function hitSort(a){
+  a.sort((x, y) => {
+    if (y[0] !== x[0]) return y[0] - x[0];
+    const rx = ROWS[x[1]], ry = ROWS[y[1]];
+    const ax = TERM_YEAR[rx[2]] || 0, ay = TERM_YEAR[ry[2]] || 0;
+    if (ay !== ax) return ay - ax;
+    if (ry[2] !== rx[2]) return ry[2] - rx[2];
+    const nx = (NAMES[rx[0]] || '').length, ny = (NAMES[ry[0]] || '').length;
+    if (nx !== ny) return nx - ny;
+    return rx[3] - ry[3];
+  });
+}
+
+let tmr = 0;
+$('#q').addEventListener('input', () => { clearTimeout(tmr); tmr = setTimeout(run, 90); });
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); lastQ = ''; run(); $('#q').blur(); } });
+$('#clr').addEventListener('click', () => { $('#q').value = ''; lastQ = ''; run(); $('#q').focus(); });
+
+document.addEventListener('click', async e => {
+  const el = e.target.closest('.code');
+  if (!el) return;
+  const v = el.dataset.code;
+  try{
+    if (navigator.clipboard && window.isSecureContext){ await navigator.clipboard.writeText(v); }
+    else {
+      const ta = document.createElement('textarea');
+      ta.value = v; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    toast('已复制代号 ' + v);
+  }catch(err){ toast('复制失败，长按代号手动复制'); }
+});
+
+boot();
+</script>
+</body>
+</html>

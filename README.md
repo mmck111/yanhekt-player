@@ -16,6 +16,7 @@
 | **新版平台** | 另一个入口 `/y2`，接 `aita.yanhekt.cn`：同一讲三路画面、播放快 3~5 倍、MP4 / HLS 都能下 |
 | **自动登录** | 从本机浏览器（Edge / Chrome / Brave / Vivaldi）已存的登录态里取凭证；读不到才需要手动点一次书签 |
 | **离线课程库** | 79564 门课的名称 / 教师 / 学期 / 教室都在本地，不联网也能先搜出结果 |
+| **手机查代号** | 独立的一个网页（`dist/codes.html`，0.8 MB 单文件）：手机上本地搜课程代号，点开就是 `yanhekt.cn/course/<代号>`。不需要电脑、不需要装 exe、不需要服务器；往年课只要代号就能看。<br>生成：`node tools/make-codes.js`；给同学用就把这个文件丢到任意静态站点 |
 | **自检** | 页面右下角「自检」和 `/diag`：把一门课的接口原始返回、每讲状态、取流结果打出来，出问题直接看 |
 | **只在本机** | 服务只监听 `127.0.0.1`，不对外、不上传任何数据；账号密码不经过程序 |
 
@@ -150,8 +151,8 @@ ffmpeg -i 数值分析_2026-09-08_全景.ts -c copy 数值分析.mp4
 - **签名**：视频接口要动态签名，程序运行时从官网 bundle 现扒算法（goja 执行），官网改版可自愈
 - **视频代理**：`/p?u=<base64url>` 把上游 m3u8 / 分片转成本地地址，按 CDN 域名串行 + 分片缓存（学校 CDN 对并发很敏感）
 - **课程库**：`public/catalog.json.gz`（578 KB，来自学校公开课程信息表），本地搜索不发请求
-- **对拍**：仓库里保留了 Node 参考实现（`server.js` / `yanhe2.js` / `signer.js`），
-  `tools/parity.js` 与 `tools/parity-y2.js` 会把 Go 版和它的输出逐条比对
+- **单一实现**：仓库里只有 Go 一条线。早期用于对拍的 Node 参考实现（`server.js` / `yanhe2.js` /
+  `signer.js`）与 `tools/parity*.js` 已经移除，需要查旧逻辑时看 git 历史
 
 ## 目录
 
@@ -168,28 +169,25 @@ yanhekt-player/
 │  ├─ signer.go           运行时从官网提取签名（goja）
 │  ├─ y2*.go              新版平台
 │  └─ build.ps1           构建脚本（同步页面 → 编译）
-├─ public/                页面（index.html / y2.html / hls.min.js / 课程库）
-├─ server.js              Node 参考实现（仅开发/对拍用）
-├─ test/                  smoke 冒烟、静态检查
-├─ tools/                 parity 对拍、release 发布
+├─ public/                页面（index.html / y2.html / codes.html / hls.min.js / 课程库）
+├─ test/                  页面静态检查（id / html / 标签 / 书签 / JWT）
+├─ tools/                 发布、课程库生成、单文件课程代号页打包
 └─ docs/                  README 截图
 ```
 
 ## 开发
 
 ```bash
-# 只跑参考实现（需要 Node 20+）
-node server.js                # 浏览器开 http://127.0.0.1:8788
-
 # 构建 Go 版（Windows，需要 Go 1.21+）
 #   构建缓存默认放 %LOCALAPPDATA%\yanhekt-build，可用 $env:YHKT_BUILD_DIR 改
 powershell -ExecutionPolicy Bypass -File go/build.ps1
 
+# 手机上的「课程代号查询」单文件版（自带课程库，不需要服务器）
+node tools/make-codes.js      # 产出 dist/codes.html，拷到手机用浏览器打开即可
+
 # 测试
-node test/smoke.js            # 冒烟（默认起 Node 版；SMOKE_URL=... 可直接打 Go 版）
-node tools/parity.js          # Go ↔ Node 对拍 41 项
-node tools/parity-y2.js       # 新版平台匿名/错误路径 13 项
 cd go && go test ./...        # y2 纯函数 + 解析层 fixture
+node test/checkhtml.js public/index.html public/y2.html public/codes.html   # 页面静态检查
 ```
 
 发布：

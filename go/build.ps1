@@ -1,4 +1,4 @@
-﻿# 构建 Go 版：同步页面资源 → 编译 Windows 单文件
+# 构建 Go 版：同步页面资源 → 编译 Windows 单文件
 # 用法：powershell -ExecutionPolicy Bypass -File go\build.ps1
 #   $env:YHKT_BUILD_DIR 可指定构建缓存目录（默认 %LOCALAPPDATA%\yanhekt-build）
 $ErrorActionPreference = 'Stop'
