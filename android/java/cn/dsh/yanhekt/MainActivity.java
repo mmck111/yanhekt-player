@@ -1086,6 +1086,8 @@ public class MainActivity extends Activity {
     }
 
     private void confirmCleanAll() {
+        int running = activeCount();
+        if (running > 0) { say("还有 " + running + " 个下载在跑，先等它下完或取消再清理"); return; }
         if (ownedCount <= 0) { refreshOwnedCount(); return; }
         new android.app.AlertDialog.Builder(this)
             .setTitle("清理下载文件")
