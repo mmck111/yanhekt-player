@@ -35,8 +35,9 @@ $env:TMP = "$buildDir\tmp"; $env:TEMP = "$buildDir\tmp"
 $env:GOCACHE = "$buildDir\gocache"; $env:GOPATH = "$buildDir\gopath"
 if (Test-Path $web) { Remove-Item $web -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $web | Out-Null
-foreach ($f in 'index.html', 'y2.html', 'hls.min.js', 'catalog.json.gz') {
-  Copy-Item (Join-Path $root "public\$f") (Join-Path $web $f)
+foreach ($f in 'index.html', 'y2.html', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
+  $src = Join-Path $root "public\$f"
+  if (Test-Path $src) { Copy-Item $src (Join-Path $web $f) }
 }
 $libDir = Join-Path $out 'lib\arm64-v8a'
 New-Item -ItemType Directory -Force -Path $libDir | Out-Null

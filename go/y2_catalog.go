@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"errors"
@@ -114,6 +115,8 @@ func y2CatReadPaths() []string { return y2CatWritePaths(y2CatFile()) }
 
 // y2CatalogLoad 读索引（内存缓存，文件变了会重新读）。
 // 依次在几个候选路径里找最新的那份：有的机器不让写 %LOCALAPPDATA%，索引会落到临时目录。
+// 一个都找不到时退回**内置课程库**（随包发的 web/y2-catalog.json.gz）——
+// 手机端第一次用不会先空手去线上检索，搜索速度跟电脑端一致。
 func y2CatalogLoad() *y2Catalog {
 	path, st := "", os.FileInfo(nil)
 	for _, p := range y2CatReadPaths() {
@@ -124,7 +127,7 @@ func y2CatalogLoad() *y2Catalog {
 		}
 	}
 	if path == "" || st == nil {
-		return nil
+		return y2CatalogEmbedded()
 	}
 	y2CatMu.Lock()
 	defer y2CatMu.Unlock()
@@ -153,6 +156,37 @@ func y2CatalogLoad() *y2Catalog {
 
 // y2CatPath 当前实际读到的索引路径（给 /api/y2/catalog 显示）
 var y2CatPath string
+
+var (
+	y2CatEmbedOnce sync.Once
+	y2CatEmbed     *y2Catalog
+)
+
+// y2CatalogEmbedded 随包内置的课程库（web/y2-catalog.json.gz），只读、只加载一次。
+// 这是"手机端第一次搜索就能和电脑端一样快"的关键：不用等后台爬完整份索引。
+func y2CatalogEmbedded() *y2Catalog {
+	y2CatEmbedOnce.Do(func() {
+		raw, err := webFS.ReadFile("web/y2-catalog.json.gz")
+		if err != nil || len(raw) == 0 {
+			return
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return
+		}
+		defer zr.Close()
+		var cat y2Catalog
+		if err := json.NewDecoder(zr).Decode(&cat); err != nil || cat.Ver != 1 || len(cat.Rows) == 0 {
+			return
+		}
+		y2CatEmbed = &cat
+		y2CatMu.Lock()
+		y2CatCache, y2CatAt = &cat, time.Now()
+		y2CatMu.Unlock()
+		y2CatPath = "(内置)"
+	})
+	return y2CatEmbed
+}
 
 func err2str(err error) string {
 	if err == nil {

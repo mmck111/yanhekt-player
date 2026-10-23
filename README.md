@@ -41,6 +41,9 @@ powershell -ExecutionPolicy Bypass -File android\build.ps1   # 产出 android\bu
 
 已知限制：只有 arm64（绝大多数手机）；登录态约 24 小时，过期后底部会出现「点这里重新登录」。
 
+新版课程库（`y2-catalog.json.gz`，约 2.7 万门）**随包内置**，手机第一次打开就是用本地索引搜课，
+不用等后台爬完、也不用先登录 —— 搜索速度跟电脑端一致（几十~一百毫秒）；库里没命中才走线上检索。
+
 下载：页面里的「下载」走原生通道 —— JS 桥接把 `/y2dl` `/dl` 的 `window.open` 拦下来，
 带上本地会话 cookie 直接拉流，按引擎给的 `Content-Disposition` 命名，存进系统「下载」目录
 （Android 10+ 走 MediaStore，无需权限；9 及以下会要一次存储权限）。下载在 App 进程里跑，
