@@ -103,6 +103,9 @@
   .toast{position:fixed;right:18px;top:60px;background:rgba(20,24,32,.93);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:12px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9}
   .toast.on{opacity:1}
   .back{position:fixed;left:8px;bottom:6px;font-size:11px}
+  .menu{display:none;background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:8px;
+    font-size:16px;line-height:1;padding:7px 10px;margin-right:2px;cursor:pointer}
+  .backdrop{display:none}
   .back a{color:#5c6678}
 
   /* ---------- 手机 / 窄屏：上下布局，控件换行，别把桌面排版硬塞进来 ---------- */
@@ -122,6 +125,17 @@
     .bar .t{font-size:13px;max-width:44vw}
     .tab{padding:4px 9px;font-size:11.5px}
     .stage{min-height:0}
+    /* 侧栏变抽屉：默认收起，点 ☰ 滑出 */
+    .menu{display:inline-block}
+    .wrap{grid-template-rows:1fr;height:100dvh}
+    aside{position:fixed;left:0;top:0;bottom:0;width:86%;max-width:340px;height:100%;
+      border-right:1px solid var(--line);border-bottom:none;
+      transform:translateX(-103%);transition:transform .22s ease;z-index:8;
+      max-height:none;box-shadow:8px 0 26px rgba(0,0,0,.5)}
+    .wrap.drawer aside{transform:translateX(0)}
+    .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:7}
+    .wrap.drawer .backdrop{display:block}
+    main{grid-row:1;min-height:0}
     .ctrl{flex-wrap:wrap;gap:6px;padding:6px 10px}
     .ctrl button{padding:6px 9px;font-size:11.5px}
     .ctrl input[type=range]{flex:1 1 100%;order:9;min-width:0}
@@ -140,7 +154,8 @@
 <body>
 <script src="/hls.min.js"></script>
 <div class="toast" id="toast"></div>
-<div class="wrap">
+<div class="wrap" id="wrap">
+<div class="backdrop" id="backdrop"></div>
   <aside>
     <div class="hd">
       <h1><span class="dot off" id="sdot"></span>新版平台 · 在线播放（快 3~5 倍）</h1>
@@ -162,6 +177,7 @@
   </aside>
   <main>
     <div class="bar">
+      <button class="menu" id="menu" type="button" title="课程列表">☰</button>
       <span class="t" id="now">—</span>
       <button class="tab on" data-k="camera">教师画面</button>
       <button class="tab" data-k="screen">课件画面</button>
@@ -528,7 +544,7 @@ async function doFind(){
           + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
           + '<span class="bd">' + badges(c) + '</span>'
           + '</div>';
-        el.onclick = ()=>loadSessions(c, el);
+        el.onclick = ()=>{ closeDrawer(); loadSessions(c, el); };
         list.appendChild(el);
         if (c.verified !== true) pending.push({ c, el });
       });
@@ -640,7 +656,7 @@ async function loadSessions(c, el, opts){
         + (s.room ? '<span>' + esc(s.room) + '</span>' : '')
         + (tn ? '<span>' + esc(tn) + '</span>' : '')
         + '</div>';
-      el2.onclick = ()=>play(s, el2);
+      el2.onclick = ()=>{ closeDrawer(); play(s, el2); };
       if (!firstPlayable) firstPlayable = { s, el2 };
       list.appendChild(el2);
     });
@@ -678,6 +694,15 @@ $('#dl').onclick = () => {
   window.open(url, '_blank');
   toast('开始下载' + label + '，先别关这个页面', 6000);
 };
+
+// 手机版：课程列表收进抽屉（☰ 打开，点遮罩或选课收起）
+const wrapEl = $('#wrap');
+const closeDrawer = () => { if (wrapEl) wrapEl.classList.remove('drawer'); };
+if ($('#menu')) $('#menu').onclick = () => {
+  if (!wrapEl) return;
+  wrapEl.classList.toggle('drawer');
+};
+if ($('#backdrop')) $('#backdrop').onclick = closeDrawer;
 
 // 全屏：手机上没有播放器控件，这个按钮就是唯一的入口
 $('#fs').onclick = () => {

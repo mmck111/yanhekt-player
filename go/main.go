@@ -298,11 +298,15 @@ func registerAPI(mux *http.ServeMux) {
 
 	// ---- 直播 ----
 	mux.HandleFunc("/api/live", safe(func(w http.ResponseWriter, r *http.Request) {
-		items, at := liveListOld()
+		// 页面点「直播」时带 refresh=1，绕过 30s 缓存（也顺带清掉早期失败留下的空列表）
+		if r.URL.Query().Get("refresh") != "" {
+			liveInvalidate()
+		}
+		items, at, lerr := liveListOld()
 		if items == nil {
 			items = []liveItem{}
 		}
-		writeJSON(w, 200, liveOK{Ok: true, Items: items, At: &at})
+		writeJSON(w, 200, liveOK{Ok: true, Items: items, At: &at, Err: lerr})
 	}))
 
 	// 直播流代理（不缓存、不排队）
@@ -372,6 +376,7 @@ type liveOK struct {
 	Ok    bool       `json:"ok"`
 	Items []liveItem `json:"items"`
 	At    *int64     `json:"at,omitempty"`
+	Err   string     `json:"err,omitempty"`
 }
 
 // ---------------------------------------------------------------- 工具

@@ -119,22 +119,38 @@ func liveRow(l map[string]any) liveItem {
 	}
 }
 
+// liveInvalidate 丢掉直播列表缓存（页面点「直播」时强制刷新用）
+func liveInvalidate() {
+	liveMu.Lock()
+	liveValid = false
+	liveMu.Unlock()
+}
+
 // liveListOld 合并 hot/list 与 v2/live/list，只留"在播 / 即将 / 刚结束半小时内"
-func liveListOld() ([]liveItem, int64) {
+func liveListOld() ([]liveItem, int64, string) {
 	liveMu.Lock()
 	if liveValid && time.Since(liveAt) < liveTTL {
 		items, at := liveItems, liveAt.UnixNano()/int64(time.Millisecond)
 		liveMu.Unlock()
-		return items, at
+		return items, at, ""
 	}
 	liveMu.Unlock()
 
 	var hot, all map[string]any
+	var errHot, errAll error
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); hot, _ = apiCall("/v1/live/hot/list?page=1&page_size=60", "") }()
-	go func() { defer wg.Done(); all, _ = apiCall("/v2/live/list?page=1&page_size=200", "") }()
+	go func() { defer wg.Done(); hot, errHot = apiCall("/v1/live/hot/list?page=1&page_size=60", "") }()
+	go func() { defer wg.Done(); all, errAll = apiCall("/v2/live/list?page=1&page_size=200", "") }()
 	wg.Wait()
+	lerr := ""
+	if errHot != nil && errAll != nil {
+		lerr = "hot: " + errHot.Error() + " / list: " + errAll.Error()
+	} else if errHot != nil {
+		lerr = "hot: " + errHot.Error()
+	} else if errAll != nil {
+		lerr = "list: " + errAll.Error()
+	}
 
 	merged := map[string]liveItem{}
 	order := []string{} // 记住第一次出现的顺序，Node 的 Map 也是插入序
@@ -216,7 +232,7 @@ func liveListOld() ([]liveItem, int64) {
 	liveMu.Lock()
 	liveItems, liveAt, liveValid = items, time.Now(), true
 	liveMu.Unlock()
-	return items, at
+	return items, at, lerr
 }
 
 func stableSortLive(items []liveItem, less func(a, b liveItem) bool) {

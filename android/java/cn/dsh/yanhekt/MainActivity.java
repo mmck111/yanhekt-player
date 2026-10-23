@@ -53,12 +53,15 @@ public class MainActivity extends Activity {
     private String pendingUrl = null;
     private final java.util.List<String> sessionCookies = new java.util.ArrayList<String>();
     private FrameLayout rootView;
-    private android.widget.LinearLayout dlBar;
-    private TextView dlText2;
-    private volatile Thread dlThread;
-    private volatile boolean dlCancel;
-    private volatile long dlDone, dlTotal = -1;
-    private volatile HttpURLConnection dlConn;
+    private android.widget.LinearLayout dlPanel;
+    private android.widget.LinearLayout dlList;
+    private TextView dlChip;
+    private android.widget.ScrollView dlScroll;
+
+
+    private volatile String lastReqDump = "";
+    private volatile String capturedOld = null;
+    private volatile String capturedY2 = null;
     private android.view.View customView;
     private WebChromeClient.CustomViewCallback customCb;
     private volatile boolean forceNext = false;
@@ -93,6 +96,33 @@ public class MainActivity extends Activity {
                 v.evaluateJavascript(DL_HOOK, null);
             }
 
+            // 从页面自己发出的 API 请求里截 Authorization —— 比在 localStorage 里猜可靠得多
+            @Override public android.webkit.WebResourceResponse shouldInterceptRequest(
+                    WebView v, android.webkit.WebResourceRequest req) {
+                try {
+                    String host = req.getUrl() == null ? null : req.getUrl().getHost();
+                    if (host == null || !host.endsWith("yanhekt.cn")) return null;
+                    StringBuilder names = new StringBuilder();
+                    for (String hk : req.getRequestHeaders().keySet()) names.append(hk).append(',');
+                    String u = req.getUrl().toString();
+                    int q = u.indexOf('?');
+                    if (u.contains("/api/") || u.contains("/v1/") || u.contains("/courseapi/")) {
+                        lastReqDump = (q > 0 ? u.substring(0, Math.min(q, u.length())) : u) + "  headers=[" + names + "]";
+                    }
+                    for (java.util.Map.Entry<String, String> e : req.getRequestHeaders().entrySet()) {
+                        String k = e.getKey() == null ? "" : e.getKey().toLowerCase();
+                        String val = e.getValue();
+                        if (val == null || val.length() < 20) continue;
+                        if (!(k.contains("authorization") || k.contains("token"))) continue;
+                        String t = val.replace("Bearer ", "").replace("bearer ", "").trim();
+                        if (t.length() < 20) continue;
+                        if (host.contains("aita")) { if (capturedY2 == null) capturedY2 = t; }
+                        else { capturedOld = t; }
+                        Log.i(TAG, "captured token from " + host + " via " + k);
+                    }
+                } catch (Exception ignored) {}
+                return null;
+            }
             @Override public boolean shouldOverrideUrlLoading(WebView v, String url) {
                 if (url == null) return false;
                 boolean ours = url.startsWith(BASE) || url.contains("yanhekt.cn");
@@ -139,27 +169,67 @@ public class MainActivity extends Activity {
         root.addView(bar, lp);
 
         // 下载进度条（含取消按钮）：浮在底栏上方，不占页面空间
-        dlBar = new android.widget.LinearLayout(this);
-        dlBar.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-        dlBar.setBackgroundColor(Color.parseColor("#1b2740"));
-        dlBar.setPadding(dp(12), dp(7), dp(8), dp(7));
-        dlBar.setGravity(Gravity.CENTER_VERTICAL);
-        dlBar.setVisibility(android.view.View.GONE);
-        dlText2 = new TextView(this);
-        dlText2.setTextColor(Color.parseColor("#e8eaed"));
-        dlText2.setTextSize(12f);
-        dlBar.addView(dlText2, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        android.widget.Button dlBtn = new android.widget.Button(this);
-        dlBtn.setText("取消");
-        dlBtn.setTextSize(12f);
-        dlBtn.setOnClickListener(new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) { cancelDownload(); }
+        // 右上角「下载 N 个 · 查看」入口；点开是下载面板
+        dlChip = new TextView(this);
+        dlChip.setText("下载");
+        dlChip.setTextSize(12f);
+        dlChip.setTextColor(Color.parseColor("#06101f"));
+        dlChip.setBackgroundColor(Color.parseColor("#5b9cff"));
+        dlChip.setPadding(dp(10), dp(5), dp(10), dp(5));
+        dlChip.setVisibility(android.view.View.GONE);
+        dlChip.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { openDlPanel(); }
         });
-        dlBar.addView(dlBtn, new android.widget.LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        FrameLayout.LayoutParams lpDl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lpDl.gravity = Gravity.BOTTOM;
-        lpDl.bottomMargin = dp(46);
-        root.addView(dlBar, lpDl);
+        FrameLayout.LayoutParams lpChip = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lpChip.gravity = Gravity.TOP | Gravity.END;
+        lpChip.topMargin = dp(6);
+        lpChip.rightMargin = dp(8);
+        root.addView(dlChip, lpChip);
+
+        // 下载面板（盖住整页）：列出任务、进度、取消
+        dlPanel = new android.widget.LinearLayout(this);
+        dlPanel.setOrientation(android.widget.LinearLayout.VERTICAL);
+        dlPanel.setBackgroundColor(Color.parseColor("#f20f1115"));
+        dlPanel.setPadding(dp(14), dp(14), dp(14), dp(14));
+        dlPanel.setVisibility(android.view.View.GONE);
+        dlPanel.setClickable(true);
+
+        android.widget.LinearLayout head = new android.widget.LinearLayout(this);
+        head.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("下载");
+        title.setTextColor(Color.parseColor("#e8eaed"));
+        title.setTextSize(16f);
+        head.addView(title, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        android.widget.Button closeBtn = new android.widget.Button(this);
+        closeBtn.setText("关闭");
+        closeBtn.setTextSize(12f);
+        closeBtn.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { closeDlPanel(); }
+        });
+        head.addView(closeBtn);
+        dlPanel.addView(head, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView tip = new TextView(this);
+        tip.setText("下载完成后文件在 内部存储/Download（系统「下载」目录）");
+        tip.setTextColor(Color.parseColor("#6f7889"));
+        tip.setTextSize(11f);
+        tip.setPadding(0, dp(4), 0, dp(8));
+        dlPanel.addView(tip);
+
+        dlScroll = new android.widget.ScrollView(this);
+        dlList = new android.widget.LinearLayout(this);
+        dlList.setOrientation(android.widget.LinearLayout.VERTICAL);
+        dlScroll.addView(dlList, new android.widget.FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        dlPanel.addView(dlScroll, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        root.addView(dlPanel, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
         startEngine();
     }
@@ -346,6 +416,7 @@ public class MainActivity extends Activity {
     /** 两边都失败时把诊断画在屏幕上（截图就能发出去） */
     private void showDiag(final String err) {
         new Thread(new Runnable() { public void run() {
+            final String where = jsEval("location.href");
             final String keys = jsEval(KEYS_JS);
             final String ck = jsEval("(document.cookie||'').slice(0,400)");
             final String st = tryHttp(BASE + "/api/status", null);
@@ -358,6 +429,9 @@ public class MainActivity extends Activity {
                  .append("pre{white-space:pre-wrap;word-break:break-all;background:#171a21;border:1px solid #2a2f3a;")
                  .append("border-radius:8px;padding:9px;font:11.5px/1.5 ui-monospace,Consolas,monospace;margin:0}</style></head><body>")
                  .append("<h3>引擎返回</h3><pre>").append(esc(err)).append("</pre>")
+                 .append("<h3>当前页面</h3><pre>").append(esc(cut(where, 200))).append("</pre>")
+                 .append("<h3>最近一次接口请求</h3><pre>").append(esc(cut(lastReqDump, 300))).append("</pre>")
+                 .append("<h3>拦截到的请求头 token</h3><pre>old=").append(esc(cut(capturedOld, 40))).append("\ny2=").append(esc(cut(capturedY2, 40))).append("</pre>")
                  .append("<h3>页面存储的键名</h3><pre>").append(esc(keys)).append("</pre>")
                  .append("<h3>document.cookie</h3><pre>").append(esc(ck)).append("</pre>")
                  .append("<h3>本地 status</h3><pre>").append(esc(cut(st, 260))).append("\n")
@@ -394,6 +468,8 @@ public class MainActivity extends Activity {
         int tick = 0;
         while (System.currentTimeMillis() - t0 < ms) {
             if (forceNext) { forceNext = false; return null; }
+            // 0) 优先用从网络请求里截下来的 Authorization（最可信）
+            if (capturedOld != null) return capturedOld + "\n" + (jsEval(TOKEN_JS) == null ? "" : jsEval(TOKEN_JS));
             // 1) 某些环境下老平台确实会种 yht cookie
             String ck = CookieManager.getInstance().getCookie(OLD_SITE);
             String tok = cookieValue(ck, "yht");
@@ -439,7 +515,8 @@ public class MainActivity extends Activity {
             if (forceNext) { forceNext = false; return null; }
             // _token 是 PHP 序列化串，里面有分号 —— 当 cookie header 发会被截断，
             // 所以在页面里按官网 getToken 的逻辑把 JWT 抠出来
-            String tk = jsEval(Y2_TOKEN_JS);
+            String all = (capturedY2 == null ? "" : capturedY2 + "\n") + jsEval(Y2_TOKEN_JS);
+            String tk = all;
             if (tk != null && tk.length() > 40) return tk;
             if (++tick % 5 == 0) {
                 final String t = "新版平台：等你登录…（已等 " + ((System.currentTimeMillis() - t0) / 1000) + " 秒）";
@@ -502,6 +579,13 @@ public class MainActivity extends Activity {
             final boolean bo = b != null && b.indexOf("\"loggedIn\":true") >= 0;
             Log.i(TAG, "probe old=" + ao + " y2=" + bo + " cookies=" + CookieManager.getInstance().getCookie(BASE));
             ui.post(new Runnable() { public void run() {
+                if (ao && bo) {
+                    // 两边都通了：别留下任何"未登录"的提示
+                    ui.removeCallbacks(offerOldLogin);
+                    bar.setOnClickListener(null);
+                    bar.setVisibility(TextView.GONE);
+                    return;
+                }
                 bar.setVisibility(TextView.VISIBLE);
                 bar.setText("本地状态：老平台" + (ao ? "已登录" : "未登录") + " · 新版" + (bo ? "已登录" : "未登录"));
                 ui.postDelayed(new Runnable() { public void run() { bar.setVisibility(TextView.GONE); } }, 7000);
@@ -553,17 +637,22 @@ public class MainActivity extends Activity {
 
     /** 新版成功了但老平台没成功时，给一个补登录入口（往年课要走老平台） */
     private final Runnable offerOldLogin = new Runnable() { public void run() {
-        ui.post(new Runnable() { public void run() {
-            if (loggingIn) return;
-            bar.setVisibility(TextView.VISIBLE);
-            bar.setText("老平台未登录（往年课要用）—— 点这里登录");
-            bar.setOnClickListener(new android.view.View.OnClickListener() {
-                @Override public void onClick(android.view.View v) {
-                    bar.setOnClickListener(null);
-                    oldLoginFlow();
-                }
-            });
-        }});
+        if (loggingIn) return;
+        new Thread(new Runnable() { public void run() {
+            String st = tryHttp(BASE + "/api/status", null);
+            final boolean ok = st != null && st.indexOf("\"loggedIn\":true") >= 0;
+            ui.post(new Runnable() { public void run() {
+                if (ok || loggingIn) return;                 // 已经登录了就别再提示
+                bar.setVisibility(TextView.VISIBLE);
+                bar.setText("老平台未登录（往年课要用）—— 点这里登录");
+                bar.setOnClickListener(new android.view.View.OnClickListener() {
+                    @Override public void onClick(android.view.View v) {
+                        bar.setOnClickListener(null);
+                        oldLoginFlow();
+                    }
+                });
+            }});
+        }}).start();
     }};
 
     private void oldLoginFlow() {
@@ -729,10 +818,25 @@ public class MainActivity extends Activity {
         + "try{o.push('CK:'+(document.cookie||'').split(';').map(function(x){return x.split('=')[0].trim()}).join(','));}catch(e){}"
         + "return o.join('  ');})()";
     // ---------------------------------------------------------------- 下载
+    // ---------------------------------------------------------------- 下载
+
+    /** 一个下载任务：面板里能看到进度，也能取消 */
+    static class DlTask {
+        String name = "准备中…";
+        volatile long done = 0, total = -1;
+        volatile boolean cancel = false, doneOk = false, failed = false;
+        volatile String error = null;
+        volatile HttpURLConnection conn = null;
+        volatile Thread th = null;
+        TextView line = null;
+    }
+
+    private final java.util.List<DlTask> tasks = new java.util.ArrayList<DlTask>();
+    private volatile DlTask lastTask = null;
 
     /**
-     * 页面里点「下载」会 window.open('/y2dl?...')；WebView 自己处理不了这种流，
-     * 这里把请求接过来：带上网关 cookie 直接拉，按响应里的文件名存进系统下载目录。
+     * 页面里点「下载」会 window.open('/y2dl?...')；WebView 处理不了这种流，
+     * 这里接过来：带上网关 cookie 直接拉，存进系统「下载」目录。
      */
     @JavascriptInterface
     public void download(final String url) {
@@ -755,132 +859,185 @@ public class MainActivity extends Activity {
     }
 
     private void startDownload(final String url) {
-        if (dlThread != null && dlThread.isAlive()) {
-            Toast.makeText(this, "已经有一个下载在跑了，先等它完成或点「取消」", Toast.LENGTH_SHORT).show();
+        final DlTask t = new DlTask();
+        tasks.add(t);
+        lastTask = t;
+        updateChip();
+        openDlPanel();
+        t.th = new Thread(new Runnable() { public void run() { runDownload(url, t); } });
+        t.th.start();
+    }
+
+    private void runDownload(final String url, final DlTask t) {
+        HttpURLConnection c = null;
+        Uri target = null;
+        OutputStream os = null;
+        String name = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            t.conn = c;
+            String cookie = CookieManager.getInstance().getCookie(BASE);
+            if (cookie != null) c.setRequestProperty("Cookie", cookie);
+            c.setConnectTimeout(6000);
+            c.setReadTimeout(60000);
+            c.setRequestProperty("Accept-Encoding", "identity");
+            int code = c.getResponseCode();
+            if (code >= 400) throw new java.io.IOException("HTTP " + code);
+            t.total = c.getContentLength();
+            name = fileName(c.getHeaderField("content-disposition"));
+            if (name == null) name = "lecture_" + System.currentTimeMillis() + ".mp4";
+            t.name = name;
+            String mime = name.endsWith(".ts") ? "video/mp2t" : "video/mp4";
+            if (Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
+                cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS);
+                cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
+                target = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (target == null) throw new java.io.IOException("建不了下载文件");
+                os = getContentResolver().openOutputStream(target);
+            } else {
+                File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists()) dir.mkdirs();
+                os = new java.io.FileOutputStream(new File(dir, name));
+            }
+            if (os == null) throw new java.io.IOException("写不了文件");
+            java.io.InputStream in = c.getInputStream();
+            byte[] buf = new byte[64 * 1024];
+            long lastPush = 0;
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                if (t.cancel) throw new java.io.IOException("已取消");
+                os.write(buf, 0, n);
+                t.done += n;
+                long now = System.currentTimeMillis();
+                if (now - lastPush > 400) { lastPush = now; refreshTaskRow(t); }
+            }
+            if (t.cancel) throw new java.io.IOException("已取消");
+            os.flush();
+            t.doneOk = true;
+        } catch (Exception e) {
+            if (t.cancel) t.error = "已取消"; else { t.failed = true; t.error = e.getMessage(); }
+            Log.e(TAG, "download failed", e);
+        } finally {
+            try { if (os != null) os.close(); } catch (Exception ignored) {}
+            if (c != null) c.disconnect();
+            t.conn = null;
+        }
+        final String fName = t.name;
+        final long total = t.done;
+        if (t.doneOk && Build.VERSION.SDK_INT >= 29 && target != null) {
+            android.content.ContentValues done = new android.content.ContentValues();
+            done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+            getContentResolver().update(target, done, null, null);
+        }
+        if ((t.failed || t.cancel) && Build.VERSION.SDK_INT >= 29 && target != null) {
+            try { getContentResolver().delete(target, null, null); } catch (Exception ignored) {}
+        }
+        refreshTaskRow(t);
+        updateChip();
+        ui.post(new Runnable() { public void run() {
+            if (t.doneOk) {
+                Toast.makeText(MainActivity.this,
+                    "下载完成：" + fName + "\n" + (total / 1048576.0) + " MB → 内部存储/Download",
+                    Toast.LENGTH_LONG).show();
+            } else if (t.cancel) {
+                Toast.makeText(MainActivity.this, "已取消下载", Toast.LENGTH_SHORT).show();
+            } else {
+                say("下载失败：" + t.error);
+            }
+        }});
+    }
+
+    // ---- 下载面板 UI ----
+
+    private void openDlPanel() {
+        if (dlPanel == null) return;
+        rebuildDlRows();
+        dlPanel.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void closeDlPanel() {
+        if (dlPanel != null) dlPanel.setVisibility(android.view.View.GONE);
+        updateChip();
+    }
+
+    private int activeCount() {
+        int n = 0;
+        for (DlTask t : tasks) if (!t.doneOk && !t.failed && !t.cancel) n++;
+        return n;
+    }
+
+    private void updateChip() {
+        if (dlChip == null) return;
+        int n = activeCount();
+        if (n > 0) { dlChip.setText("下载 " + n + " 个 · 查看"); dlChip.setVisibility(android.view.View.VISIBLE); }
+        else dlChip.setVisibility(android.view.View.GONE);
+    }
+
+    private void rebuildDlRows() {
+        if (dlList == null) return;
+        dlList.removeAllViews();
+        if (tasks.isEmpty()) {
+            TextView tv = new TextView(this);
+            tv.setText("还没有下载任务。在播放页点「下载」后，这里会出现进度。");
+            tv.setTextColor(Color.parseColor("#9aa3b2"));
+            tv.setTextSize(13f);
+            tv.setPadding(dp(4), dp(12), dp(4), dp(12));
+            dlList.addView(tv);
             return;
         }
-        dlCancel = false;
-        dlDone = 0;
-        dlTotal = -1;
-        showDlBar("下载准备中…");
-        dlThread = new Thread(new Runnable() { public void run() {
-            HttpURLConnection c = null;
-            Uri target = null;
-            OutputStream os = null;
-            boolean ok = false;
-            String failMsg = null;
-            String name = null;
-            try {
-                c = (HttpURLConnection) new URL(url).openConnection();
-                dlConn = c;
-                String cookie = CookieManager.getInstance().getCookie(BASE);
-                if (cookie != null) c.setRequestProperty("Cookie", cookie);
-                c.setConnectTimeout(6000);
-                c.setReadTimeout(60000);
-                c.setRequestProperty("Accept-Encoding", "identity");
-                int code = c.getResponseCode();
-                if (code >= 400) throw new java.io.IOException("HTTP " + code);
-                dlTotal = c.getContentLength();      // 引擎会带 content-length
-                name = fileName(c.getHeaderField("content-disposition"));
-                if (name == null) name = "lecture_" + System.currentTimeMillis() + ".mp4";
-                final String fName = name;
-                ui.post(new Runnable() { public void run() { dlText("正在下载：" + fName + " → 内部存储/Download"); } });
-                String mime = name.endsWith(".ts") ? "video/mp2t" : "video/mp4";
-                if (Build.VERSION.SDK_INT >= 29) {
-                    android.content.ContentValues cv = new android.content.ContentValues();
-                    cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
-                    cv.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime);
-                    cv.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS);
-                    cv.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1);
-                    target = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
-                    if (target == null) throw new java.io.IOException("建不了下载文件");
-                    os = getContentResolver().openOutputStream(target);
-                } else {
-                    File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
-                    if (!dir.exists()) dir.mkdirs();
-                    os = new java.io.FileOutputStream(new File(dir, name));
-                }
-                if (os == null) throw new java.io.IOException("写不了文件");
-                java.io.InputStream in = c.getInputStream();
-                byte[] buf = new byte[64 * 1024];
-                long lastPush = 0;
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    if (dlCancel) throw new java.io.IOException("已取消");
-                    os.write(buf, 0, n);
-                    dlDone += n;
-                    long now = System.currentTimeMillis();
-                    if (now - lastPush > 400) { lastPush = now; pushProgress(); }
-                }
-                if (dlCancel) throw new java.io.IOException("已取消");
-                os.flush();
-                ok = true;
-            } catch (Exception e) {
-                failMsg = e.getMessage();
-                Log.e(TAG, "download failed", e);
-            } finally {
-                try { if (os != null) os.close(); } catch (Exception ignored) {}
-                if (c != null) c.disconnect();
-                dlConn = null;
+        for (DlTask t : tasks) dlList.addView(rowOf(t));
+    }
+
+    private android.view.View rowOf(final DlTask t) {
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        box.setPadding(0, dp(8), 0, dp(8));
+
+        TextView line = new TextView(this);
+        line.setTextColor(Color.parseColor("#e8eaed"));
+        line.setTextSize(13f);
+        t.line = line;
+        box.addView(line, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        android.widget.Button btn = new android.widget.Button(this);
+        btn.setText("取消");
+        btn.setTextSize(12f);
+        btn.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) {
+                t.cancel = true;
+                HttpURLConnection c = t.conn;
+                if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
+                if (t.line != null) t.line.setText(t.name + " · 正在取消…");
             }
-            final boolean fOk = ok;
-            final String fName = name == null ? "文件" : name;
-            final String fMsg = failMsg;
-            final Uri fTarget = target;
-            final long total = dlDone;
-            ui.post(new Runnable() { public void run() {
-                hideDlBar();
-                if (fOk) {
-                    if (Build.VERSION.SDK_INT >= 29 && fTarget != null) {
-                        android.content.ContentValues done = new android.content.ContentValues();
-                        done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
-                        getContentResolver().update(fTarget, done, null, null);
-                    }
-                    Toast.makeText(MainActivity.this,
-                        "下载完成：" + fName + "\n" + (total / 1048576.0) + " MB → 内部存储/Download",
-                        Toast.LENGTH_LONG).show();
-                } else if (fMsg != null && fMsg.indexOf("已取消") >= 0) {
-                    if (Build.VERSION.SDK_INT >= 29 && fTarget != null) {
-                        try { getContentResolver().delete(fTarget, null, null); } catch (Exception ignored) {}
-                    }
-                    Toast.makeText(MainActivity.this, "已取消下载（已下载 " + (total / 1048576.0) + " MB 已丢弃）", Toast.LENGTH_SHORT).show();
-                } else {
-                    say("下载失败：" + fMsg);
-                }
-            }});
-        }});
-        dlThread.start();
+        });
+        box.addView(btn, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        fillRowText(t);
+        return box;
     }
 
-    private void pushProgress() {
-        final long done = dlDone, total = dlTotal;
-        ui.post(new Runnable() { public void run() {
-            if (total > 0) dlText("正在下载 " + (done * 100 / total) + "%（" + (done / 1048576.0) + " / " + (total / 1048576.0) + " MB）→ 内部存储/Download");
-            else dlText("正在下载 " + (done / 1048576.0) + " MB → 内部存储/Download");
-        }});
+    private void fillRowText(final DlTask t) {
+        if (t.line == null) return;
+        String txt;
+        if (t.doneOk) txt = t.name + "\n已完成 · " + (t.done / 1048576.0) + " MB → 内部存储/Download";
+        else if (t.cancel) txt = t.name + "\n已取消";
+        else if (t.failed) txt = t.name + "\n失败：" + t.error;
+        else if (t.total > 0) txt = t.name + "\n" + (t.done * 100 / t.total) + "%（" + (t.done / 1048576.0) + " / " + (t.total / 1048576.0) + " MB）";
+        else txt = t.name + "\n已下载 " + (t.done / 1048576.0) + " MB";
+        final String f = txt;
+        ui.post(new Runnable() { public void run() { if (t.line != null) t.line.setText(f); } });
     }
 
-    private void showDlBar(String text) {
-        if (dlBar == null) return;
-        dlBar.setVisibility(android.view.View.VISIBLE);
-        dlText(text);
-    }
-
-    private void dlText(String text) {
-        if (dlText2 == null) return;
-        dlText2.setText(text);
-        dlBar.setVisibility(android.view.View.VISIBLE);
-    }
-
-    private void hideDlBar() {
-        if (dlBar != null) dlBar.setVisibility(android.view.View.GONE);
-    }
-
-    private void cancelDownload() {
-        dlCancel = true;
-        final HttpURLConnection c = dlConn;
-        if (c != null) { try { c.disconnect(); } catch (Exception ignored) {} }
-        dlText("正在取消…");
+    private void refreshTaskRow(DlTask t) {
+        fillRowText(t);
+        if (dlPanel != null && dlPanel.getVisibility() == android.view.View.VISIBLE && dlList != null
+                && dlList.getChildCount() != tasks.size()) {
+            ui.post(new Runnable() { public void run() { rebuildDlRows(); } });
+        }
     }
 
     private static String fileName(String cd) {
