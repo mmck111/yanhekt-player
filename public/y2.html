@@ -108,8 +108,14 @@
   .backdrop{display:none}
   .dlentry{display:block;margin-top:9px;padding:9px 11px;border:1px solid #2f4a7a;background:#16233a;
     color:#a9d4ff;border-radius:9px;font-size:13px;font-weight:600;text-decoration:none}
-  .dlentry.on{border-color:#2c5e3a;background:#14261b;color:#8fdca6}
-  .dlentry.alt{border-color:var(--line);background:var(--panel2);color:#c3cad6;font-weight:500}
+  /* 顶栏的登录按钮：进来就能看见，不藏在汉堡栏里 */
+  .lgbtn{padding:5px 11px;border-radius:999px;border:1px solid #5b9cff;background:#16233a;color:#a9d4ff;
+    font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;flex:none}
+  .lgbtn.on{border-color:#2c5e3a;background:#14261b;color:#8fdca6}
+  /* 登录弹窗：盖在播放页上，不动已经搜好的课程列表 */
+  .lgmodal{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;
+    justify-content:center;padding:14px;z-index:30}
+  .lgmodal .login{max-height:86vh;overflow:auto}
   .back a{color:#5c6678}
 
   /* ---------- 手机 / 窄屏：上下布局，控件换行，别把桌面排版硬塞进来 ---------- */
@@ -126,7 +132,8 @@
     .item{padding:8px 10px}
     .item .d{font-size:14px}
     .bar{padding:6px 10px;gap:6px;min-height:40px}
-    .bar .t{font-size:13px;max-width:44vw}
+    .bar .t{font-size:13px;max-width:36vw}
+    .lgbtn{padding:4px 9px;font-size:11.5px}
     .tab{padding:4px 9px;font-size:11.5px}
     .stage{min-height:0}
     /* 侧栏变抽屉：默认收起，点 ☰ 滑出 */
@@ -176,8 +183,6 @@
         <a id="oldlink" href="/" style="color:#5b9cff;margin-left:12px">← 回老平台</a>
       </div>
       <div class="fmeta" id="ytime" style="margin-top:2px"></div>
-      <a href="#" id="loginY2" class="dlentry" style="display:none">登录新版平台</a>
-      <a href="#" id="loginOld" class="dlentry alt" style="display:none">登录老平台（往年课）</a>
       <a href="#" id="dlnk" class="dlentry">⤓ 下载管理</a>
     </div>
     <div class="list" id="list"></div>
@@ -185,6 +190,7 @@
   <main>
     <div class="bar">
       <button class="menu" id="menu" type="button" title="课程列表">☰</button>
+      <button class="lgbtn" id="lgbtn" type="button" style="display:none" title="登录 / 切换平台">登录</button>
       <span class="t" id="now">—</span>
       <button class="tab on" data-k="camera">教师画面</button>
       <button class="tab" data-k="screen">课件画面</button>
@@ -266,34 +272,29 @@ const bookmarkletUrl = () => 'javascript:' + loginScript();
 const APP = !!(window.yhktApp && window.yhktApp.login);
 let y2ok = false, oldok = false;
 
-function showAppLogin(msg){
-  const ov = $('#overlay');
-  ov.style.display = 'flex';
-  $('#sdot').classList.add('off');
-  $('#list').innerHTML = '<div class="splash"><span style="font-size:12px">登录后这里显示课程</span></div>';
-  $('#now').textContent = '—';
-  ov.innerHTML = `<div class="login">
-    <h2>登录延河课堂</h2>
-    <p class="sub">手机上不需要书签：点下面的按钮跳去官网登录，登好自动回来。</p>
-    <button class="autobtn" id="appY2"><b>登录新版平台</b><i>2024 以后的课，播放快 3~5 倍</i></button>
-    <button class="autobtn" id="appOld" style="background:linear-gradient(135deg,#3a4256,#2a3140)"><b>登录老平台</b><i>往年（2024 以前）的课要走这边</i></button>
-    <div class="msg ${msg?'err':''}">${esc(msg||'')}</div>
-    <p class="sub" style="margin-top:10px">两个都登最好：新版快，老平台覆盖往年。随时可以在汉堡栏里切换。</p>
-  </div>`;
-  const go = w => { try { yhktApp.login(w); } catch(e){ toast('调不起登录：' + e.message); } };
-  $('#appY2').onclick = () => go('y2');
-  $('#appOld').onclick = () => go('old');
+function showAppLogin(msg, keep){
+  // 不再用整屏登录页：页面照常进来，只在顶栏亮一个「登录」，这里顺手把弹窗打开
+  if (!keep) {
+    $('#sdot').classList.add('off');
+    $('#now').textContent = '—';
+    if (!curCourse) $('#list').innerHTML = '<div class="splash"><span style="font-size:12px">点顶栏「登录」按钮，登录后这里显示课程</span></div>';
+  }
+  showLoginModal(msg);
 }
 
-// 原生把登录状态推过来
+// 原生把登录状态推过来：顶栏按钮直接显示登到哪一步了
 window.__yhktStat = (ao, bo) => {
   y2ok = !!bo; oldok = !!ao;
   window.__yhktStat._ao = ao ? 1 : 0; window.__yhktStat._bo = bo ? 1 : 0;
-  const a = document.getElementById('loginY2'), b = document.getElementById('loginOld');
-  if (a) { a.textContent = bo ? '✓ 新版已登录（点一下重登）' : '登录新版平台'; a.classList.toggle('on', !!bo); }
-  if (b) { b.textContent = ao ? '✓ 老平台已登录' : '登录老平台（往年课）'; b.classList.toggle('on', !!ao); }
+  const lg = document.getElementById('lgbtn');
+  if (lg) {
+    const n = (ao ? 1 : 0) + (bo ? 1 : 0);
+    lg.textContent = n === 0 ? '登录' : n === 2 ? '✓ 已登录' : (ao ? '✓ 老平台' : '✓ 新版');
+    lg.classList.toggle('on', n > 0);
+  }
   if (bo) $('#sdot').classList.remove('off');
-  if (bo && $('#overlay').style.display === 'flex' && document.getElementById('appY2')) $('#overlay').style.display = 'none';
+  const md = document.getElementById('lgmodal');
+  if (md && md.style.display === 'flex') showLoginModal();
 };
 
 function showLogin(msg){
@@ -759,12 +760,40 @@ if ($('#dlnk')) $('#dlnk').onclick = (e) => {
   else toast('下载管理在 App 里可用');
 };
 
-// App 里：抽屉里的两个登录按钮 → 跳到对应平台官网登录
+// App 里：顶栏的登录按钮一直亮着，点开就是两个平台的登录 / 重登（弹窗，不动列表）
 if (APP) {
-  const ly = document.getElementById('loginY2'), lo = document.getElementById('loginOld');
-  if (ly) { ly.style.display = 'block'; ly.onclick = (e) => { e.preventDefault(); closeDrawer(); try { yhktApp.login('y2'); } catch(err) { toast('调不起登录：' + err.message); } }; }
-  if (lo) { lo.style.display = 'block'; lo.onclick = (e) => { e.preventDefault(); closeDrawer(); try { yhktApp.login('old'); } catch(err) { toast('调不起登录：' + err.message); } }; }
+  const lg = document.getElementById('lgbtn');
+  if (lg) {
+    lg.style.display = 'inline-block';
+    lg.onclick = () => { closeDrawer(); showLoginModal(); };
+  }
 }
+
+// 轻量登录弹窗：不覆盖/不清空课程列表
+function showLoginModal(msg){
+  let box = document.getElementById('lgmodal');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'lgmodal';
+    box.className = 'lgmodal';
+    document.body.appendChild(box);
+  }
+  box.innerHTML = `<div class="login">
+      <h2>登录 / 切换平台</h2>
+      <p class="sub">点平台按钮 → 跳去官网登录 → 自动回到这里。两个都登最好。</p>
+      <button class="autobtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课，播放快 3~5 倍</i></button>
+      <button class="autobtn" id="mOld" style="background:linear-gradient(135deg,#3a4256,#2a3140)"><b>${oldok ? '✓ 老平台已登录（点一下重登）' : '登录老平台'}</b><i>往年（2024 以前）的课要走这边</i></button>
+      <div class="msg ${msg?'err':''}">${esc(msg||'')}</div>
+      <button class="copy" id="mClose" style="margin-top:10px;width:100%">关闭</button>
+    </div>`;
+  box.style.display = 'flex';
+  box.onclick = (e) => { if (e.target === box) hideLoginModal(); };
+  const go = w => { hideLoginModal(); try { yhktApp.login(w); } catch(e){ toast('调不起登录：' + e.message); } };
+  box.querySelector('#mY2').onclick = () => go('y2');
+  box.querySelector('#mOld').onclick = () => go('old');
+  box.querySelector('#mClose').onclick = hideLoginModal;
+}
+function hideLoginModal(){ const b = document.getElementById('lgmodal'); if (b) b.style.display = 'none'; }
 
 // 全屏：手机上没有播放器控件，这个按钮就是唯一的入口
 $('#fs').onclick = () => {
