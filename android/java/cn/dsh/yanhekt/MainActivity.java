@@ -240,6 +240,10 @@ public class MainActivity extends Activity {
     }
 
     private void afterEngine() {
+        // App 重启后引擎是全新的，但 WebView 里还留着上次的会话 cookie：
+        // 直接把它们交给引擎，就能免登录继续用
+        restoreFromCookies();
+
         String oldSt = tryHttp(BASE + "/api/status", null);
         String newSt = tryHttp(BASE + "/api/y2/status", null);
         boolean oldOk = oldSt != null && oldSt.indexOf("\"loggedIn\":true") >= 0;
@@ -248,6 +252,24 @@ public class MainActivity extends Activity {
         if (newOk) { openPlayer("/y2"); return; }
         if (oldOk) { openPlayer("/"); return; }
         startLogin();
+    }
+
+    /** 把 WebView 里现存的会话 cookie 交回引擎（App 重启后免登录） */
+    private void restoreFromCookies() {
+        try {
+            String ck = CookieManager.getInstance().getCookie(BASE);
+            if (ck == null) return;
+            String y2 = cookieValue(ck, "y2tok");
+            if (y2 != null && y2.length() > 20) {
+                String r = postLogin("/api/y2/login", "{\"jwt\":" + json(Uri.decode(y2)) + "}");
+                Log.i(TAG, "restore y2 -> " + r);
+            }
+            String old = cookieValue(ck, "yht");
+            if (old != null && old.length() > 20) {
+                String r2 = postLogin("/api/login", "{\"token\":" + json(Uri.decode(old)) + "}");
+                Log.i(TAG, "restore old -> " + r2);
+            }
+        } catch (Exception e) { Log.w(TAG, "restore failed", e); }
     }
 
     // ---------------------------------------------------------------- 登录（两步：老平台 → 新版平台）
@@ -270,10 +292,10 @@ public class MainActivity extends Activity {
             boolean oldOk = false;
             String oldMsg = "";
             if (tok != null) {
-                String r = postLogin("/api/login", "{\"token\":" + json(tok) + "}");
-                oldOk = r != null && r.indexOf("\"ok\":true") >= 0;
-                oldMsg = r == null ? "请求失败" : r;
-                Log.i(TAG, "old login -> " + r);
+                String res = postLoginCandidates("/api/login", "token", tok);
+                oldOk = "OK".equals(res);
+                oldMsg = oldOk ? "" : res;
+                Log.i(TAG, "old login -> " + res);
                 final String t1 = oldOk ? "老平台已登录。接下来登录新版平台（同一个账号再登一次）"
                                         : "老平台登录被引擎拒绝：" + brief(oldMsg) + "。继续试新版平台…";
                 ui.post(new Runnable() { public void run() {
@@ -286,10 +308,10 @@ public class MainActivity extends Activity {
             boolean newOk = false;
             String newMsg = "";
             if (ck != null) {
-                String r2 = postLogin("/api/y2/login", "{\"jwt\":" + json(ck) + "}");
-                newOk = r2 != null && r2.indexOf("\"ok\":true") >= 0;
-                newMsg = r2 == null ? "请求失败" : r2;
-                Log.i(TAG, "y2 login -> " + r2);
+                String res2 = postLoginCandidates("/api/y2/login", "jwt", ck);
+                newOk = "OK".equals(res2);
+                newMsg = newOk ? "" : res2;
+                Log.i(TAG, "y2 login -> " + res2);
             }
             final boolean fOld = oldOk, fNew = newOk;
             final String fMsg = (oldMsg + " / " + newMsg).trim();
@@ -307,6 +329,20 @@ public class MainActivity extends Activity {
         }}).start();
     }
 
+    /** 逐个候选试登录，全部失败时返回最后一次引擎返回的原文 */
+    private String postLoginCandidates(String path, String key, String blob) {
+        String last = "没有可用的候选 token";
+        if (blob == null) return last;
+        for (String c : blob.split("\n")) {
+            c = c.trim();
+            if (c.length() < 20) continue;
+            String r = postLogin(path, "{\"" + key + "\":" + json(c) + "}");
+            Log.i(TAG, path + " try " + c.substring(0, Math.min(18, c.length())) + "… => " + r);
+            if (r != null && r.indexOf("\"ok\":true") >= 0) return "OK";
+            last = r == null ? "请求失败" : r;
+        }
+        return last;
+    }
     /** 两边都失败时把诊断画在屏幕上（截图就能发出去） */
     private void showDiag(final String err) {
         new Thread(new Runnable() { public void run() {
@@ -540,10 +576,10 @@ public class MainActivity extends Activity {
             boolean ok = false;
             String msg = "没在页面里找到 token";
             if (tok != null) {
-                String r = postLogin("/api/login", "{\"token\":" + json(tok) + "}");
-                ok = r != null && r.indexOf("\"ok\":true") >= 0;
-                msg = r == null ? "请求失败" : r;
-                Log.i(TAG, "old login only -> " + r);
+                String res = postLoginCandidates("/api/login", "token", tok);
+                ok = "OK".equals(res);
+                msg = ok ? "" : res;
+                Log.i(TAG, "old login only -> " + res);
             }
             final boolean fOk = ok;
             final String fMsg = msg;
@@ -552,7 +588,7 @@ public class MainActivity extends Activity {
                 if (fOk) {
                     bar.setText("老平台已登录");
                     ensureSessionCookies();
-                    web.reload();
+                    openPlayer("/");
                     ui.postDelayed(new Runnable() { public void run() { bar.setVisibility(TextView.GONE); } }, 2500);
                 } else {
                     bar.setText("老平台还是不行：" + brief(fMsg) + "（点这里重试）");
@@ -657,29 +693,34 @@ public class MainActivity extends Activity {
 
     // 老平台的 token 藏在 localStorage.auth 里（电脑版为此去读浏览器 leveldb），cookie 不保险
     // 老平台 token 藏在 localStorage 里（电脑版为此去读浏览器 leveldb）。
-    // 键名各版本不一样，索性把所有键值拼起来捞 eyJ 开头的 JWT。
+    // 键名各版本不同，而且同一页面里可能同时存在新版平台的 JWT，所以返回一串候选，
+    // 交给原生逐个试 —— 哪个能通过 /api/login 就用哪个。
     private static final String TOKEN_JS =
-        "(function(){var all='';"
-        + "try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);all+=' '+k+'='+localStorage.getItem(k);}}catch(e){}"
-        + "try{for(var j=0;j<sessionStorage.length;j++){var k2=sessionStorage.key(j);all+=' '+k2+'='+sessionStorage.getItem(k2);}}catch(e){}"
-        + "try{all+=' '+document.cookie;}catch(e){}"
-        + "var m=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(all);if(m)return m[1];"
-        + "try{for(var i2=0;i2<localStorage.length;i2++){var k3=localStorage.key(i2);"
-        + "if(/token/i.test(k3)){var v3=localStorage.getItem(k3)||'';"
-        + "var m3=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(v3);if(m3)return m3[1];"
-        + "if(v3.length>40&&v3.indexOf(' ')<0)return v3;}}}catch(e){}"
-        + "return '';})()";
+        "(function(){var out=[];"
+        + "function add(v){if(!v)return;v=String(v);"
+        + "var m=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(v);"
+        + "if(m){if(out.indexOf(m[1])<0)out.push(m[1]);return;}"
+        + "if(v.length>40&&v.indexOf(' ')<0&&out.indexOf(v)<0)out.push(v);}"
+        + "function scan(st){try{for(var i=0;i<st.length;i++){var k=st.key(i),v=st.getItem(k)||'';"
+        + "if(/token|auth|user/i.test(k)){add(v);try{var o=JSON.parse(v);"
+        + "if(o){add(o.token);add(o.accessToken);if(o.auth)add(o.auth.token);}}catch(e){}}}}catch(e){}}"
+        + "scan(localStorage);scan(sessionStorage);"
+        + "return out.join(String.fromCharCode(10));})()";
 
-    // 新版平台 token：_token 是 PHP 序列化串（里面有分号，直接当 cookie header 发会被截断），
-    // 所以在页面里按官网 getToken 的写法把 JWT 抠出来
+    // 新版平台：_token 是 PHP 序列化串（含分号，当 cookie header 会截断），
+    // 按官网 getToken 的正则抠 JWT；同样返回候选列表。
     private static final String Y2_TOKEN_JS =
-        "(function(){var ck='';try{ck=document.cookie||''}catch(e){}"
-        + "var p=ck.match(/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/);if(p)return p[1];"
-        + "var q=ck.match(/(?:^|;\\s*)_token=([^;]+)/);if(q){var v=q[1];try{v=decodeURIComponent(v)}catch(e){}"
-        + "var w=v.match(/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/);return w?w[1]:v;}"
-        + "var l='';try{l=localStorage.getItem('_token')||''}catch(e){}"
-        + "if(l){var x=l.match(/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/);return x?x[1]:l;}"
-        + "var j=/eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*/.exec(ck);return j?j[0]:'';})()";
+        "(function(){var out=[];"
+        + "function add(v){if(!v)return;v=String(v);"
+        + "var m=/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/.exec(v);"
+        + "if(m&&out.indexOf(m[1])<0)out.push(m[1]);"
+        + "var j=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(v);"
+        + "if(j&&out.indexOf(j[1])<0)out.push(j[1]);}"
+        + "var ck='';try{ck=document.cookie||''}catch(e){}"
+        + "add(ck);"
+        + "try{add(localStorage.getItem('_token')||'')}catch(e){}"
+        + "try{add(localStorage.getItem('token')||'')}catch(e){}"
+        + "return out.join(String.fromCharCode(10));})()";
 
     // 诊断用：把当前页面的存储键名列出来
     private static final String KEYS_JS =
