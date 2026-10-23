@@ -20,6 +20,29 @@
 | **自检** | 页面右下角「自检」和 `/diag`：把一门课的接口原始返回、每讲状态、取流结果打出来，出问题直接看 |
 | **只在本机** | 服务只监听 `127.0.0.1`，不对外、不上传任何数据；账号密码不经过程序 |
 
+## 手机版（APK）
+
+`dist/yanhekt.apk`（5.6 MB，Android 6.0+，arm64）—— 和电脑版**同一个引擎**：Go 后端交叉编译成
+`android/arm64`、以 `lib/arm64-v8a/libyhkt.so` 打进 APK，启动时拉起来监听 `127.0.0.1:8799`，
+WebView 打开它。所以功能、界面、课程库、无权限课都和 exe 一致。
+
+和电脑版唯一的差别是登录：电脑上是读浏览器 profile / 点一次书签，手机上是让用户在 WebView 里
+正常登录老平台和新版平台各一次，App 从 CookieManager 里取出 `yht` / `_token` 交给本地引擎，
+并把引擎下发的会话 cookie 抄回 WebView（不这么做页面会一直认为未登录）。
+
+构建：
+
+```powershell
+# 工具链（只需一次）：JDK 17 + android.jar + build-tools 34，约 500 MB
+#   解压到 ..\_android\jdk 和 ..\_android\sdk，或用 JAVA_HOME / ANDROID_SDK_ROOT 指定
+powershell -ExecutionPolicy Bypass -File android\build.ps1   # 产出 android\build\yanhekt.apk
+```
+
+已知限制：只有 arm64（绝大多数手机）；下载（`/y2dl`）在手机版会提示"请在电脑上下载"；
+登录态约 24 小时，过期后底部会出现「点这里重新登录」。
+
+
+
 ## 快速开始
 
 ### 1. 下载并运行

@@ -22,3 +22,6 @@ Thumbs.db
 desktop.ini
 go/*.exe
 go/yanhekt.exe~
+
+# Android 构建产物（keystore、apk、dex、引擎 so）
+android/build/
