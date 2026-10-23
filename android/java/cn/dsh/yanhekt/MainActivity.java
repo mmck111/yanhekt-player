@@ -207,8 +207,9 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView tip = new TextView(this);
-        tip.setText("文件存到 内部存储/Download。取消下载会当场删掉没下完的文件；"
-            + "下完的在这里点「删除」也能删干净，不用去文件管理器翻。");
+        tip.setText("文件存在 内部存储/Download。\n"
+            + "· 取消下载：已下载的部分不一定删得干净，可以点上面的「打开目录」到「下载」里看一眼；\n"
+            + "· 已下完的：在这里点「删除」就能连文件一起删掉。");
         tip.setTextColor(Color.parseColor("#6f7889"));
         tip.setTextSize(11f);
         tip.setPadding(0, dp(4), 0, dp(8));
@@ -1001,7 +1002,7 @@ public class MainActivity extends Activity {
             } else if (t.cancel) {
                 if (fLeft) {
                     Toast.makeText(MainActivity.this,
-                        "已取消。已下载的部分可能没删干净，请到「下载」目录看一下",
+                        "已取消。已下载的部分不一定删干净了，请到「下载」目录看一下",
                         Toast.LENGTH_LONG).show();
                     showLeftoverHint();
                 }
@@ -1259,7 +1260,7 @@ public class MainActivity extends Activity {
         tasks.remove(t);
         rebuildDlRows();
         updateChip();
-        Toast.makeText(this, "已取消下载。已下载的部分可能没删干净，可在「下载管理 → 打开目录」里看一眼",
+        Toast.makeText(this, "已取消下载。已下载的部分不一定删干净了，可到「下载管理 → 打开目录」里查看",
             Toast.LENGTH_LONG).show();
     }
 

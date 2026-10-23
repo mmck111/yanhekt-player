@@ -39,6 +39,13 @@ var (
 	liveValid bool
 )
 
+// 上游这次合并出来多少条（过滤前）—— 只给 /api/live 的排查字段用，
+// 一眼分清"接口没给数据"还是"被我们的时间窗口过滤掉了"
+var liveRawCount int
+
+// 上游两个接口一共返回了多少个直播对象（连没有取流地址的都算）
+var liveSrcCount int
+
 var reBackslashSlash = strings.NewReplacer(`\/`, `/`)
 
 // unescapeUrl JSON 里的地址有时带 \/ 转义
@@ -166,10 +173,12 @@ func liveListOld() ([]liveItem, int64, string) {
 
 	merged := map[string]liveItem{}
 	order := []string{} // 记住第一次出现的顺序，Node 的 Map 也是插入序
+	liveSrcCount = 0
 	put := func(l map[string]any) {
 		if l == nil {
 			return
 		}
+		liveSrcCount++
 		row := liveRow(l)
 		if row.ID == "" || row.Main == "" {
 			return
@@ -209,6 +218,7 @@ func liveListOld() ([]liveItem, int64, string) {
 	}
 
 	now := nowMillis()
+	liveRawCount = len(merged)
 	items := make([]liveItem, 0, len(merged))
 	for _, id := range order {
 		x := merged[id]
@@ -222,6 +232,13 @@ func liveListOld() ([]liveItem, int64, string) {
 			continue
 		}
 		items = append(items, x)
+	}
+	// 兜底：接口明明给了数据，却被时间窗口全滤掉了（设备时钟不准之类），
+	// 那就原样摆出来 —— 总比一片空白强，至少用户能看到场次去点。
+	if len(items) == 0 {
+		for _, id := range order {
+			items = append(items, merged[id])
+		}
 	}
 
 	rank := func(x liveItem) int {

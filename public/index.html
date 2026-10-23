@@ -776,7 +776,7 @@ async function openCourse(input, { force = false } = {}){
 // 直播流是公开的 m3u8（clive*.yanhekt.cn），不用登录也能拉；
 // 统一走本地 /lp 代理，省得跟 CORS 和 CDN 行为打交道
 let srcMode = 'record';          // record | live
-let liveItems = [], liveCur = null, liveTimer = null, liveQuery = '', liveErr = '', liveTz = '';
+let liveItems = [], liveCur = null, liveTimer = null, liveQuery = '', liveErr = '', liveTz = '', liveRaw = -1, liveSrc = -1, liveAtTxt = '';
 
 function setSrcMode(m){
   if (srcMode === m) return;
@@ -815,11 +815,42 @@ async function loadLive(){
     liveItems = j.items || [];
     liveErr = j.err || '';
     liveTz = j.tz || '';
+    liveRaw = (typeof j.raw === 'number') ? j.raw : -1;
+    liveSrc = (typeof j.src === 'number') ? j.src : -1;
+    liveAtTxt = j.at ? new Date(j.at).toLocaleTimeString('zh-CN', { hour12: false }) : '';
     renderLive();
     clearInterval(liveTimer);
     liveTimer = setInterval(() => { if (srcMode === 'live') loadLive(); }, 60 * 1000);
   } catch (e) {
     list.innerHTML = '<div class="listnote">直播列表读取失败：' + esc(e.message) + '</div>';
+  }
+}
+
+// 自检：把 /api/live 的原文摆出来（截图就能分清"接口没给数据"还是"被时间窗口过滤"）
+async function showLiveDiag(){
+  let box = document.getElementById('liveDiagBox');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'liveDiagBox';
+    box.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:40;padding:14px;display:flex;flex-direction:column;gap:8px';
+    box.innerHTML = '<div style="display:flex;gap:8px;align-items:center">'
+      + '<b style="color:#e8eaed;font-size:13px">直播接口自检</b>'
+      + '<span style="flex:1"></span>'
+      + '<button id="liveDiagClose" style="font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid #2a2f3a;background:#171a21;color:#e8eaed">关闭</button>'
+      + '</div><pre id="liveDiagPre" style="flex:1;overflow:auto;margin:0;background:#171a21;border:1px solid #2a2f3a;border-radius:8px;padding:10px;color:#c9d6e6;font:11.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all"></pre>';
+    document.body.appendChild(box);
+    box.querySelector('#liveDiagClose').onclick = () => { box.style.display = 'none'; };
+    box.onclick = (e) => { if (e.target === box) box.style.display = 'none'; };
+  }
+  box.style.display = 'flex';
+  const pre = box.querySelector('#liveDiagPre');
+  pre.textContent = '读取中…';
+  try {
+    const r = await fetch('/api/live?refresh=1');
+    const txt = await r.text();
+    pre.textContent = 'HTTP ' + r.status + '\n' + (txt.length > 4000 ? txt.slice(0, 4000) + '…' : txt);
+  } catch (e) {
+    pre.textContent = '请求失败：' + e.message;
   }
 }
 
@@ -836,6 +867,35 @@ function renderLive(){
   head.textContent = (q ? `筛出 ${view.length} 场（共 ${liveItems.length} 场）` : `直播 ${liveItems.length} 场`)
     + ` · 正在直播 ${onair} 场 · 每分钟自动刷新，点一场就看`;
   list.appendChild(head);
+
+  // 排查用：引擎时区 / 上游条数 / 拉取时间，点「自检」看接口原文
+  const meta = document.createElement('div');
+  meta.className = 'listnote';
+  meta.style.color = '#6f7889';
+  meta.innerHTML = '引擎 ' + esc(liveTz || '?') + ' · 上游 ' + (liveSrc >= 0 ? liveSrc : '?') + ' 条'
+    + ' · 合并 ' + (liveRaw >= 0 ? liveRaw : '?') + ' 条'
+    + (liveAtTxt ? ' · 更新 ' + esc(liveAtTxt) : '')
+    + ' · <a id="liveDiag" style="color:#5b9cff;cursor:pointer">自检</a>';
+  list.appendChild(meta);
+  const dg = meta.querySelector('#liveDiag');
+  if (dg) dg.onclick = showLiveDiag;
+
+  // 接口报错就明说（以前只在"没有直播"时才显示，容易漏看）
+  if (liveErr) {
+    const errLine = document.createElement('div');
+    errLine.className = 'listnote';
+    errLine.style.color = '#ff9b9b';
+    errLine.style.wordBreak = 'break-all';
+    errLine.textContent = '接口报错：' + liveErr;
+    list.appendChild(errLine);
+  } else if (liveItems.length && !onair) {
+    const noLive = document.createElement('div');
+    noLive.className = 'listnote';
+    noLive.style.color = '#d98c4a';
+    noLive.textContent = '现在没有「正在直播」的课 —— 下面是今天其它场次（点一场也能看）';
+    list.appendChild(noLive);
+  }
+
   if (!view.length) {
     splash('<div class="big">' + (q ? '没有匹配的直播' : '现在没有直播') + '</div><div>'
       + (q ? '换个关键词，或把搜索框清空' : '直播一般在上课时段；切回「录播」看录像') + '</div>'

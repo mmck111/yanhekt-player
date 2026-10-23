@@ -306,7 +306,8 @@ func registerAPI(mux *http.ServeMux) {
 		if items == nil {
 			items = []liveItem{}
 		}
-		writeJSON(w, 200, liveOK{Ok: true, Items: items, At: &at, Err: lerr, Tz: bj.String()})
+		writeJSON(w, 200, liveOK{Ok: true, Items: items, At: &at, Err: lerr, Tz: bj.String(),
+			Raw: liveRawCount, Src: liveSrcCount})
 	}))
 
 	// 直播流代理（不缓存、不排队）
@@ -379,6 +380,10 @@ type liveOK struct {
 	Err   string     `json:"err,omitempty"`
 	// Tz 引擎解析"北京时间串"用的偏移，排查"手机上没有直播"时一眼能看出是不是时区问题
 	Tz string `json:"tz"`
+	// Raw 上游合并出来的条数（过滤前）：Raw=0 说明接口没给数据，Raw>0 而 Items=0 说明被过滤了
+	Raw int `json:"raw"`
+	// Src 上游对象数（含没有取流地址的）：Src>0 而 Raw=0 说明都被"没有播放地址"挡掉了
+	Src int `json:"src"`
 }
 
 // ---------------------------------------------------------------- 工具
