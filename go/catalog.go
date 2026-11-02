@@ -248,6 +248,47 @@ func catalogSearch(q, term string, limit int) ([]catalogCourse, int) {
 	return out, total
 }
 
+// catalogCourseByID 按课程 id 从课程库里取课程名和学期（往年课程的详情被挡住时用它补名字）
+func catalogCourseByID(id string) (name, term string) {
+	cat := loadCatalog()
+	if cat == nil {
+		return "", ""
+	}
+	r := cat.byID[id]
+	if r == nil {
+		return "", ""
+	}
+	return cat.catName(r.n), cat.catTerm(r.term)
+}
+
+// catalogSearchOld 只搜**往年**（已经结束的学期）的课：老平台检索现在只给当前学期，
+// 想找回放就得从课程库里把往年的同一门课捡出来。
+func catalogSearchOld(q, term string, limit int) ([]catalogCourse, int) {
+	cat := loadCatalog()
+	key := noSpaceLower(q)
+	out := []catalogCourse{}
+	total := 0
+	for _, r := range cat.rows {
+		rterm := cat.catTerm(r.term)
+		if term != "" && rterm != term {
+			continue
+		}
+		if key != "" {
+			if !strings.Contains(cat.nameLower(r.n), key) && !strings.Contains(cat.teacherLower(r.t), key) {
+				continue
+			}
+		}
+		if rterm == "" || termIsRecent(rterm) {
+			continue // 当前学期的课由服务端给，这里只要往年的
+		}
+		total++
+		if len(out) < limit {
+			out = append(out, catalogCourse{ID: r.id, Name: cat.catName(r.n), Teacher: cat.catTeacher(r.t), Term: rterm})
+		}
+	}
+	return out, total
+}
+
 type catalogCourse struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -369,6 +410,24 @@ func oldSemesters(token string) ([]tagItem, error) {
 		break // Node 用 find，只认第一个 semesters 组
 	}
 	sort.SliceStable(list, func(i, j int) bool { return list[i].Sort > list[j].Sort })
+	// 2026-11 起 with_sub=true 不再带学期组，改问 parent_id=4（学期表的父节点）
+	if len(list) == 0 {
+		if j2, err := apiCall("/v1/tag/list?parent_id=4", token); err == nil {
+			for _, it := range jarr(j2["data"]) {
+				o := jobj(it)
+				if o == nil || jstr(o["param"]) != "semesters" {
+					continue
+				}
+				name := strings.TrimSpace(jstr(o["name"]))
+				if name == "" {
+					continue
+				}
+				list = append(list, tagItem{ID: jstr(o["id"]), Name: name, Sort: jint(o["sort"])})
+			}
+			sort.SliceStable(list, func(i, j int) bool { return list[i].Sort > list[j].Sort })
+		}
+	}
+
 	// 只有真的拿到了才缓存，否则下次登录后再试
 	if len(list) > 0 {
 		tagMu.Lock()

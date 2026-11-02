@@ -222,6 +222,38 @@ func searchRaw(q, term, token string, user *userInfo, limit, page int, notes *[]
 		src = "catalog"
 	}
 
+	// 4) 2026-11 起老平台检索只返回当前学期：把课程库里同一门课的其他学期也并进来，
+	//    否则搜索框里再也看不到往年课（课程库是 79564 行的全量课程信息）
+	if q != "" && len(courses) < limit {
+		have := map[string]bool{}
+		for _, c := range courses {
+			have[c.ID] = true
+		}
+		catCourses, _ := catalogSearchOld(q, term, limit)
+		added := 0
+		for _, mc := range catCourses {
+			if added >= 40 {
+				break
+			}
+			if have[mc.ID] {
+				continue
+			}
+			row := mc.asRow()
+			if row.Term == "" || termIsRecent(row.Term) {
+				continue // 当前学期的服务端已经给了
+			}
+			have[mc.ID] = true
+			courses = append(courses, row)
+			added++
+		}
+		if added > 0 {
+			total = maxInt(total, len(courses))
+			if src == "api" {
+				src = "api+catalog"
+			}
+		}
+	}
+
 	data := &rawSearchData{courses: courses, total: total, src: src}
 	searchMu.Lock()
 	if len(searchCache) > 60 {
@@ -391,6 +423,23 @@ func handleDBSearch(w http.ResponseWriter, r *http.Request) {
 		user = verifyToken(token)
 	}
 	raw := searchRaw(q, term, token, user, limit, page, &notes)
+
+	// 往年课程：旧平台的列表接口现在只给当前学期，这里用本地索引把往届补上
+	// （索引由 tools/old-crawl.js 抓，需要登录才能探测录像数）
+	if user != nil && q != "" && oldIndexCount() > 0 {
+		seen := map[string]bool{}
+		for _, c := range raw.courses {
+			seen[c.ID] = true
+		}
+		for _, c := range oldArchiveSearch(q, 40) {
+			if seen[c.ID] {
+				continue
+			}
+			seen[c.ID] = true
+			raw.courses = append(raw.courses, c)
+			raw.total++
+		}
+	}
 
 	courses := []any{}
 	for _, c := range raw.courses {

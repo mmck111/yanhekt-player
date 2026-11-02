@@ -178,6 +178,12 @@ func buildCourse(id, token string) *courseData {
 		return &courseData{ok: false, fail: true, errMsg: err.Error()}
 	}
 	if cRes == nil || !codeIsZeroStrict(cRes) || jobj(cRes["data"]) == nil {
+		// 往年课程：详情被"课程已过期"挡住，但讲次接口还带着播放地址（见 old_archive.go）
+		if oldIsExpired(cRes) {
+			if d := buildExpiredCourse(id, token); d != nil {
+				return d
+			}
+		}
 		msg := "课程不存在或无权访问"
 		if cRes != nil {
 			if m := jstr(cRes["message"]); m != "" {

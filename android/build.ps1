@@ -67,7 +67,7 @@ $baseApk = Join-Path $out 'base.apk'
 if (Test-Path $baseApk) { Remove-Item $baseApk -Force }
 & (Join-Path $bt 'aapt2.exe') link -o $baseApk -I $androidJar `
   --manifest (Join-Path $apkDir 'AndroidManifest.xml') `
-  --min-sdk-version 23 --target-sdk-version 34 --version-code 2 --version-name 2.0.0 @linkArgs
+  --min-sdk-version 23 --target-sdk-version 34 --version-code 3 --version-name 2.0.1 @linkArgs
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link 失败' }
 
 # ---- Java ----
@@ -84,9 +84,12 @@ if ($LASTEXITCODE -ne 0) { throw 'javac 失败' }
 $dexDir = Join-Path $out 'dex'
 if (Test-Path $dexDir) { Remove-Item $dexDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $dexDir | Out-Null
-$classFiles = @(Get-ChildItem $classes -Recurse -Filter *.class | ForEach-Object { $_.FullName })
-$d8Args = @('--release', '--min-api', '23', '--lib', $androidJar, '--output', $dexDir) + $classFiles
-& (Join-Path $bt 'd8.bat') @d8Args
+# 类文件多了以后命令行会超过 Windows 的 8191 字符上限，先打成一个 jar 再交给 d8
+$classJar = Join-Path $out 'classes.jar'
+if (Test-Path $classJar) { Remove-Item $classJar -Force }
+& (Join-Path $jdk 'bin\jar.exe') cf $classJar -C $classes .
+if ($LASTEXITCODE -ne 0) { throw '打 classes.jar 失败' }
+& (Join-Path $bt 'd8.bat') --release --min-api 23 --lib $androidJar --output $dexDir $classJar
 if ($LASTEXITCODE -ne 0) { throw 'd8 失败' }
 
 # ---- 打包（classes.dex + 引擎 so 塞进 apk）----
