@@ -6,5 +6,3 @@ package main
 func setUtf8Console() {}
 
 func copyToClipboard(text string) bool { return false }
-
-func openBrowser(u string) bool { return false }

@@ -125,3 +125,10 @@ if ($LASTEXITCODE -ne 0) { throw 'apksigner 失败' }
 if ($LASTEXITCODE -ne 0) { throw '签名校验失败' }
 
 Get-Item $signed | ForEach-Object { '{0}  {1:N2} MB' -f $_.FullName, ($_.Length / 1MB) }
+
+if (-not $env:YHKT_ANDROID_OUT) {
+  $distApk = Join-Path (Split-Path $PSScriptRoot -Parent) 'dist\yanhekt.apk'
+  New-Item -ItemType Directory -Force (Split-Path $distApk -Parent) | Out-Null
+  Copy-Item $signed $distApk -Force
+  Get-Item $distApk | ForEach-Object { '{0}  {1:N2} MB' -f $_.FullName, ($_.Length / 1MB) }
+}

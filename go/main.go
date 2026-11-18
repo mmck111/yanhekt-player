@@ -5,7 +5,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"embed"
 	"encoding/json"
@@ -509,18 +508,6 @@ func banner(p int) {
 	fmt.Println()
 	fmt.Println("   请勿关闭此窗口，此窗口为服务器。")
 	fmt.Println("   关闭窗口 ＝ 关闭播放器。")
-	if st, err := os.Stdin.Stat(); err == nil && (st.Mode()&os.ModeCharDevice) != 0 {
-		fmt.Println("   （按 Enter 键可用系统默认浏览器直接打开）")
-		go func(target string) {
-			r := bufio.NewReader(os.Stdin)
-			for {
-				if _, err := r.ReadString('\n'); err != nil {
-					return
-				}
-				_ = openBrowser(target)
-			}
-		}(url)
-	}
 	fmt.Println()
 	if lan {
 		fmt.Println("   （局域网模式：同学用上面那个 10.x 地址也能打开）")

@@ -70,6 +70,7 @@ public class MainActivity extends Activity {
     private volatile boolean watchOldLogged = false;
     private volatile boolean watchY2Logged = false;
     private volatile String lastLoginTarget = "y2";
+    private volatile String lastPlayerUrl = null;
     private long lastBackPressMs = 0L;
 
     @Override
@@ -161,6 +162,7 @@ public class MainActivity extends Activity {
                 rootView.addView(view, lp);
                 web.setVisibility(android.view.View.GONE);
                 getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                 hideSystemBars();
             }
             @Override public void onHideCustomView() { exitFullscreen(); }
@@ -203,6 +205,28 @@ public class MainActivity extends Activity {
         dlPanel.setPadding(dp(16), dp(22), dp(16), dp(16));
         dlPanel.setVisibility(android.view.View.GONE);
         dlPanel.setClickable(true);
+        if (Build.VERSION.SDK_INT >= 23) {
+            dlPanel.setOnApplyWindowInsetsListener(new android.view.View.OnApplyWindowInsetsListener() {
+                @Override public android.view.WindowInsets onApplyWindowInsets(android.view.View v, android.view.WindowInsets ins) {
+                    v.setPadding(
+                        dp(16) + ins.getSystemWindowInsetLeft(),
+                        dp(22) + ins.getSystemWindowInsetTop(),
+                        dp(16) + ins.getSystemWindowInsetRight(),
+                        dp(16) + ins.getSystemWindowInsetBottom());
+                    return ins;
+                }
+            });
+            bar.setOnApplyWindowInsetsListener(new android.view.View.OnApplyWindowInsetsListener() {
+                @Override public android.view.WindowInsets onApplyWindowInsets(android.view.View v, android.view.WindowInsets ins) {
+                    v.setPadding(
+                        dp(14) + ins.getSystemWindowInsetLeft(),
+                        dp(10),
+                        dp(14) + ins.getSystemWindowInsetRight(),
+                        dp(10) + ins.getSystemWindowInsetBottom());
+                    return ins;
+                }
+            });
+        }
 
         android.widget.LinearLayout head = new android.widget.LinearLayout(this);
         head.setOrientation(android.widget.LinearLayout.HORIZONTAL);
@@ -408,8 +432,33 @@ public class MainActivity extends Activity {
         ui.post(new Runnable() { public void run() { startLoginSite(w); } });
     }
 
+    @JavascriptInterface
+    public void clearAuth(final String which) {
+        final boolean clearOld = which == null || which.isEmpty() || "old".equals(which) || "all".equals(which);
+        final boolean clearY2 = which == null || which.isEmpty() || "y2".equals(which) || "all".equals(which);
+        if (clearOld) { capturedOld = null; watchOldLogged = false; }
+        if (clearY2) { capturedY2 = null; watchY2Logged = false; }
+        ui.post(new Runnable() { public void run() {
+            CookieManager cm = CookieManager.getInstance();
+            synchronized (sessionCookies) {
+                for (int i = sessionCookies.size() - 1; i >= 0; i--) {
+                    String pair = sessionCookies.get(i);
+                    if ((clearOld && pair.startsWith("yht=")) || (clearY2 && pair.startsWith("y2tok="))) {
+                        sessionCookies.remove(i);
+                    }
+                }
+            }
+            if (clearOld) cm.setCookie(BASE, "yht=; Max-Age=0; Path=/");
+            if (clearY2) cm.setCookie(BASE, "y2tok=; Max-Age=0; Path=/");
+            cm.flush();
+            pushStatus();
+        }});
+    }
+
     private void startLoginSite(final String which) {
         final boolean y2 = "y2".equals(which);
+        String curUrl = web == null ? null : web.getUrl();
+        if (curUrl != null && curUrl.startsWith(BASE)) lastPlayerUrl = curUrl;
         lastLoginTarget = which;
         pendingLogin = which;
         loginSiteSeen = false;
@@ -617,7 +666,18 @@ public class MainActivity extends Activity {
             // setCookie 是异步落盘的：先把会话 cookie 重新写一遍并读回确认，再导航，
             // 否则页面可能在 cookie 到位之前就请求 /api/status，显示"未登录"
             ensureSessionCookies();
-            web.loadUrl(BASE + path);
+            String target = BASE + path;
+            String saved = lastPlayerUrl;
+            if (saved != null && saved.startsWith(BASE)) {
+                String rel = saved.substring(BASE.length());
+                boolean wantY2 = "/y2".equals(path);
+                boolean savedY2 = rel.startsWith("/y2");
+                if (wantY2 == savedY2) {
+                    target = saved;
+                    lastPlayerUrl = null;
+                }
+            }
+            web.loadUrl(target);
             ui.postDelayed(probe, 2500);
         }});
     }
@@ -638,18 +698,22 @@ public class MainActivity extends Activity {
 
     /** 把登录拿到的 Set-Cookie 重新种一遍，并等它真正可读 */
     private void ensureSessionCookies() {
-        for (String pair : sessionCookies) {
+        java.util.List<String> snapshot;
+        synchronized (sessionCookies) {
+            snapshot = new java.util.ArrayList<String>(sessionCookies);
+        }
+        for (String pair : snapshot) {
             CookieManager.getInstance().setCookie(BASE, pair);
         }
         CookieManager.getInstance().flush();
         for (int i = 0; i < 10; i++) {
             String have = CookieManager.getInstance().getCookie(BASE);
             boolean all = true;
-            for (String pair : sessionCookies) {
+            for (String pair : snapshot) {
                 String name = pair.split("=", 2)[0];
                 if (have == null || !have.contains(name + "=")) { all = false; break; }
             }
-            if (all || sessionCookies.isEmpty()) return;
+            if (all || snapshot.isEmpty()) return;
             sleep(100);
         }
     }
@@ -702,6 +766,8 @@ public class MainActivity extends Activity {
         customView = null;
         if (web != null) web.setVisibility(android.view.View.VISIBLE);
         getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        try { getWindow().getDecorView().setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_VISIBLE); } catch (Exception ignored) {}
         if (customCb != null) { customCb.onCustomViewHidden(); customCb = null; }
     }
 
@@ -777,8 +843,10 @@ public class MainActivity extends Activity {
                     String pair = sc.split(";", 2)[0];
                     CookieManager.getInstance().setCookie(BASE, pair);
                     String cname = pair.split("=", 2)[0];
-                    for (int i = sessionCookies.size() - 1; i >= 0; i--) { if (sessionCookies.get(i).startsWith(cname + "=")) sessionCookies.remove(i); }
-                    sessionCookies.add(pair);
+                    synchronized (sessionCookies) {
+                        for (int i = sessionCookies.size() - 1; i >= 0; i--) { if (sessionCookies.get(i).startsWith(cname + "=")) sessionCookies.remove(i); }
+                        sessionCookies.add(pair);
+                    }
                     Log.i(TAG, "cookie <- " + pair.split("=", 2)[0]);
                 }
             }

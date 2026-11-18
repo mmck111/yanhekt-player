@@ -33,10 +33,6 @@
   .hd h1 .dot.off{background:#6b4a4a;box-shadow:none}
   .fasttag{font-size:10.5px;font-weight:700;color:#052014;background:var(--ok);border-radius:999px;padding:1px 7px}
 
-  .srcsw{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:3px;background:var(--bg);border:1px solid var(--line);border-radius:9px;margin-bottom:9px}
-  .srcsw button{padding:5px 0;font-size:12px;font-weight:600;border-radius:6px;border:none;background:transparent;color:var(--dim);cursor:pointer;transition:all .15s}
-  .srcsw button:hover{color:var(--fg)}
-  .srcsw button.on{background:linear-gradient(135deg,var(--accent),#4384ec);color:#051020;box-shadow:0 2px 10px rgba(91,156,255,.25)}
 
   .search{display:flex;gap:6px;align-items:center}
   .inpbox{position:relative;flex:1;min-width:0;display:flex;align-items:center}
@@ -268,18 +264,34 @@
     .wrap.drawer aside{transform:translateX(0)}
     .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.58);z-index:19}
     .wrap.drawer .backdrop{display:block}
-    .bar{padding:7px 10px;gap:6px;flex-wrap:wrap;min-height:46px;padding-top:max(7px,env(safe-area-inset-top))}
+    .bar{padding:7px 10px;gap:6px;flex-wrap:wrap;min-height:46px;
+      padding-top:max(7px,env(safe-area-inset-top));padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}
     .bar .who{min-width:120px}
     .bar .t{font-size:13px}
-    .tab{padding:4px 9px;font-size:11.5px}
-    .lgbtn{padding:4px 9px;font-size:11.5px}
+    .tabs{overflow-x:auto;scrollbar-width:none;max-width:100%}
+    .tabs::-webkit-scrollbar{display:none}
+    .tab{padding:5px 10px;font-size:11.5px;touch-action:manipulation}
+    .lgbtn,.menu,.chipbtn,.ctrl button,.ctrl select{touch-action:manipulation}
+    .lgbtn{padding:5px 10px;font-size:11.5px}
     .stage.dual{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
     .stage.pip .pane.pip-sub{width:42%;right:10px;bottom:10px}
     .inpbox input{font-size:16px}
+    .ctrldeck{padding:6px 10px max(8px,env(safe-area-inset-bottom))}
+    .fshud{padding:max(10px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 10px max(12px,env(safe-area-inset-left))}
+    .playerbox:fullscreen .ctrldeck,.playerbox:-webkit-full-screen .ctrldeck{
+      padding:18px max(12px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
     .volbox{display:none}
     .ctrl{gap:5px}
-    .ctrl button,.ctrl select{height:31px;padding:0 8px;font-size:11.5px}
+    .ctrl button,.ctrl select{height:34px;padding:0 8px;font-size:11.5px}
+    .ctrl .time{font-size:11px;padding:0 2px}
+    #fs{margin-left:auto}
     .hint{display:none}
+  }
+  @media (max-width:560px){
+    #playTxt{display:none}
+    .ctrl .sp{display:none}
+    .ctrl button,.ctrl select{padding:0 7px}
+    .ctrl button.pri{padding:0 10px}
   }
 </style>
 </head>
@@ -292,10 +304,6 @@
       <div class="brandhead">
         <h1><span class="dot off" id="sdot"></span>新版平台 · 极速播放</h1>
         <span class="fasttag">3~5× 快</span>
-      </div>
-      <div class="srcsw">
-        <button id="tabSearch" class="on" type="button">搜全校课程</button>
-        <button id="tabMine" type="button">我的课程</button>
       </div>
       <div class="search">
         <div class="inpbox">
@@ -423,9 +431,9 @@ const $ = s => document.querySelector(s);
 const v = $('#v'), vSub = $('#vSub');
 let hls = null, hlsSub = null, info = null, kind = 'camera', curCourse = null, curSub = null, curQuery = '';
 let dualPip = false, dualSwapped = false, audioFrom = 'camera';
-let autoNext = false, lastSaveAt = 0, sideTab = 'search';
+let autoNext = false, lastSaveAt = 0;
 let searchSeq = 0, searchAbort = null, listScrollBackup = 0, curSearchLimit = 20;
-let myCoursesCache = null, isLoggedIn = false;
+let isLoggedIn = false;
 
 const LS_RATE = 'yhkt_y2_rate_v1';
 const LS_PROG = 'yhkt_y2_prog_v1';
@@ -500,7 +508,7 @@ function pushHist(q){
 }
 function renderHist(){
   const list = $('#list');
-  if (curCourse || sideTab !== 'search') return;
+  if (curCourse) return;
   $('#fmeta').textContent = '';
   const h = getHist();
   if (!h.length) {
@@ -762,7 +770,7 @@ async function refreshY2Status(){
   }catch(e){ if (el) el.textContent = ''; return null; }
 }
 
-// ---------------- 筛选条件与我的课程 ----------------
+// ---------------- 筛选条件与课程列表 ----------------
 let termsLoaded = false;
 async function loadTerms(){
   if (!termsLoaded && isLoggedIn) {
@@ -812,72 +820,13 @@ async function resumeLast(){
     renderHist();
     $('#now').textContent = '延河课堂新版播放器';
     $('#nowSub').textContent = '内置 2.7 万门课程，支持秒拖与 MP4 下载';
-    splash('<div class="big">在左上角搜课，或看「我的课程」</div><div>支持空格 / 左右方向键控制播放，支持双画面与进度记忆</div>');
+    splash('<div class="big">在左上角搜课程名或教师名</div><div>支持空格 / 左右方向键控制播放，支持双画面与进度记忆</div>');
     return;
   }
   if (s.term && [...$('#term').options].some(o => o.value === s.term)) $('#term').value = s.term;
   $('#q').value = s.query || s.course.title || '';
   syncClearBtn();
   await loadSessions(s.course, null, { autoLatest: true });
-}
-
-function setSideTab(tab){
-  sideTab = tab;
-  $('#tabSearch').classList.toggle('on', tab === 'search');
-  $('#tabMine').classList.toggle('on', tab === 'mine');
-  courseListBackup = null; curCourse = null;
-  $('#fmeta').textContent = '';
-  if (tab === 'mine') loadMyCourses();
-  else if ($('#q').value.trim()) doFind();
-  else renderHist();
-}
-
-async function loadMyCourses(){
-  if (!isLoggedIn) {
-    $('#list').innerHTML = '<div class="splash"><b>尚未登录新版</b><span>登录后可一键列出本学期在修课程</span><div class="actrow"><button class="sbtn2" id="mineLogin">立即登录</button></div></div>';
-    const b = $('#mineLogin'); if (b) b.onclick = () => showLogin('');
-    return;
-  }
-  if (myCoursesCache) { renderMyCourses(myCoursesCache); return; }
-  $('#list').innerHTML = '<div class="splash"><span>正在读取我的课程…</span></div>';
-  try {
-    const j = await jget('/api/y2/courses');
-    if (!j.ok) { $('#list').innerHTML = '<div class="splash"><b>读取失败</b><span>' + esc(j.error || '') + '</span></div>'; return; }
-    myCoursesCache = (j.courses || []).map(c => ({
-      courseId: c.id || c.courseId,
-      title: c.name || c.title,
-      teacher: c.teacher || '',
-      termName: c.term || c.termName || '',
-      termId: '',
-    }));
-    renderMyCourses(myCoursesCache);
-  } catch (e) {
-    if (e.message !== 'need login') $('#list').innerHTML = '<div class="splash"><b>读取失败</b><span>' + esc(e.message) + '</span></div>';
-  }
-}
-
-function renderMyCourses(arr){
-  const list = $('#list');
-  list.innerHTML = '';
-  $('#fmeta').textContent = arr.length ? ('我的课程 共 ' + arr.length + ' 门') : '课表里暂时没有课程';
-  if (!arr.length) {
-    list.innerHTML = '<div class="splash"><span>课表暂无课程，可在「搜全校课程」里搜索任意课程</span></div>';
-    return;
-  }
-  const progAll = loadProgMap();
-  arr.forEach(c => {
-    const el = document.createElement('div');
-    el.className = 'item';
-    const p = progAll[String(c.courseId)];
-    el.innerHTML = '<div class="d">' + esc(c.title || '（未命名课程）') + '</div>'
-      + '<div class="m">'
-      + (c.termName ? '<span class="badge">' + esc(c.termName) + '</span>' : '')
-      + (c.teacher ? '<span>' + esc(c.teacher) + '</span>' : '')
-      + (p && p.lastSid ? '<span class="badge resume">最近看过</span>' : '')
-      + '</div>';
-    el.onclick = () => loadSessions(c, el);
-    list.appendChild(el);
-  });
 }
 
 function updateOldLink(){
@@ -893,9 +842,6 @@ function syncClearBtn(){
 
 // ---------------- 查找课程 ----------------
 async function doFind(limitOverride){
-  sideTab = 'search';
-  $('#tabSearch').classList.add('on');
-  $('#tabMine').classList.remove('on');
   const q = $('#q').value.trim();
   const term = curTerm();
   const isOldTerm = term.indexOf('old:') === 0;
@@ -968,7 +914,6 @@ async function doFind(limitOverride){
           + '<div class="m">'
           + (tn ? '<span class="badge">' + esc(tn) + '</span>' : '')
           + (c.teacher ? '<span>' + esc(c.teacher) + '</span>' : '')
-          + (p && p.lastSid ? '<span class="badge resume">最近看过</span>' : '')
           + '</div>'
           + '<div class="m">'
           + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
@@ -1079,8 +1024,7 @@ function backToCourseList({ fromPop = false } = {}){
   if (!courseListBackup) {
     curCourse = null;
     $('#fmeta').textContent = '输入课程名或教师名开始搜课';
-    if (sideTab === 'mine') loadMyCourses();
-    else renderHist();
+    renderHist();
     return;
   }
   list.innerHTML = '';
@@ -1105,6 +1049,7 @@ function rowBack(c){
 }
 
 async function loadSessions(c, el, opts){
+  if (c && c.courseId) remember(c, $('#q').value.trim());
   if (!isLoggedIn) {
     showLogin('点播该课程录像前请先登录新版平台');
     return;
@@ -1160,15 +1105,11 @@ async function loadSessions(c, el, opts){
       const tn = s.termName || '';
       const p = getSessionProg(c.courseId, s.subId);
       const pct = (p && p.d > 0) ? Math.min(100, Math.round(p.t / p.d * 100)) : 0;
-      const progBadge = (p && p.t > 8)
-        ? (p.d > 0 && p.t >= p.d - 15 ? '<span class="badge ok">已看完</span>' : `<span class="badge resume">续播 ${fmt(p.t)}</span>`)
-        : '';
       el2.innerHTML = '<div class="d">' + esc((s.date||'—') + (s.period ? ' ' + s.period : '') + (s.title && s.title !== s.period ? ' · ' + s.title : '')) + '</div>'
         + '<div class="m">'
         + (dur ? '<span>' + dur + '</span>' : '')
         + (s.room ? '<span>' + esc(s.room) + '</span>' : '')
         + (tn ? '<span>' + esc(tn) + '</span>' : '')
-        + progBadge
         + '</div>'
         + (pct > 0 ? `<div class="progbar"><i style="width:${pct}%"></i></div>` : '');
       el2.onclick = ()=>{ closeDrawer(); play(s, el2); };
@@ -1510,15 +1451,53 @@ $('#playerBox').addEventListener('touchstart', wakeHud, { passive: true });
 document.addEventListener('fullscreenchange', wakeHud);
 document.addEventListener('webkitfullscreenchange', wakeHud);
 
+let hudWokeFromIdle = false, lastStageTouchMs = 0, lastStageTap = null, stageTapTimer = 0, stageTouchPt = null;
+$('#playerBox').addEventListener('touchstart', e => {
+  if (e.touches && e.touches.length === 1) stageTouchPt = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  else stageTouchPt = null;
+  if ($('#playerBox').classList.contains('idle') && e.target.closest('#stage')
+      && !e.target.closest('.ctrldeck') && !e.target.closest('.fshud')) {
+    hudWokeFromIdle = true;
+    setTimeout(() => { hudWokeFromIdle = false; }, 500);
+  }
+}, { passive: true, capture: true });
+$('#stage').addEventListener('touchend', e => {
+  if (e.target.closest('.perr')) return;
+  if (kind === 'dual' && dualPip && e.target.closest('.pip-sub')) return;
+  if (!e.changedTouches || e.changedTouches.length !== 1) return;
+  const t = e.changedTouches[0];
+  if (stageTouchPt && Math.hypot(t.clientX - stageTouchPt.x, t.clientY - stageTouchPt.y) > 24) {
+    stageTouchPt = null; lastStageTouchMs = Date.now(); return;
+  }
+  stageTouchPt = null;
+  lastStageTouchMs = Date.now();
+  if (hudWokeFromIdle) { hudWokeFromIdle = false; lastStageTap = null; clearTimeout(stageTapTimer); return; }
+  const now = Date.now();
+  const rect = $('#stage').getBoundingClientRect();
+  if (lastStageTap && now - lastStageTap.t < 280
+      && Math.hypot(t.clientX - lastStageTap.x, t.clientY - lastStageTap.y) < 56) {
+    clearTimeout(stageTapTimer); lastStageTap = null;
+    const ratio = rect.width > 0 ? (t.clientX - rect.left) / rect.width : 0.5;
+    if (ratio < 0.35) { const b = document.querySelector('[data-jump="-15"]'); if (b) b.click(); }
+    else if (ratio > 0.65) { const b = document.querySelector('[data-jump="15"]'); if (b) b.click(); }
+    else { $('#fs').click(); }
+    return;
+  }
+  lastStageTap = { t: now, x: t.clientX, y: t.clientY };
+  clearTimeout(stageTapTimer);
+  stageTapTimer = setTimeout(() => { lastStageTap = null; $('#pp').click(); }, 250);
+}, { passive: true });
 $('#stage').addEventListener('click', e => {
   if (e.target.closest('.perr')) return;
   if (kind === 'dual' && dualPip && e.target.closest('.pip-sub')) {
     dualSwapped = !dualSwapped; renderStage(); return;
   }
+  if (Date.now() - lastStageTouchMs < 600) return;
   $('#pp').click();
 });
 $('#stage').addEventListener('dblclick', e => {
   if (e.target.closest('.perr') || e.target.closest('.pip-sub')) return;
+  if (Date.now() - lastStageTouchMs < 600) return;
   $('#fs').click();
 });
 
@@ -1617,10 +1596,8 @@ $('#fs').onclick = () => {
   }
 };
 
-$('#tabSearch').onclick = () => setSideTab('search');
-$('#tabMine').onclick = () => setSideTab('mine');
 $('#go').onclick = () => doFind();
-$('#qClr').onclick = () => { $('#q').value = ''; syncClearBtn(); $('#q').focus(); if (!curCourse && sideTab === 'search') renderHist(); };
+$('#qClr').onclick = () => { $('#q').value = ''; syncClearBtn(); $('#q').focus(); if (!curCourse) renderHist(); };
 $('#q').addEventListener('input', syncClearBtn);
 $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doFind(); });
 $('#term').onchange = () => {
@@ -1630,7 +1607,9 @@ $('#term').onchange = () => {
 $('#btnSetup').onclick = () => showLogin('');
 $('#btnLogout').onclick = async () => {
   await fetch('/api/y2/logout', { method: 'POST' });
-  isLoggedIn = false; myCoursesCache = null;
+  isLoggedIn = false;
+  try { if (window.yhktApp && window.yhktApp.clearAuth) window.yhktApp.clearAuth('y2'); } catch(e){}
+  if (APP && window.__yhktRefresh) window.__yhktRefresh();
   detach();
   refreshY2Status();
   showLogin('已退出登录');

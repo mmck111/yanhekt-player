@@ -27,10 +27,3 @@ func copyToClipboard(text string) bool {
 	go func() { _ = cmd.Wait() }()
 	return true
 }
-
-// openBrowser 仅在用户主动按键时调用系统默认浏览器打开本地地址
-func openBrowser(u string) bool {
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	return cmd.Start() == nil
-}
