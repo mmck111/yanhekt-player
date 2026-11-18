@@ -67,6 +67,10 @@ public class MainActivity extends Activity {
     private android.view.View customView;
     private WebChromeClient.CustomViewCallback customCb;
     private volatile boolean forceNext = false;
+    private volatile boolean watchOldLogged = false;
+    private volatile boolean watchY2Logged = false;
+    private volatile String lastLoginTarget = "y2";
+    private long lastBackPressMs = 0L;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -195,8 +199,8 @@ public class MainActivity extends Activity {
         // 下载面板（盖住整页）：列出任务、进度、取消
         dlPanel = new android.widget.LinearLayout(this);
         dlPanel.setOrientation(android.widget.LinearLayout.VERTICAL);
-        dlPanel.setBackgroundColor(Color.parseColor("#f20f1115"));
-        dlPanel.setPadding(dp(14), dp(14), dp(14), dp(14));
+        dlPanel.setBackgroundColor(Color.parseColor("#f70b0d12"));
+        dlPanel.setPadding(dp(16), dp(22), dp(16), dp(16));
         dlPanel.setVisibility(android.view.View.GONE);
         dlPanel.setClickable(true);
 
@@ -204,21 +208,18 @@ public class MainActivity extends Activity {
         head.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
-        title.setText("下载");
-        title.setTextColor(Color.parseColor("#e8eaed"));
-        title.setTextSize(16f);
+        title.setText("下载管理");
+        title.setTextColor(Color.parseColor("#eef2f7"));
+        title.setTextSize(17f);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
         head.addView(title, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        android.widget.Button openBtn = new android.widget.Button(this);
-        openBtn.setText("打开目录");
-        openBtn.setTextSize(12f);
-        openBtn.setOnClickListener(new android.view.View.OnClickListener() {
+        android.widget.Button openBtn = mkBtn("打开目录", new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) { openDownloadFolder(); }
         });
         head.addView(openBtn);
-        android.widget.Button closeBtn = new android.widget.Button(this);
-        closeBtn.setText("关闭");
-        closeBtn.setTextSize(12f);
-        closeBtn.setOnClickListener(new android.view.View.OnClickListener() {
+        android.widget.Space hsp = new android.widget.Space(this);
+        head.addView(hsp, new android.widget.LinearLayout.LayoutParams(dp(8), 1));
+        android.widget.Button closeBtn = mkBtn("关闭", new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) { closeDlPanel(); }
         });
         head.addView(closeBtn);
@@ -226,20 +227,14 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView tip = new TextView(this);
-        tip.setText("文件存在 内部存储/Download。\n"
-            + "· 取消下载：已下载的部分不一定删得干净，可以点上面的「打开目录」到「下载」里看一眼；\n"
-            + "· 已下完的：在这里点「删除」就能连文件一起删掉。");
-        tip.setTextColor(Color.parseColor("#6f7889"));
-        tip.setTextSize(11f);
-        tip.setPadding(0, dp(4), 0, dp(8));
+        tip.setText("文件保存在 内部存储/Download · 已下载的点击「打开」可直接唤起播放器。");
+        tip.setTextColor(Color.parseColor("#8f99ac"));
+        tip.setTextSize(11.5f);
+        tip.setPadding(0, dp(8), 0, dp(10));
         dlPanel.addView(tip);
 
         // 一键清理：把这台手机里本 App 下载过的文件全删掉（老版本留下的也在内）
-        cleanBtn = new android.widget.Button(this);
-        cleanBtn.setText("清理本 App 下载的文件");
-        cleanBtn.setTextSize(12f);
-        cleanBtn.setAllCaps(false);
-        cleanBtn.setOnClickListener(new android.view.View.OnClickListener() {
+        cleanBtn = mkBtn("清理本 App 下载的文件", new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) { confirmCleanAll(); }
         });
         dlPanel.addView(cleanBtn, new android.widget.LinearLayout.LayoutParams(
@@ -415,6 +410,7 @@ public class MainActivity extends Activity {
 
     private void startLoginSite(final String which) {
         final boolean y2 = "y2".equals(which);
+        lastLoginTarget = which;
         pendingLogin = which;
         loginSiteSeen = false;
         capturedOld = null; capturedY2 = null;
@@ -437,13 +433,15 @@ public class MainActivity extends Activity {
                 String r2 = postLoginCandidates("/api/y2/login", "jwt", tok);
                 Log.i(TAG, "login(old)->y2 -> " + r2);
             }
+            final boolean okNow = "OK".equals(res);
             ui.post(new Runnable() { public void run() {
-                pendingLogin = null;
-                // 用户已经回到播放器了：刷新一下，让页面看到新的登录态
                 if (onPlayerPage()) {
+                    pendingLogin = null;
                     ensureSessionCookies();
                     openPlayer(y2 ? "/y2" : "/");
                     watchExpiry();
+                } else if (okNow && pendingLogin != null) {
+                    bar.setText("✓ 已获取登录态 — 按返回键或点此回到播放器");
                 }
             }});
         }}).start();
@@ -461,9 +459,10 @@ public class MainActivity extends Activity {
 
     /** 从登录页回播放器（返回键 / 点底部提示条）：回来之前再抓一次登录态，别等后台轮询 */
     private void backToPlayer() {
-        final String which = pendingLogin;
+        final String which = pendingLogin != null ? pendingLogin : lastLoginTarget;
         final boolean y2 = "y2".equals(which);
         pendingLogin = null;
+        loginSiteSeen = false;
         forceNext = true;              // 后台的等待循环可以停了
         bar.setOnClickListener(null);
         bar.setVisibility(TextView.GONE);
@@ -486,6 +485,7 @@ public class MainActivity extends Activity {
             ui.post(new Runnable() { public void run() {
                 ensureSessionCookies();
                 openPlayer(y2 ? "/y2" : "/");
+                watchExpiry();
             }});
         }}).start();
     }
@@ -624,10 +624,16 @@ public class MainActivity extends Activity {
 
     /** 24 小时登录态：登录成功之后才盯着它过期，没登录过就别弹"过期" */
     private void watchExpiry() {
-        ui.post(new Runnable() { public void run() {
-            ui.removeCallbacks(watch);
-            ui.postDelayed(watch, 60000);
-        }});
+        new Thread(new Runnable() { public void run() {
+            String a = tryHttp(BASE + "/api/status", null);
+            String b = tryHttp(BASE + "/api/y2/status", null);
+            watchOldLogged = a != null && a.indexOf("\"loggedIn\":true") >= 0;
+            watchY2Logged = b != null && b.indexOf("\"loggedIn\":true") >= 0;
+            ui.post(new Runnable() { public void run() {
+                ui.removeCallbacks(watch);
+                if (watchOldLogged || watchY2Logged) ui.postDelayed(watch, 60000);
+            }});
+        }}).start();
     }
 
     /** 把登录拿到的 Set-Cookie 重新种一遍，并等它真正可读 */
@@ -666,16 +672,22 @@ public class MainActivity extends Activity {
     /** 登录态约 24 小时；过期后给一个"点一下重登"的入口 */
     private final Runnable watch = new Runnable() { public void run() {
         new Thread(new Runnable() { public void run() {
-            String st = tryHttp(BASE + "/api/y2/status", null);
-            final boolean ok = st != null && st.indexOf("\"loggedIn\":true") >= 0;
+            String stY2 = watchY2Logged ? tryHttp(BASE + "/api/y2/status", null) : null;
+            String stOld = watchOldLogged ? tryHttp(BASE + "/api/status", null) : null;
+            final boolean y2Expired = watchY2Logged && (stY2 == null || stY2.indexOf("\"loggedIn\":true") < 0);
+            final boolean oldExpired = watchOldLogged && (stOld == null || stOld.indexOf("\"loggedIn\":true") < 0);
             ui.post(new Runnable() { public void run() {
-                if (ok) { ui.postDelayed(watch, 60000); return; }
+                if (!y2Expired && !oldExpired) {
+                    if (watchY2Logged || watchOldLogged) ui.postDelayed(watch, 60000);
+                    return;
+                }
+                final String target = y2Expired ? "y2" : "old";
                 bar.setVisibility(TextView.VISIBLE);
-                bar.setText("新版登录已过期 —— 点这里重新登录");
+                bar.setText(y2Expired ? "新版登录已过期 —— 点这里重新登录" : "老平台登录已过期 —— 点这里重新登录");
                 bar.setOnClickListener(new android.view.View.OnClickListener() {
                     @Override public void onClick(android.view.View v) {
                         bar.setOnClickListener(null);
-                        startLoginSite("y2");
+                        startLoginSite(target);
                     }
                 });
             }});
@@ -856,6 +868,7 @@ public class MainActivity extends Activity {
     /** 一个下载任务：面板里能看到进度，也能取消 */
     static class DlTask {
         String name = "准备中…";
+        String mime = "video/mp4";
         volatile long done = 0, total = -1;
         volatile boolean cancel = false, doneOk = false, failed = false;
         volatile String error = null;
@@ -864,6 +877,11 @@ public class MainActivity extends Activity {
         volatile Uri target = null;     // Android 10+：MediaStore 里的那一行
         volatile File file = null;      // Android 9 及以下：直接写出去的文件
         TextView line = null;
+        android.widget.ProgressBar bar = null;
+    }
+
+    private static String fmtMB(long bytes) {
+        return String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0);
     }
 
     private final java.util.List<DlTask> tasks = new java.util.concurrent.CopyOnWriteArrayList<DlTask>();
@@ -922,6 +940,7 @@ public class MainActivity extends Activity {
             if (name == null) name = "lecture_" + System.currentTimeMillis() + ".mp4";
             t.name = name;
             String mime = name.endsWith(".ts") ? "video/mp2t" : "video/mp4";
+            t.mime = mime;
             if (Build.VERSION.SDK_INT >= 29) {
                 android.content.ContentValues cv = new android.content.ContentValues();
                 cv.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
@@ -984,15 +1003,17 @@ public class MainActivity extends Activity {
         ui.post(new Runnable() { public void run() {
             if (t.doneOk) {
                 Toast.makeText(MainActivity.this,
-                    "下载完成：" + fName + "\n" + (total / 1048576.0) + " MB → 内部存储/Download",
+                    "下载完成：" + fName + "\n" + fmtMB(total) + " → 内部存储/Download",
                     Toast.LENGTH_LONG).show();
                 refreshOwnedCount();
             } else if (t.cancel) {
                 if (fLeft) {
                     Toast.makeText(MainActivity.this,
-                        "已取消。已下载的部分不一定删干净了，请到「下载」目录看一下",
+                        "已取消。部分缓存可能尚未清理，可点「打开目录」查看",
                         Toast.LENGTH_LONG).show();
                     showLeftoverHint();
+                } else {
+                    Toast.makeText(MainActivity.this, "已取消下载并清理临时文件", Toast.LENGTH_SHORT).show();
                 }
             } else {
                 say("下载失败：" + t.error);
@@ -1163,7 +1184,30 @@ public class MainActivity extends Activity {
         }});
     }
 
-    /** 下完的那条点「打开」→ 直接进系统「下载」目录 */
+    /** 下完的那条点「打开」→ 直接调系统播放器播放该文件，失败再退回目录 */
+    private void openDownloadedTask(DlTask t) {
+        if (t != null && t.target != null) {
+            try {
+                Intent view = new Intent(Intent.ACTION_VIEW);
+                view.setDataAndType(t.target, t.mime != null ? t.mime : "video/*");
+                view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(Intent.createChooser(view, "选择播放器打开"));
+                return;
+            } catch (Exception ignored) {}
+        }
+        if (t != null && t.file != null && t.file.exists() && Build.VERSION.SDK_INT < 24) {
+            try {
+                Intent view = new Intent(Intent.ACTION_VIEW);
+                view.setDataAndType(Uri.fromFile(t.file), t.mime != null ? t.mime : "video/*");
+                view.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(Intent.createChooser(view, "选择播放器打开"));
+                return;
+            } catch (Exception ignored) {}
+        }
+        openDownloadFolder();
+    }
+
+    /** 进系统「下载」目录 */
     private void openDownloadFolder() {
         try {
             Intent i = new Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS);
@@ -1180,9 +1224,9 @@ public class MainActivity extends Activity {
         if (tasks.isEmpty()) {
             TextView tv = new TextView(this);
             tv.setText("还没有下载任务。在播放页点「下载」后，这里会出现进度。");
-            tv.setTextColor(Color.parseColor("#9aa3b2"));
+            tv.setTextColor(Color.parseColor("#8f99ac"));
             tv.setTextSize(13f);
-            tv.setPadding(dp(4), dp(12), dp(4), dp(12));
+            tv.setPadding(dp(4), dp(16), dp(4), dp(16));
             dlList.addView(tv);
             return;
         }
@@ -1194,6 +1238,15 @@ public class MainActivity extends Activity {
         b.setText(text);
         b.setTextSize(12f);
         b.setAllCaps(false);
+        b.setTextColor(Color.parseColor("#eef2f7"));
+        android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
+        gd.setColor(Color.parseColor("#181e2a"));
+        gd.setCornerRadius(dp(8));
+        gd.setStroke(dp(1), Color.parseColor("#2d374a"));
+        b.setBackground(gd);
+        b.setPadding(dp(12), dp(6), dp(12), dp(6));
+        b.setMinimumHeight(dp(34));
+        b.setMinHeight(dp(34));
         b.setOnClickListener(l);
         return b;
     }
@@ -1201,14 +1254,32 @@ public class MainActivity extends Activity {
     private android.view.View rowOf(final DlTask t) {
         android.widget.LinearLayout box = new android.widget.LinearLayout(this);
         box.setOrientation(android.widget.LinearLayout.VERTICAL);
-        box.setPadding(0, dp(8), 0, dp(8));
+        box.setPadding(dp(12), dp(10), dp(12), dp(10));
+        android.graphics.drawable.GradientDrawable cardBg = new android.graphics.drawable.GradientDrawable();
+        cardBg.setColor(Color.parseColor("#12161f"));
+        cardBg.setCornerRadius(dp(10));
+        cardBg.setStroke(dp(1), Color.parseColor("#252d3d"));
+        box.setBackground(cardBg);
+        android.widget.LinearLayout.LayoutParams cardLp = new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cardLp.setMargins(0, dp(8), 0, 0);
+        box.setLayoutParams(cardLp);
 
         TextView line = new TextView(this);
-        line.setTextColor(Color.parseColor("#e8eaed"));
+        line.setTextColor(Color.parseColor("#eef2f7"));
         line.setTextSize(13f);
+        line.setLineSpacing(dp(2), 1.0f);
         t.line = line;
         box.addView(line, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        android.widget.ProgressBar pb = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pb.setMax(100);
+        t.bar = pb;
+        android.widget.LinearLayout.LayoutParams pbLp = new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
+        pbLp.setMargins(0, dp(6), 0, dp(8));
+        box.addView(pb, pbLp);
 
         android.widget.LinearLayout row = new android.widget.LinearLayout(this);
         row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
@@ -1218,14 +1289,16 @@ public class MainActivity extends Activity {
                 @Override public void onClick(android.view.View v) { cancelTask(t); }
             }));
         } else if (t.doneOk) {
-            row.addView(mkBtn("打开", new android.view.View.OnClickListener() {
-                @Override public void onClick(android.view.View v) { openDownloadFolder(); }
+            row.addView(mkBtn("打开播放", new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) { openDownloadedTask(t); }
             }));
+            android.widget.Space sp = new android.widget.Space(this);
+            row.addView(sp, new android.widget.LinearLayout.LayoutParams(dp(8), 1));
             row.addView(mkBtn("删除", new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) { confirmDelete(t); }
             }));
         } else {
-            row.addView(mkBtn("删除", new android.view.View.OnClickListener() {
+            row.addView(mkBtn("移除", new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
                     tasks.remove(t);
                     rebuildDlRows();
@@ -1248,8 +1321,7 @@ public class MainActivity extends Activity {
         tasks.remove(t);
         rebuildDlRows();
         updateChip();
-        Toast.makeText(this, "已取消下载。已下载的部分不一定删干净了，可到「下载管理 → 打开目录」里查看",
-            Toast.LENGTH_LONG).show();
+        Toast.makeText(this, "正在取消下载…", Toast.LENGTH_SHORT).show();
     }
 
     private void confirmDelete(final DlTask t) {
@@ -1309,13 +1381,28 @@ public class MainActivity extends Activity {
     private void fillRowText(final DlTask t) {
         if (t.line == null) return;
         String txt;
-        if (t.doneOk) txt = t.name + "\n已完成 · " + (t.done / 1048576.0) + " MB → 内部存储/Download";
+        if (t.doneOk) txt = t.name + "\n已完成 · " + fmtMB(t.done) + " → 内部存储/Download";
         else if (t.cancel) txt = t.name + "\n已取消";
         else if (t.failed) txt = t.name + "\n失败：" + t.error;
-        else if (t.total > 0) txt = t.name + "\n" + (t.done * 100 / t.total) + "%（" + (t.done / 1048576.0) + " / " + (t.total / 1048576.0) + " MB）";
-        else txt = t.name + "\n已下载 " + (t.done / 1048576.0) + " MB";
+        else if (t.total > 0) txt = t.name + "\n" + (t.done * 100 / t.total) + "%（" + fmtMB(t.done) + " / " + fmtMB(t.total) + "）";
+        else txt = t.name + "\n已下载 " + fmtMB(t.done);
         final String f = txt;
-        ui.post(new Runnable() { public void run() { if (t.line != null) t.line.setText(f); } });
+        ui.post(new Runnable() { public void run() {
+            if (t.line != null) t.line.setText(f);
+            if (t.bar != null) {
+                if (t.doneOk) {
+                    t.bar.setIndeterminate(false);
+                    t.bar.setProgress(100);
+                } else if (t.failed || t.cancel) {
+                    t.bar.setVisibility(android.view.View.GONE);
+                } else if (t.total > 0) {
+                    t.bar.setIndeterminate(false);
+                    t.bar.setProgress((int) Math.min(100, t.done * 100 / t.total));
+                } else {
+                    t.bar.setIndeterminate(true);
+                }
+            }
+        }});
     }
 
     private void refreshTaskRow(DlTask t) {
@@ -1346,8 +1433,31 @@ public class MainActivity extends Activity {
 
     @Override public void onBackPressed() {
         if (customView != null) { exitFullscreen(); return; }
+        if (dlPanel != null && dlPanel.getVisibility() == android.view.View.VISIBLE) { closeDlPanel(); return; }
+        if (pendingLogin != null || (web != null && !onPlayerPage())) { backToPlayer(); return; }
+        if (web != null && onPlayerPage()) {
+            web.evaluateJavascript("(function(){return window.__yhktBack?window.__yhktBack():'none';})()",
+                new android.webkit.ValueCallback<String>() {
+                    @Override public void onReceiveValue(String val) {
+                        if (val != null && val.contains("handled")) return;
+                        handleNativeBackFallback();
+                    }
+                });
+            return;
+        }
         if (web != null && web.canGoBack()) { web.goBack(); return; }
         super.onBackPressed();
+    }
+
+    private void handleNativeBackFallback() {
+        if (web != null && web.canGoBack()) { web.goBack(); return; }
+        long now = System.currentTimeMillis();
+        if (now - lastBackPressMs < 2000L) {
+            finish();
+            return;
+        }
+        lastBackPressMs = now;
+        Toast.makeText(this, "再按一次返回退出延河课堂", Toast.LENGTH_SHORT).show();
     }
 
     @Override protected void onDestroy() {
