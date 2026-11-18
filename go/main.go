@@ -5,8 +5,8 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"sync"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -18,13 +18,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 //go:embed web
 var webFS embed.FS
 
-const build = "2.0.0"
+const build = "2.1.0"
 
 var (
 	port = 8788
@@ -296,6 +297,7 @@ func registerAPI(mux *http.ServeMux) {
 
 	// 自检：把容易出错的判断（学期解析、教室编码）跑一遍
 	mux.HandleFunc("/api/selftest", safe(handleSelftest))
+	mux.HandleFunc("/api/downloads", safe(handleDownloads))
 
 	// ---- 直播 ----
 	mux.HandleFunc("/api/live", safe(func(w http.ResponseWriter, r *http.Request) {
@@ -477,9 +479,11 @@ func printAlreadyRunning(runningBuild string) {
 	fmt.Println()
 	fmt.Println("   请复制以下链接到浏览器打开：")
 	fmt.Println()
-	fmt.Println("        http://127.0.0.1:" + strconv.Itoa(port) + "/")
+	u := "http://127.0.0.1:" + strconv.Itoa(port) + "/"
+	_ = copyToClipboard(u)
+	fmt.Println("        " + u)
 	fmt.Println()
-	fmt.Println("   （如果浏览器里已经开着播放器，刷新一下页面就行）")
+	fmt.Println("   （链接已重新复制到剪贴板；如果浏览器里已经开着播放器，刷新一下页面就行）")
 	fmt.Println("  ═══════════════════════════════════════════════════")
 }
 
@@ -505,6 +509,18 @@ func banner(p int) {
 	fmt.Println()
 	fmt.Println("   请勿关闭此窗口，此窗口为服务器。")
 	fmt.Println("   关闭窗口 ＝ 关闭播放器。")
+	if st, err := os.Stdin.Stat(); err == nil && (st.Mode()&os.ModeCharDevice) != 0 {
+		fmt.Println("   （按 Enter 键可用系统默认浏览器直接打开）")
+		go func(target string) {
+			r := bufio.NewReader(os.Stdin)
+			for {
+				if _, err := r.ReadString('\n'); err != nil {
+					return
+				}
+				_ = openBrowser(target)
+			}
+		}(url)
+	}
 	fmt.Println()
 	if lan {
 		fmt.Println("   （局域网模式：同学用上面那个 10.x 地址也能打开）")

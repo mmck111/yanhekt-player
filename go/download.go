@@ -298,6 +298,7 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	}
 
 	fmt.Printf("下载开始：%s，共 %d 片，约 %d 分钟\n", title, len(media.segments), int(media.duration/60+0.5))
+	tracker := dlTrackStart("old", title+ext, len(order), 0)
 
 	w.Header().Set("content-type", ctype)
 	w.Header().Set("content-disposition",
@@ -308,9 +309,11 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 
 	flusher, _ := w.(http.Flusher)
 	doneSegs, failedSegs := 0, 0
+	var doneBytes int64
 	gone := false
 	for i := 0; i < len(order); i++ {
 		if gone || r.Context().Err() != nil {
+			gone = true
 			break
 		}
 		buf := fetchSegment(order[i], vid, 5)
@@ -326,6 +329,8 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 			gone = true
 			break
 		}
+		doneBytes += int64(len(buf))
+		tracker.update(doneSegs, doneBytes)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -335,6 +340,13 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 		if (i+1)%10 == 0 {
 			sleepMs(200) // 稍微放慢，别把 CDN 惹急
 		}
+	}
+	if gone {
+		tracker.finish("cancelled", "连接已断开")
+	} else if doneSegs == 0 {
+		tracker.finish("error", "分片拉取失败")
+	} else {
+		tracker.finish("done", "")
 	}
 	fmt.Printf("下载结束：成功 %d 片，失败 %d 片\n", doneSegs, failedSegs)
 }

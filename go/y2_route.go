@@ -56,6 +56,7 @@ func y2CleanCookie(s string) string {
 func registerY2(mux *http.ServeMux) {
 	mux.HandleFunc("/api/y2/status", safe(handleY2Status))
 	mux.HandleFunc("/api/y2/login", safe(handleY2Login))
+	mux.HandleFunc("/api/y2/logout", safe(handleY2Logout))
 	mux.HandleFunc("/api/y2/login/auto", safe(handleY2LoginAuto))
 	mux.HandleFunc("/api/y2/courses", safe(handleY2Courses))
 	mux.HandleFunc("/api/y2/terms", safe(handleY2Terms))
@@ -136,6 +137,11 @@ func handleY2Login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "userId": id.userId, "auth": style})
 }
 
+func handleY2Logout(w http.ResponseWriter, r *http.Request) {
+	setCookie(w, y2Cookie, "", 0)
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
 // handleY2LoginAuto 自动登录：去本机浏览器里找新版平台的 JWT，逐个验证
 func handleY2LoginAuto(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
@@ -199,6 +205,13 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page"))); err == nil && n > 1 {
 		page = n
 	}
+	reqLimit := 0
+	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit"))); err == nil && n > 0 {
+		if n > 100 {
+			n = 100
+		}
+		reqLimit = n
+	}
 	if q == "" && term == "" {
 		writeJSON(w, 400, map[string]any{"ok": false, "error": "请输入课程名"})
 		return
@@ -209,7 +222,11 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		// 没登录也能搜本地课程库：先把课找出来，点播放时再让用户登录
 		if q != "" {
 			if cat := y2CatalogLoad(); cat != nil {
-				if hits, matched := y2CatalogSearch(cat, q, 40); len(hits) > 0 {
+				lim := 40
+				if reqLimit > 0 {
+					lim = reqLimit
+				}
+				if hits, matched := y2CatalogSearch(cat, q, lim); len(hits) > 0 {
 					out := make([]y2Course, 0, len(hits))
 					for _, h := range hits {
 						c := y2CatRowCourse(h)
@@ -242,7 +259,11 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 	localHits, localMatched := 0, 0
 	if q != "" {
 		if cat := y2CatalogLoad(); cat != nil && len(cat.Rows) > 0 {
-			hits, matched := y2CatalogSearch(cat, q, 20)
+			lim := 20
+			if reqLimit > 0 {
+				lim = reqLimit
+			}
+			hits, matched := y2CatalogSearch(cat, q, lim)
 			for _, h := range hits {
 				courses = append(courses, y2CatRowCourse(h))
 			}
@@ -590,6 +611,9 @@ func handleY2Sessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"ok": false, "error": "缺少 courseId"})
 		return
 	}
+	if qv.Get("refresh") == "1" {
+		y2VideoInvalidate(jwt, courseID)
+	}
 
 	data, err := y2Videos(jwt, id, courseID, true, y2LongestToken(q), termName, true)
 	if err != nil {
@@ -850,16 +874,32 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		return fmt.Errorf("第一片取不到（HTTP %d）", st)
 	}
 
+	tracker := dlTrackStart("y2", name+".ts", len(order), 0)
 	w.Header().Set("content-type", "video/mp2t")
 	w.Header().Set("content-disposition", `attachment; filename="lecture.ts"; filename*=UTF-8''`+y2FormEncode(name+".ts"))
 	w.Header().Set("cache-control", "no-store")
 	w.WriteHeader(200)
 	_, _ = w.Write(first)
 
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
 	done, failed := 1, 0
+	doneBytes := int64(len(first))
+	tracker.update(done, doneBytes)
+	gone := false
 	for i := 1; i < len(order); i++ {
+		if r.Context().Err() != nil {
+			gone = true
+			break
+		}
 		var buf []byte
 		for n := 0; n < 4 && buf == nil; n++ {
+			if r.Context().Err() != nil {
+				gone = true
+				break
+			}
 			s, b, e := get(order[i])
 			if e == nil && s == 200 && len(b) > 0 {
 				buf = b
@@ -867,17 +907,31 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 			}
 			sleepMs(300 * (n + 1))
 		}
+		if gone {
+			break
+		}
 		if buf == nil {
 			failed++
 			continue
 		}
 		done++
 		if _, e := w.Write(buf); e != nil {
+			gone = true
 			break
+		}
+		doneBytes += int64(len(buf))
+		tracker.update(done, doneBytes)
+		if flusher != nil {
+			flusher.Flush()
 		}
 		if done%10 == 0 {
 			sleepMs(100)
 		}
+	}
+	if gone {
+		tracker.finish("cancelled", "连接已断开")
+	} else {
+		tracker.finish("done", "")
 	}
 	fmt.Printf("新版下载结束：成功 %d 片，失败 %d 片\n", done, failed)
 	return nil
@@ -1027,8 +1081,32 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 		status = 200
 	}
 	w.WriteHeader(status)
+	if opts.filename != "" {
+		totalBytes, _ := strconv.ParseInt(up.Header.Get("content-length"), 10, 64)
+		tracker := dlTrackStart("y2", opts.filename, 1, totalBytes)
+		_, copyErr := io.Copy(&dlTrackWriter{w: w, tracker: tracker}, up.Body)
+		if copyErr != nil || r.Context().Err() != nil {
+			tracker.finish("cancelled", "连接已断开")
+		} else {
+			tracker.markDone()
+		}
+		return nil
+	}
 	_, _ = io.Copy(w, up.Body)
 	return nil
+}
+
+type dlTrackWriter struct {
+	w       io.Writer
+	tracker *dlTrackItem
+}
+
+func (tw *dlTrackWriter) Write(p []byte) (int, error) {
+	n, err := tw.w.Write(p)
+	if n > 0 {
+		tw.tracker.addBytes(int64(n))
+	}
+	return n, err
 }
 
 // ---------------------------------------------------------------- 课程库（爬取 / 查看）

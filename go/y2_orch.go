@@ -157,6 +157,13 @@ func y2Remember(key string, data *y2VideosData) *y2VideosData {
 	return data
 }
 
+func y2VideoInvalidate(jwt, courseID string) {
+	key := y2JwtTail(jwt) + ":" + courseID
+	y2VideoMu.Lock()
+	delete(y2VideoCache, key)
+	y2VideoMu.Unlock()
+}
+
 // y2RememberIf 只有"完整深挖"的结果才写缓存：搜索时为了快拿到的可能是少几讲的
 // 视图，绝不能让它盖掉点开课程时该看到的完整讲次列表。
 func y2RememberIf(cache bool, key string, data *y2VideosData) *y2VideosData {
