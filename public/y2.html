@@ -562,6 +562,8 @@ function loginScript(){
 const bookmarkletUrl = () => 'javascript:' + loginScript();
 
 const APP = !!(window.yhktApp && window.yhktApp.login);
+const DESKTOP_APP = !!(window.yhktApp && window.yhktApp.isDesktop);
+const NATIVE_DL = !!(window.yhktApp && window.yhktApp.openDownloads);
 let y2ok = false, oldok = false;
 
 window.__yhktStat = (ao, bo) => {
@@ -595,18 +597,44 @@ function showAppLogin(msg){
 
 function showLoginModal(msg){
   const box = $('#lgmodal');
+  const sub = DESKTOP_APP
+    ? '点下面按钮在当前窗口内打开官网登录，完成后会自动返回播放器。'
+    : '点下面的按钮跳到官网登录，登录好后按返回键回到播放器即可。';
+  const importBtn = DESKTOP_APP
+    ? '<button class="autobtn altbtn" id="mImport"><b>从本机 Edge / Chrome 导入登录态</b><i>若日常浏览器已登录新版延河，点一下免输密码</i></button>'
+    : '';
   box.innerHTML = `<div class="login">
       <h2><span>登录 / 切换平台</span><button class="xbtn" id="mClose" type="button">×</button></h2>
-      <p class="sub">点下面的按钮跳到官网登录，登录好后按返回键回到播放器即可。</p>
+      <p class="sub">${sub}</p>
       <button class="autobtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课，播放快 3~5 倍</i></button>
       <button class="autobtn altbtn" id="mOld"><b>${oldok ? '✓ 老平台已登录（点一下重登）' : '登录老平台'}</b><i>往年（2024 以前）的课要走这边</i></button>
-      <div class="msg ${msg?'err':''}">${esc(msg||'')}</div>
+      ${importBtn}
+      <div class="msg ${msg?'err':''}" id="mModalMsg">${esc(msg||'')}</div>
     </div>`;
   box.style.display = 'flex';
   box.onclick = e => { if (e.target === box) hideLoginModal(); };
   const go = w => { hideLoginModal(); try { yhktApp.login(w); } catch(e){ toast('调不起登录：' + e.message); } };
   box.querySelector('#mY2').onclick = () => go('y2');
   box.querySelector('#mOld').onclick = () => go('old');
+  const mi = box.querySelector('#mImport');
+  if (mi) mi.onclick = async () => {
+    mi.disabled = true;
+    const mm = box.querySelector('#mModalMsg');
+    if (mm) { mm.className = 'msg'; mm.textContent = '正在扫描本机浏览器登录态…'; }
+    try {
+      const a = await (await fetch('/api/y2/login/auto', { method: 'POST' })).json();
+      if (a.ok) {
+        try { sessionStorage.removeItem('yhkt_manual_logout'); } catch(e){}
+        hideLoginModal(); isLoggedIn = true;
+        await loadTerms(); refreshY2Status(); window.__yhktRefresh();
+        if (!curCourse) await resumeLast();
+        else toast('已从本机浏览器导入登录态', 2600);
+        return;
+      }
+    } catch (e) {}
+    mi.disabled = false;
+    if (mm) { mm.className = 'msg err'; mm.textContent = '未找到可用登录态 —— 新版多在加密 cookie 中，请直接点上方「登录新版平台」'; }
+  };
   box.querySelector('#mClose').onclick = hideLoginModal;
 }
 function hideLoginModal(){ const b = $('#lgmodal'); if (b) b.style.display = 'none'; }
@@ -1515,7 +1543,7 @@ async function refreshWebDownloads(){
     const items = (j && j.items) || [];
     const running = items.filter(x => x.status === 'running').length;
     const dlEntry = $('#dlnk');
-    if (dlEntry && !APP) {
+    if (dlEntry && !NATIVE_DL) {
       dlEntry.textContent = '⤓ 下载管理' + (running > 0 ? '（' + running + '）' : '');
       dlEntry.classList.toggle('busy', running > 0);
     }
@@ -1552,7 +1580,7 @@ $('#dl').onclick = () => {
     + '&title=' + encodeURIComponent(title);
   window.open(url, '_blank');
   toast('开始下载' + label + '，可在「下载管理」看进度', 4200);
-  if (!APP) setTimeout(refreshWebDownloads, 600);
+  if (!NATIVE_DL) setTimeout(refreshWebDownloads, 600);
 };
 
 const wrapEl = $('#wrap');
@@ -1606,6 +1634,7 @@ $('#term').onchange = () => {
 };
 $('#btnSetup').onclick = () => showLogin('');
 $('#btnLogout').onclick = async () => {
+  try { sessionStorage.setItem('yhkt_manual_logout', '1'); } catch(e){}
   await fetch('/api/y2/logout', { method: 'POST' });
   isLoggedIn = false;
   try { if (window.yhktApp && window.yhktApp.clearAuth) window.yhktApp.clearAuth('y2'); } catch(e){}
@@ -1719,7 +1748,7 @@ window.__yhktBack = () => {
   try {
     const st = await (await fetch('/api/y2/status')).json();
     logged = !!st.loggedIn;
-    if (!logged && !APP) {
+    if (!logged && (!APP || (DESKTOP_APP && !sessionStorage.getItem('yhkt_manual_logout')))) {
       const a = await (await fetch('/api/y2/login/auto', { method: 'POST' })).json();
       if (a.ok) { logged = true; toast('已自动登录' + (a.from ? '（来自 ' + a.from + '）' : ''), 2600); }
     }
@@ -1763,6 +1792,7 @@ window.__yhktBack = () => {
     return;
   }
   if (logged) {
+    try { sessionStorage.removeItem('yhkt_manual_logout'); } catch(e){}
     await resumeLast();
   } else {
     renderHist();

@@ -1044,6 +1044,8 @@ function bookmarklet() {
 }
 
 const APP = !!(window.yhktApp && window.yhktApp.login);
+const DESKTOP_APP = !!(window.yhktApp && window.yhktApp.isDesktop);
+const NATIVE_DL = !!(window.yhktApp && window.yhktApp.openDownloads);
 let oldok = false, y2ok = false;
 
 window.__yhktStat = (ao, bo) => {
@@ -1079,7 +1081,7 @@ function showAppLogin(msg, keep){
     $('#who').textContent = '未登录';
     $('#btnLogout').style.display = 'none';
     $('#cname').textContent = '延河课堂在线播放器';
-    $('#cmeta').textContent = '点顶栏「登录」，登录好后按返回键回到这里';
+    $('#cmeta').textContent = DESKTOP_APP ? '点左上角「登录」，在应用内完成登录后自动返回' : '点顶栏「登录」，登录好后按返回键回到这里';
     if (!cur) splash('<div class="big">点顶栏「登录」按钮</div><div>老平台 / 新版平台各登一次 · 或者直接点左侧「直播」免登录看课</div>');
   }
   showLoginModal(msg);
@@ -1087,18 +1089,35 @@ function showAppLogin(msg, keep){
 
 function showLoginModal(msg){
   const box = $('#lgmodal');
+  const sub = DESKTOP_APP
+    ? '点下面按钮在当前窗口内打开官网登录，完成后会自动返回播放器。'
+    : '点下面按钮去官网登录，登录好后按返回键回到播放器即可。';
+  const importBtn = DESKTOP_APP
+    ? '<button class="autobtn altbtn" id="mImport"><b>从本机 Edge / Chrome 导入登录态</b><i>若日常浏览器已登录延河课堂，点一下免输密码</i></button>'
+    : '';
   box.innerHTML = `<div class="login">
       <h2><span>登录 / 切换平台</span><button class="xbtn" id="mClose" type="button">×</button></h2>
-      <p class="sub">点下面按钮去官网登录，登录好后按返回键回到播放器即可。</p>
+      <p class="sub">${sub}</p>
       <button class="autobtn" id="mOld"><b>${oldok ? '✓ 老平台已登录（点一下重登）' : '登录老平台'}</b><i>往年（2024 以前）的课要走这边</i></button>
       <button class="autobtn altbtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课在那边，播放快 3~5 倍</i></button>
-      <div class="msg ${msg?'err':''}">${esc(msg||'')}</div>
+      ${importBtn}
+      <div class="msg ${msg?'err':''}" id="mModalMsg">${esc(msg||'')}</div>
     </div>`;
   box.style.display = 'flex';
   box.onclick = e => { if (e.target === box) hideLoginModal(); };
   const go = w => { hideLoginModal(); try { yhktApp.login(w); } catch(e){ toast('调不起登录：' + e.message); } };
   box.querySelector('#mOld').onclick = () => go('old');
   box.querySelector('#mY2').onclick = () => go('y2');
+  const mi = box.querySelector('#mImport');
+  if (mi) mi.onclick = async () => {
+    mi.disabled = true;
+    const mm = box.querySelector('#mModalMsg');
+    if (mm) { mm.className = 'msg'; mm.textContent = '正在扫描本机浏览器登录态…'; }
+    const ok = await autoLogin({ silent: true });
+    if (ok) { window.__yhktRefresh(); return; }
+    mi.disabled = false;
+    if (mm) { mm.className = 'msg err'; mm.textContent = '本机浏览器暂无可用老平台登录态，请直接点上方「登录老平台」在窗内登录'; }
+  };
   box.querySelector('#mClose').onclick = hideLoginModal;
 }
 function hideLoginModal(){ const b = $('#lgmodal'); if (b) b.style.display = 'none'; }
@@ -1199,6 +1218,7 @@ async function loginWithToken(tk, msg){
 }
 
 function signedIn(user, { keepView = false } = {}){
+  try { sessionStorage.removeItem('yhkt_manual_logout'); } catch(e){}
   me = user;
   $('#dot').classList.add('ok');
   $('#stateTxt').textContent = '延河课堂 · 已登录';
@@ -1680,7 +1700,7 @@ async function refreshWebDownloads(){
     const items = (j && j.items) || [];
     const running = items.filter(x => x.status === 'running').length;
     const dlEntry = $('#btnDl2');
-    if (dlEntry && !APP) {
+    if (dlEntry && !NATIVE_DL) {
       dlEntry.textContent = '⤓ 下载管理' + (running > 0 ? '（' + running + '）' : '');
       dlEntry.classList.toggle('busy', running > 0);
     }
@@ -1737,10 +1757,11 @@ function downloadCurrent(){
     + '&session=' + encodeURIComponent(cur.id) + '&kind=' + kind;
   window.open(url, '_blank');
   toast('开始下载' + label + '画面，可在「下载管理」看进度', 4200);
-  if (!APP) setTimeout(refreshWebDownloads, 600);
+  if (!NATIVE_DL) setTimeout(refreshWebDownloads, 600);
 }
 
 $('#btnLogout').onclick = async () => {
+  try { sessionStorage.setItem('yhkt_manual_logout', '1'); } catch(e){}
   await fetch('/api/logout', { method: 'POST' });
   try { if (window.yhktApp && window.yhktApp.clearAuth) window.yhktApp.clearAuth('old'); } catch(e){}
   if (APP && window.__yhktRefresh) window.__yhktRefresh();
@@ -1903,7 +1924,7 @@ window.__yhktBack = () => {
       signedIn(j.user);
     } else {
       renderHist();
-      if (!APP) {
+      if (!APP || (DESKTOP_APP && !sessionStorage.getItem('yhkt_manual_logout'))) {
         const ok = await autoLogin({ silent: true });
         if (!ok) showLogin(ht ? 'token 无效或已过期，请重新点一次书签' : '');
       } else {

@@ -8,6 +8,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -87,9 +88,22 @@ func main() {
 		return
 	}
 
+	headless := lan || hasCLIArg("--headless") || os.Getenv("YHKT_HEADLESS") == "1" || os.Getenv("NO_GUI") == "1"
+	useDesktop := desktopSupported() && !headless
+
 	// 单实例检测：端口上已经有播放器在跑就别再起一个
 	if os.Getenv("FORCE_NEW") != "1" {
 		if running := probeExisting(port); running != "" {
+			if useDesktop {
+				if focusRunningDesktopApp(port) {
+					return
+				}
+				// 已有后台服务在跑但没有桌面窗口（例如旧版或无头服务）：直接打开桌面窗口连上去
+				if runDesktopApp(port) {
+					return
+				}
+			}
+			attachParentConsoleIfNeeded()
 			printAlreadyRunning(running)
 			// 不自动关窗，等用户看完再关；20 秒后自行退出，免得留一个空窗口
 			time.Sleep(20 * time.Second)
@@ -112,6 +126,7 @@ func main() {
 		port++
 	}
 	if ln == nil {
+		attachParentConsoleIfNeeded()
 		fmt.Println("  启动失败：端口都被占用了")
 		return
 	}
@@ -119,12 +134,12 @@ func main() {
 	mux := http.NewServeMux()
 	registerPages(mux, sub)
 	registerAPI(mux)
-
-	banner(port)
+	mux.HandleFunc("/_app/auth", safe(handleAppAuth))
+	mux.HandleFunc("/_app/focus", safe(handleAppFocus))
 
 	// 签名器后台初始化（抓官网 JS 要几秒，别挡住页面）
 	go func() {
-		if _, live := signerInit(false); live {
+		if _, live := signerInit(false); live && !useDesktop {
 			fmt.Println("  签名算法：已从官网实时提取（可自愈）")
 		}
 	}()
@@ -137,6 +152,24 @@ func main() {
 	}()
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 20 * time.Second}
+	if useDesktop {
+		go func() {
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				showDesktopError(fmt.Sprintf("本地服务异常：%v", err))
+			}
+		}()
+		if runDesktopApp(port) {
+			_ = srv.Close()
+			return
+		}
+		// 如果本机缺少 WebView2 Runtime 或窗口初始化失败，回退为本地服务继续运行
+		attachParentConsoleIfNeeded()
+		banner(port)
+		select {}
+	}
+
+	attachParentConsoleIfNeeded()
+	banner(port)
 	if err := srv.Serve(ln); err != nil {
 		fmt.Printf("启动失败：%v\n", err)
 	}

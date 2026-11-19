@@ -34,7 +34,7 @@ foreach ($f in 'index.html', 'y2.html', 'icon.png', 'hls.min.js', 'catalog.json.
 Push-Location $PSScriptRoot
 try {
   $env:CGO_ENABLED = '0'
-  $ldflags = '-s -w'
+  $ldflags = '-s -w -H=windowsgui'
   $tags = 'nethttpomithttp2'
 
   $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
