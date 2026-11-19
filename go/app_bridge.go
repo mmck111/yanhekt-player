@@ -146,9 +146,11 @@ func handleAppFocus(w http.ResponseWriter, r *http.Request) {
 	appFocusMu.Lock()
 	fn := appFocusHook
 	appFocusMu.Unlock()
-	if fn != nil {
-		fn()
+	if fn == nil {
+		writeJSON(w, 404, map[string]any{"ok": false})
+		return
 	}
+	fn()
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 

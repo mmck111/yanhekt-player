@@ -59,6 +59,15 @@ func TestAppAuthTicketLifecycle(t *testing.T) {
 }
 
 func TestAppFocusHookAndRemoteGuard(t *testing.T) {
+	setDesktopFocusHook(nil)
+	noHookReq := httptest.NewRequest(http.MethodGet, "/_app/focus", nil)
+	noHookReq.RemoteAddr = "127.0.0.1:50000"
+	noHookRec := httptest.NewRecorder()
+	handleAppFocus(noHookRec, noHookReq)
+	if noHookRec.Code != http.StatusNotFound {
+		t.Fatalf("no-hook status = %d, want 404", noHookRec.Code)
+	}
+
 	called := 0
 	setDesktopFocusHook(func() { called++ })
 	defer setDesktopFocusHook(nil)
