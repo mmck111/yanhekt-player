@@ -773,14 +773,27 @@ func pickWritableSaveDir(lastDir string) string {
 	if lastDir != "" {
 		cands = append(cands, lastDir)
 	}
+	// If %LOCALAPPDATA% itself is blocked by system policy/AV, standard user libraries often reject Save As too;
+	// prefer a verified writable folder next to the exe first in that case.
+	localRestricted := false
+	if v := os.Getenv("LOCALAPPDATA"); v != "" && !probeWritableDir(filepath.Join(v, "yanhekt")) {
+		localRestricted = true
+	}
+	if localRestricted {
+		if exe, err := os.Executable(); err == nil && exe != "" {
+			cands = append(cands, filepath.Join(filepath.Dir(exe), "downloads"))
+		}
+	}
 	if v := knownFolderPath(folderIDVideos); v != "" {
 		cands = append(cands, v)
 	}
-	if d := knownFolderPath(folderIDDownloads); d != "" {
-		cands = append(cands, d)
+	if !localRestricted {
+		if d := knownFolderPath(folderIDDownloads); d != "" {
+			cands = append(cands, d)
+		}
 	}
 	if up := os.Getenv("USERPROFILE"); up != "" {
-		cands = append(cands, filepath.Join(up, "Videos"), filepath.Join(up, "Desktop"), filepath.Join(up, "Downloads"))
+		cands = append(cands, filepath.Join(up, "Videos"), filepath.Join(up, "Desktop"))
 	}
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		cands = append(cands, filepath.Join(filepath.Dir(exe), "downloads"))
@@ -845,7 +858,13 @@ func pickSaveFileDialog(hwnd uintptr, initialDir, defaultName, defExt string) (s
 		return filepath.Join(initialDir, defaultName), true
 	}
 	buf := make([]uint16, 4096)
-	initName := utf16.Encode([]rune(defaultName))
+	// Windows ignores lpstrInitialDir whenever ComDlg32 MRU remembers an older folder (e.g. D:\Downloads);
+	// seeding lpstrFile with the full initial path forces the dialog to start in initialDir.
+	seedPath := defaultName
+	if initialDir != "" {
+		seedPath = filepath.Join(initialDir, defaultName)
+	}
+	initName := utf16.Encode([]rune(seedPath))
 	if len(initName) >= len(buf) {
 		initName = initName[:len(buf)-1]
 	}
@@ -937,7 +956,9 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 				lastDir := a.lastSaveDir
 				a.saveMu.Unlock()
 				initDir := pickWritableSaveDir(lastDir)
+				desktopLog("download dialog fname=%s initDir=%s", fname, initDir)
 				p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
+				desktopLog("download dialog result ok=%v path=%s", ok, p)
 				if ok && p != "" {
 					a.saveMu.Lock()
 					a.lastSaveDir = filepath.Dir(p)
