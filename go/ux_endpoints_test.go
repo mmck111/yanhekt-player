@@ -41,6 +41,16 @@ func TestDownloadTrackerEndpoint(t *testing.T) {
 	if res.Items[0].Status != "done" || res.Items[0].DoneSegs != 10 || res.Items[0].Bytes != 300 {
 		t.Fatalf("unexpected item: %+v", res.Items[0])
 	}
+
+	run := dlTrackStart("old", "高数_第1讲.ts", 20, 0)
+	called := false
+	run.setCancel(func() { called = true })
+	creq := httptest.NewRequest("POST", "/api/downloads/cancel?id="+run.ID, nil)
+	crec := httptest.NewRecorder()
+	handleDownloadsCancel(crec, creq)
+	if crec.Code != 200 || !called || !run.isCancelled() || run.Status != "cancelled" {
+		t.Fatalf("cancel failed code=%d called=%v status=%q", crec.Code, called, run.Status)
+	}
 }
 
 func TestY2LogoutClearsCookie(t *testing.T) {

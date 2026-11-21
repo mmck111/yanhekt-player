@@ -262,7 +262,9 @@
 
   .dlrow{padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);margin-bottom:8px}
   .dlrow .dt{font-size:13px;font-weight:600;word-break:break-all}
-  .dlrow .dm{font-size:11.5px;color:var(--dim);margin-top:4px;display:flex;justify-content:space-between;gap:8px}
+  .dlrow .dm{font-size:11.5px;color:var(--dim);margin-top:4px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .dlcancel{border:1px solid var(--line);background:rgba(248,113,113,.12);color:#fca5a5;border-radius:6px;padding:2px 8px;font-size:11px;cursor:pointer;line-height:1.4}
+  .dlcancel:hover{background:rgba(248,113,113,.22);border-color:rgba(248,113,113,.45)}
   .dlbar{height:4px;border-radius:99px;background:rgba(255,255,255,.08);margin-top:7px;overflow:hidden}
   .dlbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .3s}
 
@@ -442,7 +444,7 @@
 <div class="lgmodal" id="dlModal">
   <div class="login">
     <h2><span>下载管理</span><button class="xbtn" id="dlClose" type="button">×</button></h2>
-    <p class="sub">文件直接由浏览器保存到电脑默认「下载」目录。转 MP4 可用：<code>ffmpeg -i 文件.ts -c copy 输出.mp4</code></p>
+    <p class="sub">开始下载后会由窗口或浏览器保存视频，可随时点击任务右侧「取消」。转 MP4 可用：<code>ffmpeg -i 文件.ts -c copy 输出.mp4</code></p>
     <div id="dlBody"></div>
   </div>
 </div>
@@ -1716,8 +1718,11 @@ async function refreshWebDownloads(){
             : it.status === 'done' ? '已完成'
             : it.status === 'cancelled' ? '已取消' : ('失败 ' + (it.error || ''));
           const segText = it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '';
+          const act = it.status === 'running'
+            ? `<button class="dlcancel" type="button" onclick="cancelWebDownload('${esc(it.id)}')">取消</button>`
+            : '';
           return `<div class="dlrow"><div class="dt">${esc(it.title)}</div>`
-            + `<div class="dm"><span>${esc(stText)}</span><span>${segText}${fmtMB(it.bytes)}</span></div>`
+            + `<div class="dm"><span>${esc(stText)}</span><span style="display:flex;align-items:center;gap:8px">${segText}${fmtMB(it.bytes)}${act}</span></div>`
             + `<div class="dlbar"><i style="width:${Math.min(100,pct)}%"></i></div></div>`;
         }).join('');
       }
@@ -1725,6 +1730,14 @@ async function refreshWebDownloads(){
     if (running > 0 || $('#dlModal').style.display === 'flex') {
       dlPoll = setTimeout(refreshWebDownloads, 900);
     }
+  } catch (e) {}
+}
+
+async function cancelWebDownload(id){
+  try {
+    await fetch('/api/downloads/cancel?id=' + encodeURIComponent(id), { method: 'POST' });
+    toast('已取消下载', 2400);
+    refreshWebDownloads();
   } catch (e) {}
 }
 

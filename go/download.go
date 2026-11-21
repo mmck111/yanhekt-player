@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -298,12 +299,16 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	}
 
 	fmt.Printf("下载开始：%s，共 %d 片，约 %d 分钟\n", title, len(media.segments), int(media.duration/60+0.5))
+	dlCtx, dlCancel := context.WithCancel(r.Context())
+	defer dlCancel()
 	tracker := dlTrackStart("old", title+ext, len(order), 0)
+	tracker.setCancel(dlCancel)
 
 	w.Header().Set("content-type", ctype)
 	w.Header().Set("content-disposition",
 		`attachment; filename="lecture`+ext+`"; filename*=UTF-8''`+encodeURIComponent(title+ext))
 	w.Header().Set("cache-control", "no-store")
+	w.Header().Set("X-YHKT-DL-ID", tracker.ID)
 	w.WriteHeader(200)
 	started = true
 
@@ -312,7 +317,7 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	var doneBytes int64
 	gone := false
 	for i := 0; i < len(order); i++ {
-		if gone || r.Context().Err() != nil {
+		if gone || dlCtx.Err() != nil || tracker.isCancelled() {
 			gone = true
 			break
 		}
@@ -341,8 +346,12 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 			sleepMs(200) // 稍微放慢，别把 CDN 惹急
 		}
 	}
-	if gone {
-		tracker.finish("cancelled", "连接已断开")
+	if gone || tracker.isCancelled() {
+		msg := "连接已断开"
+		if tracker.isCancelled() {
+			msg = "用户已取消"
+		}
+		tracker.finish("cancelled", msg)
 	} else if doneSegs == 0 {
 		tracker.finish("error", "分片拉取失败")
 	} else {

@@ -2,8 +2,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +24,9 @@ type dlTrackItem struct {
 	Error      string `json:"error,omitempty"`
 	StartedAt  int64  `json:"startedAt"`
 	UpdatedAt  int64  `json:"updatedAt"`
+
+	cancel    func()
+	cancelled bool
 }
 
 var (
@@ -95,6 +101,72 @@ func (it *dlTrackItem) markDone() {
 	dlTrackMu.Unlock()
 }
 
+func (it *dlTrackItem) setCancel(fn func()) {
+	if it == nil {
+		return
+	}
+	dlTrackMu.Lock()
+	already := it.cancelled
+	it.cancel = fn
+	dlTrackMu.Unlock()
+	if already && fn != nil {
+		fn()
+	}
+}
+
+func (it *dlTrackItem) isCancelled() bool {
+	if it == nil {
+		return false
+	}
+	dlTrackMu.Lock()
+	c := it.cancelled
+	dlTrackMu.Unlock()
+	return c
+}
+
+func dlTrackCancel(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	var fn func()
+	found := false
+	dlTrackMu.Lock()
+	for _, it := range dlTrackItems {
+		if it.ID == id {
+			found = true
+			if it.Status == "running" {
+				it.cancelled = true
+				it.Status = "cancelled"
+				it.Error = "用户已取消"
+				it.UpdatedAt = time.Now().UnixMilli()
+				fn = it.cancel
+			}
+			break
+		}
+	}
+	dlTrackMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+	return found
+}
+
+func dlTrackIsCancelled(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	dlTrackMu.Lock()
+	defer dlTrackMu.Unlock()
+	for _, it := range dlTrackItems {
+		if it.ID == id {
+			return it.cancelled || it.Status == "cancelled"
+		}
+	}
+	return false
+}
+
 func handleDownloads(w http.ResponseWriter, r *http.Request) {
 	dlTrackMu.Lock()
 	out := make([]dlTrackItem, 0, len(dlTrackItems))
@@ -103,4 +175,19 @@ func handleDownloads(w http.ResponseWriter, r *http.Request) {
 	}
 	dlTrackMu.Unlock()
 	writeJSON(w, 200, map[string]any{"ok": true, "items": out})
+}
+
+func handleDownloadsCancel(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" && r.Body != nil {
+		var body struct {
+			ID string `json:"id"`
+		}
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+		if len(b) > 0 && json.Unmarshal(b, &body) == nil {
+			id = strings.TrimSpace(body.ID)
+		}
+	}
+	ok := dlTrackCancel(id)
+	writeJSON(w, 200, map[string]any{"ok": ok})
 }

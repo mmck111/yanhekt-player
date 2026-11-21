@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -776,8 +777,8 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 	cookie := r.Header.Get("Cookie")
 
 	client := &http.Client{Timeout: 90 * time.Second}
-	get := func(url string) (int, []byte, error) {
-		req, err := http.NewRequest("GET", url, nil)
+	getCtx := func(ctx context.Context, url string) (int, []byte, error) {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -792,6 +793,7 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 		return resp.StatusCode, b, err
 	}
+	get := func(url string) (int, []byte, error) { return getCtx(r.Context(), url) }
 	readPlaylist := func(url string) (string, error) {
 		st, b, err := get(url)
 		if err != nil {
@@ -874,10 +876,14 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		return fmt.Errorf("第一片取不到（HTTP %d）", st)
 	}
 
+	dlCtx, dlCancel := context.WithCancel(r.Context())
+	defer dlCancel()
 	tracker := dlTrackStart("y2", name+".ts", len(order), 0)
+	tracker.setCancel(dlCancel)
 	w.Header().Set("content-type", "video/mp2t")
 	w.Header().Set("content-disposition", `attachment; filename="lecture.ts"; filename*=UTF-8''`+y2FormEncode(name+".ts"))
 	w.Header().Set("cache-control", "no-store")
+	w.Header().Set("X-YHKT-DL-ID", tracker.ID)
 	w.WriteHeader(200)
 	_, _ = w.Write(first)
 
@@ -890,17 +896,17 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 	tracker.update(done, doneBytes)
 	gone := false
 	for i := 1; i < len(order); i++ {
-		if r.Context().Err() != nil {
+		if dlCtx.Err() != nil || tracker.isCancelled() {
 			gone = true
 			break
 		}
 		var buf []byte
 		for n := 0; n < 4 && buf == nil; n++ {
-			if r.Context().Err() != nil {
+			if dlCtx.Err() != nil || tracker.isCancelled() {
 				gone = true
 				break
 			}
-			s, b, e := get(order[i])
+			s, b, e := getCtx(dlCtx, order[i])
 			if e == nil && s == 200 && len(b) > 0 {
 				buf = b
 				break
@@ -928,8 +934,12 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 			sleepMs(100)
 		}
 	}
-	if gone {
-		tracker.finish("cancelled", "连接已断开")
+	if gone || tracker.isCancelled() {
+		msg := "连接已断开"
+		if tracker.isCancelled() {
+			msg = "用户已取消"
+		}
+		tracker.finish("cancelled", msg)
 	} else {
 		tracker.finish("done", "")
 	}
@@ -1080,18 +1090,25 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	if status == 0 {
 		status = 200
 	}
-	w.WriteHeader(status)
 	if opts.filename != "" {
 		totalBytes, _ := strconv.ParseInt(up.Header.Get("content-length"), 10, 64)
 		tracker := dlTrackStart("y2", opts.filename, 1, totalBytes)
+		tracker.setCancel(func() { _ = up.Body.Close() })
+		w.Header().Set("X-YHKT-DL-ID", tracker.ID)
+		w.WriteHeader(status)
 		_, copyErr := io.Copy(&dlTrackWriter{w: w, tracker: tracker}, up.Body)
-		if copyErr != nil || r.Context().Err() != nil {
-			tracker.finish("cancelled", "连接已断开")
+		if tracker.isCancelled() || copyErr != nil || r.Context().Err() != nil {
+			msg := "连接已断开"
+			if tracker.isCancelled() {
+				msg = "用户已取消"
+			}
+			tracker.finish("cancelled", msg)
 		} else {
 			tracker.markDone()
 		}
 		return nil
 	}
+	w.WriteHeader(status)
 	_, _ = io.Copy(w, up.Body)
 	return nil
 }

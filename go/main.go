@@ -346,6 +346,7 @@ func registerAPI(mux *http.ServeMux) {
 	// 自检：把容易出错的判断（学期解析、教室编码）跑一遍
 	mux.HandleFunc("/api/selftest", safe(handleSelftest))
 	mux.HandleFunc("/api/downloads", safe(handleDownloads))
+	mux.HandleFunc("/api/downloads/cancel", safe(handleDownloadsCancel))
 
 	// ---- 直播 ----
 	mux.HandleFunc("/api/live", safe(func(w http.ResponseWriter, r *http.Request) {

@@ -1047,6 +1047,21 @@ func (a *desktopApp) uiToast(msg string) {
 	})
 }
 
+func loadSavedDownloadDir() string {
+	b, err := os.ReadFile(filepath.Join(desktopAppBaseDir(), "save_dir.txt"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func persistSavedDownloadDir(dir string) {
+	if strings.TrimSpace(dir) == "" {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(desktopAppBaseDir(), "save_dir.txt"), []byte(strings.TrimSpace(dir)), 0644)
+}
+
 func (a *desktopApp) startDesktopDownload(rawURL string) {
 	fullURL := strings.TrimSpace(rawURL)
 	if strings.HasPrefix(fullURL, "/") {
@@ -1082,6 +1097,7 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 				return
 			}
 
+			dlID := resp.Header.Get("X-YHKT-DL-ID")
 			fname := parseDownloadFilename(resp.Header.Get("Content-Disposition"), fullURL)
 			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fname)), ".")
 			if ext == "" {
@@ -1092,52 +1108,80 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 				path string
 				ok   bool
 			}
-			ch := make(chan saveChoice, 1)
-			a.dispatch(func() {
-				a.saveMu.Lock()
-				lastDir := a.lastSaveDir
-				a.saveMu.Unlock()
-				initDir := pickWritableSaveDir(lastDir)
-				desktopLog("download dialog fname=%s initDir=%s", fname, initDir)
-				p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
-				desktopLog("download dialog result ok=%v path=%s", ok, p)
-				if ok && p != "" {
+			pickOnce := func(fallbackInit bool) saveChoice {
+				ch := make(chan saveChoice, 1)
+				a.dispatch(func() {
 					a.saveMu.Lock()
-					a.lastSaveDir = filepath.Dir(p)
+					if a.lastSaveDir == "" {
+						a.lastSaveDir = loadSavedDownloadDir()
+					}
+					lastDir := a.lastSaveDir
 					a.saveMu.Unlock()
+					if fallbackInit {
+						lastDir = ""
+					}
+					initDir := pickWritableSaveDir(lastDir)
+					desktopLog("download dialog fname=%s initDir=%s", fname, initDir)
+					p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
+					desktopLog("download dialog result ok=%v path=%s", ok, p)
+					ch <- saveChoice{p, ok}
+				})
+				return <-ch
+			}
+
+			var outFile *os.File
+			var savePath string
+			for attempt := 0; attempt < 3; attempt++ {
+				choice := pickOnce(attempt > 0)
+				if !choice.ok || choice.path == "" {
+					dlTrackCancel(dlID)
+					_ = resp.Body.Close()
+					a.uiToast("已取消下载")
+					return
 				}
-				ch <- saveChoice{p, ok}
-			})
-			choice := <-ch
-			if !choice.ok || choice.path == "" {
+				f, err := os.Create(choice.path)
+				if err == nil {
+					outFile = f
+					savePath = choice.path
+					dir := filepath.Dir(choice.path)
+					a.saveMu.Lock()
+					a.lastSaveDir = dir
+					a.saveMu.Unlock()
+					persistSavedDownloadDir(dir)
+					break
+				}
+				desktopLog("download os.Create(%s) failed: %v", choice.path, err)
+				a.dispatch(func() {
+					showDesktopError("无法保存到该位置：\n" + choice.path + "\n\n" + err.Error() + "\n\n请重新选择一个有写入权限的文件夹。")
+				})
+			}
+			if outFile == nil {
+				dlTrackCancel(dlID)
 				_ = resp.Body.Close()
 				return
 			}
 
-			outFile, err := os.Create(choice.path)
-			if err != nil {
-				_ = resp.Body.Close()
-				desktopLog("download os.Create(%s) failed: %v", choice.path, err)
-				a.dispatch(func() {
-					showDesktopError("无法保存到该位置：\n" + choice.path + "\n\n" + err.Error())
-				})
-				return
-			}
-			a.uiToast("正在保存到 " + filepath.Base(choice.path) + "，可在「下载管理」看进度")
+			a.uiToast("正在保存到 " + filepath.Base(savePath) + "（可在「下载管理」查看进度或取消）")
 			written, copyErr := io.Copy(outFile, resp.Body)
 			closeErr := outFile.Close()
 			_ = resp.Body.Close()
+			if dlTrackIsCancelled(dlID) {
+				_ = os.Remove(savePath)
+				desktopLog("download cancelled path=%s partialBytes=%d", savePath, written)
+				a.uiToast("已取消下载：" + filepath.Base(savePath))
+				return
+			}
 			if copyErr != nil || closeErr != nil {
 				e := copyErr
 				if e == nil {
 					e = closeErr
 				}
-				desktopLog("download write failed path=%s bytes=%d err=%v", choice.path, written, e)
+				desktopLog("download write failed path=%s bytes=%d err=%v", savePath, written, e)
 				a.uiToast("下载中断：" + e.Error())
 				return
 			}
-			desktopLog("download saved path=%s bytes=%d", choice.path, written)
-			a.uiToast("✓ 已保存：" + filepath.Base(choice.path))
+			desktopLog("download saved path=%s bytes=%d", savePath, written)
+			a.uiToast("✓ 已保存：" + filepath.Base(savePath))
 		}()
 	}
 
