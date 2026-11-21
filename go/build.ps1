@@ -24,7 +24,7 @@ $env:GOCACHE = "$tools\gocache"; $env:GOPATH = "$tools\gopath"
 $web = Join-Path $PSScriptRoot 'web'
 if (Test-Path $web) { Remove-Item $web -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $web | Out-Null
-foreach ($f in 'index.html', 'y2.html', 'icon.png', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
+foreach ($f in 'index.html', 'y2.html', 'settings.js', 'icon.png', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
   Copy-Item (Join-Path $root "public\$f") (Join-Path $web $f)
 }
 

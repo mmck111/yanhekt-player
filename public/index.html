@@ -347,6 +347,7 @@
       <a id="btnSetup" title="打开登录引导">登录</a>
       <a id="btnLogout" style="display:none">退出</a>
       <a href="#" id="btnDl2" class="dlentry" title="查看下载任务">⤓ 下载管理</a>
+      <a href="#" id="btnSet" title="默认下载目录与播放器设置">⚙ 设置</a>
       <a href="/y2" id="btnY2" title="新版平台：2024 后课程更快，支持 MP4 下载">新版平台 →</a>
     </div>
     <div class="list" id="list"></div>
@@ -489,6 +490,7 @@
 </template>
 
 <script src="/hls.min.js"></script>
+<script src="/settings.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const vids = { main: $('#vMain'), vga: $('#vVga') };
@@ -547,6 +549,7 @@ function saveProgMap(m){
   } catch(e){}
 }
 function saveCourseProgress(force){
+  if (window.__yhktRememberPos === false) return;
   if (srcMode !== 'record' || !curCourse || !curCourse.course || !cur) return;
   const now = performance.now();
   if (!force && now - lastSaveAt < 4000) return;
@@ -566,6 +569,7 @@ function saveCourseProgress(force){
   saveProgMap(m);
 }
 function getSessionProg(cid, sid){
+  if (window.__yhktRememberPos === false) return null;
   const m = loadProgMap();
   const c = m[String(cid)];
   return c && c.sessions ? c.sessions[String(sid)] : null;
@@ -1897,11 +1901,12 @@ document.addEventListener('keydown', e => {
   else if (e.key === '1') switchTab('main');
   else if (e.key === '2' && !document.querySelector('.tab[data-mode="vga"]').disabled) switchTab('vga');
   else if (e.key === '3' && !document.querySelector('.tab[data-mode="dual"]').disabled) switchTab('dual');
-  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); }
+  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktSettings) window.yhktSettings.close(); }
 });
 
 /* 给 Android App 返回键用的优先关闭钩子 */
 window.__yhktBack = () => {
+  if (window.yhktSettings && window.yhktSettings.isOpen()) { window.yhktSettings.close(); return 'handled'; }
   if ($('#dlModal').style.display === 'flex') { closeWebDownloads(); return 'handled'; }
   if ($('#lgmodal').style.display === 'flex') { hideLoginModal(); return 'handled'; }
   if ($('#wrap').classList.contains('drawer')) { closeDrawer(); return 'handled'; }
@@ -1909,11 +1914,35 @@ window.__yhktBack = () => {
   return 'none';
 };
 
+function mapOldView(v){
+  return v === 'dual' ? 'dual' : v === 'screen' ? 'vga' : 'main';
+}
+function applyAppSettings(s){
+  if (!s) return;
+  window.__yhktRememberPos = (s.rememberPos !== false);
+  autoNext = !!s.autoNext;
+  $('#btnAutoNext').classList.toggle('on', autoNext);
+  try { localStorage.setItem(LS_AUTONEXT, autoNext ? '1' : '0'); } catch(e){}
+  dualPip = !!s.dualPip;
+  if (typeof applyRate === 'function') applyRate(s.defaultRate || 1);
+  const nextMode = mapOldView(s.defaultView);
+  if (!cur) {
+    mode = nextMode;
+  } else if (nextMode !== mode) {
+    const can = nextMode === 'main' || (cur && !!cur.vga);
+    if (can) switchTab(nextMode);
+  }
+  if (typeof renderStage === 'function') renderStage();
+}
+
 /* ---------- 启动 ---------- */
 (async function boot(){
   try { autoNext = localStorage.getItem(LS_AUTONEXT) === '1'; } catch(e){}
   $('#btnAutoNext').classList.toggle('on', autoNext);
   applyRate(getSavedRate());
+  if (window.yhktSettings) {
+    await window.yhktSettings.init({ toast, onBeforeOpen: closeDrawer, onApply: applyAppSettings });
+  }
   loadDbTerms();
   fetch('/api/status').then(r => r.json()).then(j => {
     if (j.build) {

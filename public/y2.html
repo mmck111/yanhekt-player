@@ -324,6 +324,7 @@
       <a id="btnSetup" title="登录或重登新版">登录</a>
       <a id="btnLogout" style="display:none">退出</a>
       <a href="#" id="dlnk" class="dlentry">⤓ 下载管理</a>
+      <a href="#" id="btnSet" title="默认下载目录与播放器设置">⚙ 设置</a>
       <a id="oldlink" href="/" title="老平台包含全校历史课程与直播">← 老平台</a>
     </div>
     <div class="fmeta" id="fmeta" style="padding:6px 12px 0"></div>
@@ -428,6 +429,7 @@
 </div>
 
 <script src="/hls.min.js"></script>
+<script src="/settings.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const v = $('#v'), vSub = $('#vSub');
@@ -478,6 +480,7 @@ function saveProgMap(m){
   } catch(e){}
 }
 function saveCourseProgress(force){
+  if (window.__yhktRememberPos === false) return;
   if (!curCourse || !curSub) return;
   const now = performance.now();
   if (!force && now - lastSaveAt < 4000) return;
@@ -496,6 +499,7 @@ function saveCourseProgress(force){
   saveProgMap(m);
 }
 function getSessionProg(cid, sid){
+  if (window.__yhktRememberPos === false) return null;
   const m = loadProgMap()[String(cid)];
   return m && m.sessions ? m.sessions[String(sid)] : null;
 }
@@ -1730,10 +1734,11 @@ document.addEventListener('keydown', e => {
   else if (e.key === '2' && !document.querySelector('.tab[data-k="screen"]').disabled) switchTab('screen');
   else if (e.key === '3' && !document.querySelector('.tab[data-k="room"]').disabled) switchTab('room');
   else if (e.key === '4' && !document.querySelector('.tab[data-k="dual"]').disabled) switchTab('dual');
-  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); }
+  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktSettings) window.yhktSettings.close(); }
 });
 
 window.__yhktBack = () => {
+  if (window.yhktSettings && window.yhktSettings.isOpen()) { window.yhktSettings.close(); return 'handled'; }
   if ($('#dlModal').style.display === 'flex') { closeWebDownloads(); return 'handled'; }
   if ($('#lgmodal').style.display === 'flex') { hideLoginModal(); return 'handled'; }
   if ($('#wrap').classList.contains('drawer')) { closeDrawer(); return 'handled'; }
@@ -1741,10 +1746,34 @@ window.__yhktBack = () => {
   return 'none';
 };
 
+function mapY2View(v){
+  return (v === 'dual' || v === 'screen' || v === 'room' || v === 'camera') ? v : 'camera';
+}
+function applyAppSettings(s){
+  if (!s) return;
+  window.__yhktRememberPos = (s.rememberPos !== false);
+  autoNext = !!s.autoNext;
+  $('#btnAutoNext').classList.toggle('on', autoNext);
+  try { localStorage.setItem(LS_AUTONEXT, autoNext ? '1' : '0'); } catch(e){}
+  dualPip = !!s.dualPip;
+  applyRate(s.defaultRate || 1);
+  const nextKind = mapY2View(s.defaultView);
+  if (!info) {
+    kind = nextKind;
+  } else if (nextKind !== kind) {
+    const tab = document.querySelector(`.tab[data-k="${nextKind}"]`);
+    if (tab && !tab.disabled) switchTab(nextKind);
+  }
+  renderStage();
+}
+
 (async function init(){
   try { autoNext = localStorage.getItem(LS_AUTONEXT) === '1'; } catch(e){}
   $('#btnAutoNext').classList.toggle('on', autoNext);
   applyRate(getSavedRate());
+  if (window.yhktSettings) {
+    await window.yhktSettings.init({ toast, onBeforeOpen: closeDrawer, onApply: applyAppSettings });
+  }
   fetch('/api/status').then(r => r.json()).then(j => { if (j.build) $('#build').textContent = 'build ' + j.build; }).catch(()=>{});
 
   const hp = new URLSearchParams(location.hash.replace(/^#/, ''));

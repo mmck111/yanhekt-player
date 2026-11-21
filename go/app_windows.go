@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -162,6 +163,11 @@ func wvPinDelete(h *wvResObjHandler) {
 }
 
 func desktopSupported() bool { return true }
+
+func desktopInitHooks() {
+	desktopCheckWritableDir = probeWritableDir
+	desktopDefaultDownloadDir = func() string { return pickWritableSaveDir("") }
+}
 
 func attachParentConsoleIfNeeded() {
 	if st, err := os.Stdout.Stat(); err == nil && st != nil {
@@ -907,8 +913,101 @@ type winShellItem struct{ vtbl *winShellItemVtbl }
 var (
 	clsidFileSaveDialog = windows.GUID{Data1: 0xC0B4E2F3, Data2: 0xBA21, Data3: 0x4773, Data4: [8]byte{0x8D, 0xBA, 0x33, 0x5E, 0xC9, 0x46, 0xEB, 0x8B}}
 	iidFileSaveDialog   = windows.GUID{Data1: 0x84BCCD23, Data2: 0x5FDE, Data3: 0x4CDB, Data4: [8]byte{0xAE, 0xA4, 0xAF, 0x64, 0xB8, 0x3D, 0x78, 0xAB}}
+	clsidFileOpenDialog = windows.GUID{Data1: 0xDC1C5A9C, Data2: 0xE88A, Data3: 0x4DDE, Data4: [8]byte{0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7}}
+	iidFileOpenDialog   = windows.GUID{Data1: 0xD57C7288, Data2: 0xD4AD, Data3: 0x4768, Data4: [8]byte{0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60}}
 	iidShellItem        = windows.GUID{Data1: 0x43826D1E, Data2: 0xE718, Data3: 0x42EE, Data4: [8]byte{0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE}}
 )
+
+func pickFolderDialog(hwnd uintptr, initialDir string) (string, bool) {
+	if err := ole32CoCreateInstance.Find(); err != nil {
+		return "", false
+	}
+	var dlg *winFileDialog
+	hr, _, _ := ole32CoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidFileOpenDialog)),
+		0,
+		1, // CLSCTX_INPROC_SERVER
+		uintptr(unsafe.Pointer(&iidFileOpenDialog)),
+		uintptr(unsafe.Pointer(&dlg)),
+	)
+	if hr != 0 || dlg == nil {
+		desktopLog("CoCreateInstance(FileOpenDialog) failed: 0x%08x", uint32(hr))
+		return "", false
+	}
+	dlgPtr := uintptr(unsafe.Pointer(dlg))
+	defer syscall.SyscallN(dlg.vtbl.Release, dlgPtr)
+
+	var opts uint32
+	_, _, _ = syscall.SyscallN(dlg.vtbl.GetOptions, dlgPtr, uintptr(unsafe.Pointer(&opts)))
+	opts |= 0x00000020 | 0x00000008 | 0x00000040 | 0x00000800 // FOS_PICKFOLDERS | NOCHANGEDIR | FORCEFILESYSTEM | PATHMUSTEXIST
+	_, _, _ = syscall.SyscallN(dlg.vtbl.SetOptions, dlgPtr, uintptr(opts))
+
+	titlePtr, _ := windows.UTF16PtrFromString("选择默认下载文件夹")
+	_, _, _ = syscall.SyscallN(dlg.vtbl.SetTitle, dlgPtr, uintptr(unsafe.Pointer(titlePtr)))
+
+	if initialDir != "" && shell32SHCreateItemFromName.Find() == nil {
+		if dirPtr, err := windows.UTF16PtrFromString(initialDir); err == nil {
+			var folderItem *winShellItem
+			hrItem, _, _ := shell32SHCreateItemFromName.Call(
+				uintptr(unsafe.Pointer(dirPtr)),
+				0,
+				uintptr(unsafe.Pointer(&iidShellItem)),
+				uintptr(unsafe.Pointer(&folderItem)),
+			)
+			if hrItem == 0 && folderItem != nil {
+				_, _, _ = syscall.SyscallN(dlg.vtbl.SetFolder, dlgPtr, uintptr(unsafe.Pointer(folderItem)))
+				_, _, _ = syscall.SyscallN(folderItem.vtbl.Release, uintptr(unsafe.Pointer(folderItem)))
+			}
+		}
+	}
+
+	hrShow, _, _ := syscall.SyscallN(dlg.vtbl.Show, dlgPtr, hwnd)
+	if hrShow != 0 {
+		return "", false
+	}
+	var resItem *winShellItem
+	hrRes, _, _ := syscall.SyscallN(dlg.vtbl.GetResult, dlgPtr, uintptr(unsafe.Pointer(&resItem)))
+	if hrRes != 0 || resItem == nil {
+		return "", false
+	}
+	resPtr := uintptr(unsafe.Pointer(resItem))
+	defer syscall.SyscallN(resItem.vtbl.Release, resPtr)
+
+	var pszPath *uint16
+	hrPath, _, _ := syscall.SyscallN(resItem.vtbl.GetDisplayName, resPtr, uintptr(0x80058000), uintptr(unsafe.Pointer(&pszPath)))
+	if hrPath != 0 || pszPath == nil {
+		return "", false
+	}
+	defer ole32CoTaskMemFree.Call(uintptr(unsafe.Pointer(pszPath)))
+	return windows.UTF16PtrToString(pszPath), true
+}
+
+func uniqueDestPath(dir, fname string) string {
+	base := strings.TrimSuffix(fname, filepath.Ext(fname))
+	ext := filepath.Ext(fname)
+	p := filepath.Join(dir, fname)
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return p
+	}
+	for i := 1; i < 1000; i++ {
+		cand := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, i, ext))
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			return cand
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s_%d%s", base, time.Now().Unix(), ext))
+}
+
+func openFolderInExplorer(dir string) {
+	if dir == "" {
+		dir = effectiveDownloadDirOf(loadAppSettings())
+	}
+	if dir == "" {
+		return
+	}
+	_ = os.MkdirAll(dir, 0755)
+	_ = exec.Command("explorer.exe", dir).Start()
+}
 
 func pickSaveFileDialogVista(hwnd uintptr, initialDir, defaultName, defExt string) (path string, ok bool, handled bool) {
 	if err := ole32CoCreateInstance.Find(); err != nil {
@@ -1104,56 +1203,86 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 				ext = "mp4"
 			}
 
-			type saveChoice struct {
-				path string
-				ok   bool
-			}
-			pickOnce := func(fallbackInit bool) saveChoice {
-				ch := make(chan saveChoice, 1)
-				a.dispatch(func() {
-					a.saveMu.Lock()
-					if a.lastSaveDir == "" {
-						a.lastSaveDir = loadSavedDownloadDir()
-					}
-					lastDir := a.lastSaveDir
-					a.saveMu.Unlock()
-					if fallbackInit {
-						lastDir = ""
-					}
-					initDir := pickWritableSaveDir(lastDir)
-					desktopLog("download dialog fname=%s initDir=%s", fname, initDir)
-					p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
-					desktopLog("download dialog result ok=%v path=%s", ok, p)
-					ch <- saveChoice{p, ok}
-				})
-				return <-ch
+			curSet := loadAppSettings()
+			if curSet.DownloadDir == "" {
+				a.saveMu.Lock()
+				if a.lastSaveDir == "" {
+					a.lastSaveDir = loadSavedDownloadDir()
+				}
+				curSet.DownloadDir = a.lastSaveDir
+				a.saveMu.Unlock()
 			}
 
 			var outFile *os.File
 			var savePath string
-			for attempt := 0; attempt < 3; attempt++ {
-				choice := pickOnce(attempt > 0)
-				if !choice.ok || choice.path == "" {
-					dlTrackCancel(dlID)
-					_ = resp.Body.Close()
-					a.uiToast("已取消下载")
-					return
+
+			if !curSet.AskSavePath {
+				defDir := effectiveDownloadDirOf(curSet)
+				if defDir != "" && probeWritableDir(defDir) {
+					cand := uniqueDestPath(defDir, fname)
+					if f, err := os.Create(cand); err == nil {
+						outFile = f
+						savePath = cand
+						desktopLog("download direct path=%s", savePath)
+					} else {
+						desktopLog("download direct os.Create(%s) failed: %v", cand, err)
+					}
 				}
-				f, err := os.Create(choice.path)
-				if err == nil {
-					outFile = f
-					savePath = choice.path
-					dir := filepath.Dir(choice.path)
-					a.saveMu.Lock()
-					a.lastSaveDir = dir
-					a.saveMu.Unlock()
-					persistSavedDownloadDir(dir)
-					break
+			}
+
+			if outFile == nil {
+				type saveChoice struct {
+					path string
+					ok   bool
 				}
-				desktopLog("download os.Create(%s) failed: %v", choice.path, err)
-				a.dispatch(func() {
-					showDesktopError("无法保存到该位置：\n" + choice.path + "\n\n" + err.Error() + "\n\n请重新选择一个有写入权限的文件夹。")
-				})
+				pickOnce := func(fallbackInit bool) saveChoice {
+					ch := make(chan saveChoice, 1)
+					a.dispatch(func() {
+						a.saveMu.Lock()
+						if a.lastSaveDir == "" {
+							a.lastSaveDir = curSet.DownloadDir
+							if a.lastSaveDir == "" {
+								a.lastSaveDir = loadSavedDownloadDir()
+							}
+						}
+						lastDir := a.lastSaveDir
+						a.saveMu.Unlock()
+						if fallbackInit {
+							lastDir = ""
+						}
+						initDir := pickWritableSaveDir(lastDir)
+						desktopLog("download dialog fname=%s initDir=%s", fname, initDir)
+						p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
+						desktopLog("download dialog result ok=%v path=%s", ok, p)
+						ch <- saveChoice{p, ok}
+					})
+					return <-ch
+				}
+
+				for attempt := 0; attempt < 3; attempt++ {
+					choice := pickOnce(attempt > 0)
+					if !choice.ok || choice.path == "" {
+						dlTrackCancel(dlID)
+						_ = resp.Body.Close()
+						a.uiToast("已取消下载")
+						return
+					}
+					f, err := os.Create(choice.path)
+					if err == nil {
+						outFile = f
+						savePath = choice.path
+						dir := filepath.Dir(choice.path)
+						a.saveMu.Lock()
+						a.lastSaveDir = dir
+						a.saveMu.Unlock()
+						persistSavedDownloadDir(dir)
+						break
+					}
+					desktopLog("download os.Create(%s) failed: %v", choice.path, err)
+					a.dispatch(func() {
+						showDesktopError("无法保存到该位置：\n" + choice.path + "\n\n" + err.Error() + "\n\n请重新选择一个有写入权限的文件夹。")
+					})
+				}
 			}
 			if outFile == nil {
 				dlTrackCancel(dlID)
@@ -1161,7 +1290,7 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 				return
 			}
 
-			a.uiToast("正在保存到 " + filepath.Base(savePath) + "（可在「下载管理」查看进度或取消）")
+			a.uiToast("正在保存到 " + savePath + "（可在「下载管理」查看进度或取消）")
 			written, copyErr := io.Copy(outFile, resp.Body)
 			closeErr := outFile.Close()
 			_ = resp.Body.Close()
@@ -1211,6 +1340,7 @@ type webMsgPayload struct {
 	Token  string `json:"token"`
 	Cookie string `json:"cookie"`
 	URL    string `json:"url"`
+	Dir    string `json:"dir"`
 }
 
 func (a *desktopApp) onWebMessage(raw, source string) {
@@ -1229,6 +1359,30 @@ func (a *desktopApp) onWebMessage(raw, source string) {
 		a.clearWebCookies(msg.Which)
 	case "download":
 		a.startDesktopDownload(msg.URL)
+	case "pickDownloadDir":
+		cur := effectiveDownloadDirOf(loadAppSettings())
+		if dir, ok := pickFolderDialog(a.hwnd, cur); ok && dir != "" {
+			if !probeWritableDir(dir) {
+				res, _ := json.Marshal(map[string]any{
+					"ok":    false,
+					"dir":   dir,
+					"error": "该目录没有写入权限（可能是系统保护目录如 D:\\Downloads），请改选其他可写目录",
+				})
+				a.host.eval("window.__yhktOnDownloadDirPicked&&window.__yhktOnDownloadDirPicked(" + string(res) + ")")
+				return
+			}
+			s := loadAppSettings()
+			s.DownloadDir = dir
+			_ = saveAppSettings(s)
+			a.saveMu.Lock()
+			a.lastSaveDir = dir
+			a.saveMu.Unlock()
+			persistSavedDownloadDir(dir)
+			res, _ := json.Marshal(map[string]any{"ok": true, "dir": dir})
+			a.host.eval("window.__yhktOnDownloadDirPicked&&window.__yhktOnDownloadDirPicked(" + string(res) + ")")
+		}
+	case "openDir":
+		openFolderInExplorer(msg.Dir)
 	case "captured":
 		a.handleCaptured(msg.Host, msg.Token, msg.Cookie, false)
 	case "forceBack":
@@ -1538,6 +1692,8 @@ func desktopInitScript(localBase string) string {
       isDesktop: true,
       login(which) { post({ type: 'login', which: String(which || 'y2') }); },
       clearAuth(which) { post({ type: 'clearAuth', which: String(which || 'all') }); },
+      pickDownloadDir() { post({ type: 'pickDownloadDir' }); },
+      openDownloadDir(dir) { post({ type: 'openDir', dir: String(dir || '') }); },
     };
     const origOpen = window.open;
     window.open = function(u, n, f) {

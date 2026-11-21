@@ -81,6 +81,7 @@ func main() {
 
 	setUtf8Console()
 	installDNS()
+	desktopInitHooks()
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -219,6 +220,7 @@ func registerPages(mux *http.ServeMux, web fs.FS) {
 	mux.HandleFunc("/y2", serve("y2.html", "text/html; charset=utf-8", "no-store"))
 	mux.HandleFunc("/y2.html", serve("y2.html", "text/html; charset=utf-8", "no-store"))
 	mux.HandleFunc("/hls.min.js", serve("hls.min.js", "application/javascript; charset=utf-8", "public, max-age=86400"))
+	mux.HandleFunc("/settings.js", serve("settings.js", "application/javascript; charset=utf-8", "no-store"))
 	mux.HandleFunc("/icon.png", serve("icon.png", "image/png", "public, max-age=86400"))
 }
 
@@ -347,6 +349,7 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("/api/selftest", safe(handleSelftest))
 	mux.HandleFunc("/api/downloads", safe(handleDownloads))
 	mux.HandleFunc("/api/downloads/cancel", safe(handleDownloadsCancel))
+	mux.HandleFunc("/api/settings", safe(handleSettings))
 
 	// ---- 直播 ----
 	mux.HandleFunc("/api/live", safe(func(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,8 @@ package main
 
 func desktopSupported() bool { return false }
 
+func desktopInitHooks() {}
+
 func focusRunningDesktopApp(p int) bool { return false }
 
 func runDesktopApp(p int) bool { return false }
