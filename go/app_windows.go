@@ -324,23 +324,86 @@ func enableDarkTitleBar(hwnd uintptr) {
 	}
 }
 
-func desktopAppBaseDir() string {
-	base := os.Getenv("LOCALAPPDATA")
-	if base == "" {
-		base = os.Getenv("APPDATA")
+func probeWritableDir(dir string) bool {
+	if dir == "" || os.MkdirAll(dir, 0755) != nil {
+		return false
 	}
-	if base == "" {
-		base = os.TempDir()
+	f, err := os.CreateTemp(dir, ".wv-probe-*")
+	if err != nil {
+		return false
 	}
-	dir := filepath.Join(base, "yanhekt")
-	_ = os.MkdirAll(dir, 0755)
-	return dir
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
-func desktopDataDir() string {
-	dir := filepath.Join(desktopAppBaseDir(), "webview2")
-	_ = os.MkdirAll(dir, 0755)
-	return dir
+func desktopBaseDirCandidates() []string {
+	var raw []string
+	if v := os.Getenv("LOCALAPPDATA"); v != "" {
+		raw = append(raw, filepath.Join(v, "yanhekt"))
+	}
+	if v := os.Getenv("APPDATA"); v != "" {
+		raw = append(raw, filepath.Join(v, "yanhekt"))
+	}
+	if v := os.TempDir(); v != "" {
+		raw = append(raw, filepath.Join(v, "yanhekt"))
+	}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		raw = append(raw, filepath.Join(filepath.Dir(exe), ".yanhekt-cache"))
+	}
+	out := make([]string, 0, len(raw))
+	seen := map[string]bool{}
+	for _, d := range raw {
+		c := filepath.Clean(d)
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
+}
+
+var (
+	desktopBaseMu   sync.Mutex
+	resolvedBaseDir string
+)
+
+func desktopAppBaseDir() string {
+	desktopBaseMu.Lock()
+	defer desktopBaseMu.Unlock()
+	if resolvedBaseDir != "" {
+		return resolvedBaseDir
+	}
+	cands := desktopBaseDirCandidates()
+	for _, d := range cands {
+		if probeWritableDir(d) {
+			resolvedBaseDir = d
+			return d
+		}
+	}
+	if len(cands) > 0 {
+		_ = os.MkdirAll(cands[0], 0755)
+		resolvedBaseDir = cands[0]
+		return cands[0]
+	}
+	resolvedBaseDir = filepath.Join(os.TempDir(), "yanhekt")
+	return resolvedBaseDir
+}
+
+func desktopDataDirs() []string {
+	var out []string
+	for _, base := range desktopBaseDirCandidates() {
+		sub := filepath.Join(base, "webview2")
+		if probeWritableDir(sub) {
+			out = append(out, sub)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, filepath.Join(desktopAppBaseDir(), "webview2"))
+	}
+	return out
 }
 
 var (
@@ -404,6 +467,9 @@ func ensureWebView2LoaderDLL() {
 }
 
 func resetDesktopLog() {
+	desktopBaseMu.Lock()
+	resolvedBaseDir = ""
+	desktopBaseMu.Unlock()
 	desktopTraceMu.Lock()
 	desktopTrace = nil
 	desktopFailMsg = ""
@@ -538,19 +604,33 @@ func runDesktopApp(p int) bool {
 	host.onNewWindow = app.onNewWindow
 	app.host = host
 
-	if err := host.embed(desktopDataDir()); err != nil || host.webview == nil {
-		desktopFail(fmt.Sprintf("host.embed failed: err=%v webview=%v", err, host.webview != nil))
+	var embedErr error
+	var embeddedDir string
+	for _, dataDir := range desktopDataDirs() {
+		host.reset()
+		desktopLog("trying WebView2 dataDir=%s", dataDir)
+		if err := host.embed(dataDir); err == nil && host.webview != nil {
+			embedErr = nil
+			embeddedDir = dataDir
+			break
+		} else {
+			embedErr = err
+			desktopLog("host.embed(%s) failed: err=%v webview=%v", dataDir, err, host.webview != nil)
+		}
+	}
+	if embedErr != nil || host.webview == nil {
+		desktopFail(fmt.Sprintf("host.embed failed: err=%v webview=%v", embedErr, host.webview != nil))
 		_, _, _ = user32DestroyWindow.Call(hwnd)
 		u := fmt.Sprintf("http://127.0.0.1:%d/", p)
 		_ = copyToClipboard(u)
 		msg := "初始化 WebView2 窗口失败"
-		if err != nil {
-			msg += "：" + err.Error()
+		if embedErr != nil {
+			msg += "：" + embedErr.Error()
 		}
 		showDesktopError(msg + "\n\n已将地址复制到剪贴板：\n" + u)
 		return false
 	}
-	desktopLog("WebView2 embedded successfully, navigating to %s", app.localBase)
+	desktopLog("WebView2 embedded successfully (dataDir=%s), navigating to %s", embeddedDir, app.localBase)
 
 	host.configureVisuals(os.Getenv("YHKT_DEBUG") == "1")
 	host.addWebResourceFilter("*://*.yanhekt.cn/*", 0) // COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL

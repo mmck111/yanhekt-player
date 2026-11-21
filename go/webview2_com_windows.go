@@ -318,10 +318,31 @@ func newWVHost(hwnd uintptr) *wvHost {
 	return h
 }
 
+func (h *wvHost) reset() {
+	atomic.StoreUintptr(&h.crInited, 0)
+	h.fatalErr = nil
+	if h.webview != nil {
+		_, _, _ = syscall.SyscallN(h.webview.vtbl.Release, uintptr(unsafe.Pointer(h.webview)))
+		h.webview = nil
+	}
+	if h.controller != nil {
+		_, _, _ = syscall.SyscallN(h.controller.vtbl.Release, uintptr(unsafe.Pointer(h.controller)))
+		h.controller = nil
+	}
+	if h.env != nil {
+		_, _, _ = syscall.SyscallN(h.env.vtbl.Release, uintptr(unsafe.Pointer(h.env)))
+		h.env = nil
+	}
+}
+
 func (h *wvHost) embed(dataPath string) error {
-	pData, err := windows.UTF16PtrFromString(dataPath)
-	if err != nil {
-		return err
+	var pData *uint16
+	if dataPath != "" {
+		var err error
+		pData, err = windows.UTF16PtrFromString(dataPath)
+		if err != nil {
+			return err
+		}
 	}
 	res, err := webviewloader.CreateCoreWebView2EnvironmentWithOptions(nil, pData, 0, uintptr(unsafe.Pointer(h.hEnv)))
 	if err != nil {
