@@ -84,12 +84,20 @@ func main() {
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
+		attachParentConsoleIfNeeded()
 		fmt.Println("页面资源缺失：" + err.Error())
+		if desktopSupported() {
+			showDesktopError("页面资源缺失：" + err.Error())
+		}
 		return
 	}
 
 	headless := lan || hasCLIArg("--headless") || os.Getenv("YHKT_HEADLESS") == "1" || os.Getenv("NO_GUI") == "1"
 	useDesktop := desktopSupported() && !headless
+	if useDesktop {
+		resetDesktopLog()
+		desktopLog("main start port=%d headless=%v", port, headless)
+	}
 
 	// 单实例检测：端口上已经有播放器在跑就别再起一个
 	if os.Getenv("FORCE_NEW") != "1" {
@@ -126,6 +134,10 @@ func main() {
 		port++
 	}
 	if ln == nil {
+		if useDesktop {
+			desktopLog("no available port near %d", port)
+			showDesktopError("启动失败：端口都被占用了")
+		}
 		attachParentConsoleIfNeeded()
 		fmt.Println("  启动失败：端口都被占用了")
 		return

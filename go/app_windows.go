@@ -61,6 +61,8 @@ var (
 	kernel32                     = windows.NewLazySystemDLL("kernel32.dll")
 	kernel32GetCurrentThreadID   = kernel32.NewProc("GetCurrentThreadId")
 	kernel32AttachConsole        = kernel32.NewProc("AttachConsole")
+	kernel32AllocConsole         = kernel32.NewProc("AllocConsole")
+	kernel32SetDllDirectoryW     = kernel32.NewProc("SetDllDirectoryW")
 )
 
 const (
@@ -155,16 +157,26 @@ func attachParentConsoleIfNeeded() {
 	if st, err := os.Stdout.Stat(); err == nil && st != nil {
 		return
 	}
-	if err := kernel32AttachConsole.Find(); err != nil {
-		return
+	attached := false
+	if err := kernel32AttachConsole.Find(); err == nil {
+		r, _, _ := kernel32AttachConsole.Call(^uintptr(0))
+		attached = r != 0
 	}
-	r, _, _ := kernel32AttachConsole.Call(^uintptr(0))
-	if r == 0 {
+	if !attached {
+		if err := kernel32AllocConsole.Find(); err == nil {
+			r, _, _ := kernel32AllocConsole.Call()
+			attached = r != 0
+		}
+	}
+	if !attached {
 		return
 	}
 	if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
 		os.Stdout = f
 		os.Stderr = f
+	}
+	if f, err := os.OpenFile("CONIN$", os.O_RDONLY, 0); err == nil {
+		os.Stdin = f
 	}
 }
 
@@ -342,7 +354,13 @@ func ensureWebView2LoaderDLL() {
 	if len(webviewloader.WebView2Loader) == 0 {
 		return
 	}
-	dllPath := filepath.Join(desktopAppBaseDir(), "WebView2Loader.dll")
+	baseDir := desktopAppBaseDir()
+	if err := kernel32SetDllDirectoryW.Find(); err == nil {
+		if p, err := windows.UTF16PtrFromString(baseDir); err == nil {
+			_, _, _ = kernel32SetDllDirectoryW.Call(uintptr(unsafe.Pointer(p)))
+		}
+	}
+	dllPath := filepath.Join(baseDir, "WebView2Loader.dll")
 	needWrite := true
 	if st, err := os.Stat(dllPath); err == nil && st.Size() == int64(len(webviewloader.WebView2Loader)) {
 		needWrite = false
@@ -360,8 +378,11 @@ func ensureWebView2LoaderDLL() {
 	}
 }
 
-func runDesktopApp(p int) bool {
+func resetDesktopLog() {
 	_ = os.Remove(filepath.Join(desktopAppBaseDir(), "app.log"))
+}
+
+func runDesktopApp(p int) bool {
 	desktopLog("starting desktop app on port %d", p)
 	if err := ole32.Load(); err != nil {
 		desktopLog("ole32.Load failed: %v", err)
@@ -451,8 +472,6 @@ func runDesktopApp(p int) bool {
 		_, _, _ = user32PostMessageW.Call(hwnd, wmSetIcon, 0, icon)
 	}
 	enableDarkTitleBar(hwnd)
-	_, _, _ = user32ShowWindow.Call(hwnd, swShow)
-	_, _, _ = user32UpdateWindow.Call(hwnd)
 
 	tid, _, _ := kernel32GetCurrentThreadID.Call()
 	app := &desktopApp{
@@ -472,6 +491,9 @@ func runDesktopApp(p int) bool {
 		delete(winCtx, hwnd)
 		winCtxMu.Unlock()
 	}()
+
+	_, _, _ = user32ShowWindow.Call(hwnd, swShow)
+	_, _, _ = user32UpdateWindow.Call(hwnd)
 
 	host := newWVHost(hwnd)
 	host.onMessage = app.onWebMessage

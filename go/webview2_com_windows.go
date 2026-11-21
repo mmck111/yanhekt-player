@@ -53,6 +53,25 @@ type wvHandlerVtbl struct {
 	Invoke uintptr
 }
 
+var (
+	iidIUnknown     = windows.GUID{Data1: 0x00000000, Data2: 0x0000, Data3: 0x0000, Data4: [8]byte{0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
+	iidIAgileObject = windows.GUID{Data1: 0x94EA2B94, Data2: 0xE9CC, Data3: 0x49E0, Data4: [8]byte{0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90}}
+)
+
+const hrNoInterface = uintptr(0x80004002)
+
+func comQueryInterface(self unsafe.Pointer, riid *windows.GUID, ppv *unsafe.Pointer) uintptr {
+	if ppv == nil {
+		return uintptr(0x80004003) // E_POINTER
+	}
+	if riid != nil && (*riid == iidIUnknown || *riid == iidIAgileObject) {
+		*ppv = self
+		return 0
+	}
+	*ppv = nil
+	return hrNoInterface
+}
+
 // wvResObjHandler 用于 Invoke(this, HRESULT, *IUnknown) 类型回调（Env/Ctrl/GetCookies）
 type wvResObjHandler struct {
 	vtbl *wvHandlerVtbl
@@ -61,9 +80,11 @@ type wvResObjHandler struct {
 
 var wvResObjVtbl = wvHandlerVtbl{
 	wvIUnknownVtbl: wvIUnknownVtbl{
-		QueryInterface: windows.NewCallback(func(h *wvResObjHandler, refiid, obj uintptr) uintptr { return 0 }),
-		AddRef:         windows.NewCallback(func(h *wvResObjHandler) uintptr { return 1 }),
-		Release:        windows.NewCallback(func(h *wvResObjHandler) uintptr { return 1 }),
+		QueryInterface: windows.NewCallback(func(h *wvResObjHandler, riid *windows.GUID, ppv *unsafe.Pointer) uintptr {
+			return comQueryInterface(unsafe.Pointer(h), riid, ppv)
+		}),
+		AddRef:  windows.NewCallback(func(h *wvResObjHandler) uintptr { return 1 }),
+		Release: windows.NewCallback(func(h *wvResObjHandler) uintptr { return 1 }),
 	},
 	Invoke: windows.NewCallback(func(h *wvResObjHandler, res uintptr, obj unsafe.Pointer) uintptr {
 		if h != nil && h.fn != nil {
@@ -81,9 +102,11 @@ type wvEventHandler struct {
 
 var wvEventVtbl = wvHandlerVtbl{
 	wvIUnknownVtbl: wvIUnknownVtbl{
-		QueryInterface: windows.NewCallback(func(h *wvEventHandler, refiid, obj uintptr) uintptr { return 0 }),
-		AddRef:         windows.NewCallback(func(h *wvEventHandler) uintptr { return 1 }),
-		Release:        windows.NewCallback(func(h *wvEventHandler) uintptr { return 1 }),
+		QueryInterface: windows.NewCallback(func(h *wvEventHandler, riid *windows.GUID, ppv *unsafe.Pointer) uintptr {
+			return comQueryInterface(unsafe.Pointer(h), riid, ppv)
+		}),
+		AddRef:  windows.NewCallback(func(h *wvEventHandler) uintptr { return 1 }),
+		Release: windows.NewCallback(func(h *wvEventHandler) uintptr { return 1 }),
 	},
 	Invoke: windows.NewCallback(func(h *wvEventHandler, sender, args unsafe.Pointer) uintptr {
 		if h != nil && h.fn != nil {
@@ -394,6 +417,7 @@ func sourceOfCore(wv *wvCore) string {
 
 func (h *wvHost) configureVisuals(debug bool) {
 	if h.controller != nil {
+		_, _, _ = syscall.SyscallN(h.controller.vtbl.PutIsVisible, uintptr(unsafe.Pointer(h.controller)), 1)
 		iidCtrl2 := windows.GUID{Data1: 0xc979903e, Data2: 0xd4ca, Data3: 0x4228, Data4: [8]byte{0x92, 0xeb, 0x47, 0xee, 0x3f, 0xa9, 0x6e, 0xab}}
 		var ctrl2 *wvController2
 		hr, _, _ := syscall.SyscallN(h.controller.vtbl.QueryInterface, uintptr(unsafe.Pointer(h.controller)), uintptr(unsafe.Pointer(&iidCtrl2)), uintptr(unsafe.Pointer(&ctrl2)))

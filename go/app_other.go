@@ -11,3 +11,7 @@ func runDesktopApp(p int) bool { return false }
 func attachParentConsoleIfNeeded() {}
 
 func showDesktopError(msg string) {}
+
+func resetDesktopLog() {}
+
+func desktopLog(format string, args ...any) {}
