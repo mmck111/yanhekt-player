@@ -33,6 +33,9 @@ func TestOpenFileNameStructSizeAndFilenameParse(t *testing.T) {
 	if got := unsafe.Sizeof(winOpenFileNameW{}); got != 152 {
 		t.Fatalf("winOpenFileNameW size=%d, want 152 on amd64", got)
 	}
+	if got := unsafe.Sizeof(winFilterSpec{}); got != 16 {
+		t.Fatalf("winFilterSpec size=%d, want 16 on amd64", got)
+	}
 	cd := `attachment; filename="lecture.ts"; filename*=UTF-8''%E8%AF%BE%E7%A8%8B+102502_%E6%95%99%E5%AE%A4.ts`
 	if got := parseDownloadFilename(cd, "/y2dl?c=1&title=x"); got != "课程 102502_教室.ts" {
 		t.Fatalf("parseDownloadFilename=%q", got)

@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -28,10 +29,12 @@ var (
 	ole32CoInitializeEx          = ole32.NewProc("CoInitializeEx")
 	ole32CoUninitialize          = ole32.NewProc("CoUninitialize")
 	ole32CoTaskMemFree           = ole32.NewProc("CoTaskMemFree")
+	ole32CoCreateInstance        = ole32.NewProc("CoCreateInstance")
 	comdlg32                     = windows.NewLazySystemDLL("comdlg32.dll")
 	comdlg32GetSaveFileNameW     = comdlg32.NewProc("GetSaveFileNameW")
 	shell32                      = windows.NewLazySystemDLL("shell32.dll")
 	shell32SHGetKnownFolderPath  = shell32.NewProc("SHGetKnownFolderPath")
+	shell32SHCreateItemFromName  = shell32.NewProc("SHCreateItemFromParsingName")
 	dwmapi                       = windows.NewLazySystemDLL("dwmapi.dll")
 	dwmSetWindowAttribute        = dwmapi.NewProc("DwmSetWindowAttribute")
 	shcore                       = windows.NewLazySystemDLL("shcore.dll")
@@ -853,7 +856,146 @@ func parseDownloadFilename(cdHeader, rawURL string) string {
 	return "延河课堂视频.mp4"
 }
 
+type winFilterSpec struct {
+	Name *uint16
+	Spec *uint16
+}
+
+type winIUnknownVtbl struct {
+	QueryInterface uintptr
+	AddRef         uintptr
+	Release        uintptr
+}
+
+type winFileDialogVtbl struct {
+	winIUnknownVtbl
+	Show                uintptr
+	SetFileTypes        uintptr
+	SetFileTypeIndex    uintptr
+	GetFileTypeIndex    uintptr
+	Advise              uintptr
+	Unadvise            uintptr
+	SetOptions          uintptr
+	GetOptions          uintptr
+	SetDefaultFolder    uintptr
+	SetFolder           uintptr
+	GetFolder           uintptr
+	GetCurrentSelection uintptr
+	SetFileName         uintptr
+	GetFileName         uintptr
+	SetTitle            uintptr
+	SetOkButtonLabel    uintptr
+	SetFileNameLabel    uintptr
+	GetResult           uintptr
+	AddPlace            uintptr
+	SetDefaultExtension uintptr
+}
+
+type winFileDialog struct{ vtbl *winFileDialogVtbl }
+
+type winShellItemVtbl struct {
+	winIUnknownVtbl
+	BindToHandler  uintptr
+	GetParent      uintptr
+	GetDisplayName uintptr
+	GetAttributes  uintptr
+	Compare        uintptr
+}
+
+type winShellItem struct{ vtbl *winShellItemVtbl }
+
+var (
+	clsidFileSaveDialog = windows.GUID{Data1: 0xC0B4E2F3, Data2: 0xBA21, Data3: 0x4773, Data4: [8]byte{0x8D, 0xBA, 0x33, 0x5E, 0xC9, 0x46, 0xEB, 0x8B}}
+	iidFileSaveDialog   = windows.GUID{Data1: 0x84BCCD23, Data2: 0x5FDE, Data3: 0x4CDB, Data4: [8]byte{0xAE, 0xA4, 0xAF, 0x64, 0xB8, 0x3D, 0x78, 0xAB}}
+	iidShellItem        = windows.GUID{Data1: 0x43826D1E, Data2: 0xE718, Data3: 0x42EE, Data4: [8]byte{0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE}}
+)
+
+func pickSaveFileDialogVista(hwnd uintptr, initialDir, defaultName, defExt string) (path string, ok bool, handled bool) {
+	if err := ole32CoCreateInstance.Find(); err != nil {
+		return "", false, false
+	}
+	var dlg *winFileDialog
+	hr, _, _ := ole32CoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidFileSaveDialog)),
+		0,
+		1, // CLSCTX_INPROC_SERVER
+		uintptr(unsafe.Pointer(&iidFileSaveDialog)),
+		uintptr(unsafe.Pointer(&dlg)),
+	)
+	if hr != 0 || dlg == nil {
+		desktopLog("CoCreateInstance(FileSaveDialog) failed: 0x%08x", uint32(hr))
+		return "", false, false
+	}
+	dlgPtr := uintptr(unsafe.Pointer(dlg))
+	defer syscall.SyscallN(dlg.vtbl.Release, dlgPtr)
+
+	var opts uint32
+	_, _, _ = syscall.SyscallN(dlg.vtbl.GetOptions, dlgPtr, uintptr(unsafe.Pointer(&opts)))
+	opts |= 0x00000002 | 0x00000008 | 0x00000040 | 0x00000800 // OVERWRITEPROMPT | NOCHANGEDIR | FORCEFILESYSTEM | PATHMUSTEXIST
+	_, _, _ = syscall.SyscallN(dlg.vtbl.SetOptions, dlgPtr, uintptr(opts))
+
+	n1, _ := windows.UTF16PtrFromString("视频文件 (*.mp4;*.ts)")
+	s1, _ := windows.UTF16PtrFromString("*.mp4;*.ts")
+	n2, _ := windows.UTF16PtrFromString("所有文件 (*.*)")
+	s2, _ := windows.UTF16PtrFromString("*.*")
+	specs := [2]winFilterSpec{{Name: n1, Spec: s1}, {Name: n2, Spec: s2}}
+	_, _, _ = syscall.SyscallN(dlg.vtbl.SetFileTypes, dlgPtr, 2, uintptr(unsafe.Pointer(&specs[0])))
+	_, _, _ = syscall.SyscallN(dlg.vtbl.SetFileTypeIndex, dlgPtr, 1)
+
+	titlePtr, _ := windows.UTF16PtrFromString("保存课程视频")
+	_, _, _ = syscall.SyscallN(dlg.vtbl.SetTitle, dlgPtr, uintptr(unsafe.Pointer(titlePtr)))
+
+	namePtr, _ := windows.UTF16PtrFromString(defaultName)
+	_, _, _ = syscall.SyscallN(dlg.vtbl.SetFileName, dlgPtr, uintptr(unsafe.Pointer(namePtr)))
+	if defExt != "" {
+		extPtr, _ := windows.UTF16PtrFromString(defExt)
+		_, _, _ = syscall.SyscallN(dlg.vtbl.SetDefaultExtension, dlgPtr, uintptr(unsafe.Pointer(extPtr)))
+	}
+
+	if initialDir != "" && shell32SHCreateItemFromName.Find() == nil {
+		if dirPtr, err := windows.UTF16PtrFromString(initialDir); err == nil {
+			var folderItem *winShellItem
+			hrItem, _, _ := shell32SHCreateItemFromName.Call(
+				uintptr(unsafe.Pointer(dirPtr)),
+				0,
+				uintptr(unsafe.Pointer(&iidShellItem)),
+				uintptr(unsafe.Pointer(&folderItem)),
+			)
+			if hrItem == 0 && folderItem != nil {
+				_, _, _ = syscall.SyscallN(dlg.vtbl.SetDefaultFolder, dlgPtr, uintptr(unsafe.Pointer(folderItem)))
+				// SetFolder overrides ComDlg32's remembered MRU directory (e.g. D:\Downloads).
+				_, _, _ = syscall.SyscallN(dlg.vtbl.SetFolder, dlgPtr, uintptr(unsafe.Pointer(folderItem)))
+				_, _, _ = syscall.SyscallN(folderItem.vtbl.Release, uintptr(unsafe.Pointer(folderItem)))
+			}
+		}
+	}
+
+	hrShow, _, _ := syscall.SyscallN(dlg.vtbl.Show, dlgPtr, hwnd)
+	if hrShow != 0 {
+		return "", false, true
+	}
+
+	var resItem *winShellItem
+	hrRes, _, _ := syscall.SyscallN(dlg.vtbl.GetResult, dlgPtr, uintptr(unsafe.Pointer(&resItem)))
+	if hrRes != 0 || resItem == nil {
+		return "", false, true
+	}
+	resPtr := uintptr(unsafe.Pointer(resItem))
+	defer syscall.SyscallN(resItem.vtbl.Release, resPtr)
+
+	var pszPath *uint16
+	hrPath, _, _ := syscall.SyscallN(resItem.vtbl.GetDisplayName, resPtr, uintptr(0x80058000), uintptr(unsafe.Pointer(&pszPath))) // SIGDN_FILESYSPATH
+	if hrPath != 0 || pszPath == nil {
+		return "", false, true
+	}
+	defer ole32CoTaskMemFree.Call(uintptr(unsafe.Pointer(pszPath)))
+	return windows.UTF16PtrToString(pszPath), true, true
+}
+
 func pickSaveFileDialog(hwnd uintptr, initialDir, defaultName, defExt string) (string, bool) {
+	if p, ok, handled := pickSaveFileDialogVista(hwnd, initialDir, defaultName, defExt); handled {
+		return p, ok
+	}
 	if err := comdlg32GetSaveFileNameW.Find(); err != nil {
 		return filepath.Join(initialDir, defaultName), true
 	}
