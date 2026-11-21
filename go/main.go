@@ -176,6 +176,10 @@ func main() {
 		}
 		// 如果本机缺少 WebView2 Runtime 或窗口初始化失败，回退为本地服务继续运行
 		attachParentConsoleIfNeeded()
+		if trace := desktopFailTrace(); trace != "" {
+			fmt.Println("  [独立窗口初始化失败，已回退到本地服务模式]")
+			fmt.Println(trace)
+		}
 		banner(port)
 		select {}
 	}

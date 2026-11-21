@@ -62,7 +62,6 @@ var (
 	kernel32GetCurrentThreadID   = kernel32.NewProc("GetCurrentThreadId")
 	kernel32AttachConsole        = kernel32.NewProc("AttachConsole")
 	kernel32AllocConsole         = kernel32.NewProc("AllocConsole")
-	kernel32SetDllDirectoryW     = kernel32.NewProc("SetDllDirectoryW")
 )
 
 const (
@@ -172,12 +171,16 @@ func attachParentConsoleIfNeeded() {
 		return
 	}
 	if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
+		_ = windows.SetStdHandle(windows.STD_OUTPUT_HANDLE, windows.Handle(f.Fd()))
+		_ = windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(f.Fd()))
 		os.Stdout = f
 		os.Stderr = f
 	}
 	if f, err := os.OpenFile("CONIN$", os.O_RDONLY, 0); err == nil {
+		_ = windows.SetStdHandle(windows.STD_INPUT_HANDLE, windows.Handle(f.Fd()))
 		os.Stdin = f
 	}
+	setUtf8Console()
 }
 
 func showDesktopError(msg string) {
@@ -340,27 +343,49 @@ func desktopDataDir() string {
 	return dir
 }
 
+var (
+	desktopTraceMu sync.Mutex
+	desktopTrace   []string
+	desktopFailMsg string
+)
+
 func desktopLog(format string, args ...any) {
+	line := fmt.Sprintf("%s "+format, append([]any{time.Now().Format("15:04:05.000")}, args...)...)
+	desktopTraceMu.Lock()
+	desktopTrace = append(desktopTrace, line)
+	desktopTraceMu.Unlock()
+
 	p := filepath.Join(desktopAppBaseDir(), "app.log")
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return
 	}
-	_, _ = fmt.Fprintf(f, "%s "+format+"\n", append([]any{time.Now().Format("15:04:05.000")}, args...)...)
+	_, _ = fmt.Fprintln(f, line)
 	_ = f.Close()
+}
+
+func desktopFail(reason string) bool {
+	desktopTraceMu.Lock()
+	desktopFailMsg = reason
+	desktopTraceMu.Unlock()
+	desktopLog("DESKTOP FAIL: %s", reason)
+	return false
+}
+
+func desktopFailTrace() string {
+	desktopTraceMu.Lock()
+	defer desktopTraceMu.Unlock()
+	if desktopFailMsg == "" && len(desktopTrace) == 0 {
+		return ""
+	}
+	return strings.Join(desktopTrace, "\n")
 }
 
 func ensureWebView2LoaderDLL() {
 	if len(webviewloader.WebView2Loader) == 0 {
 		return
 	}
-	baseDir := desktopAppBaseDir()
-	if err := kernel32SetDllDirectoryW.Find(); err == nil {
-		if p, err := windows.UTF16PtrFromString(baseDir); err == nil {
-			_, _, _ = kernel32SetDllDirectoryW.Call(uintptr(unsafe.Pointer(p)))
-		}
-	}
-	dllPath := filepath.Join(baseDir, "WebView2Loader.dll")
+	dllPath := filepath.Join(desktopAppBaseDir(), "WebView2Loader.dll")
 	needWrite := true
 	if st, err := os.Stat(dllPath); err == nil && st.Size() == int64(len(webviewloader.WebView2Loader)) {
 		needWrite = false
@@ -379,36 +404,39 @@ func ensureWebView2LoaderDLL() {
 }
 
 func resetDesktopLog() {
+	desktopTraceMu.Lock()
+	desktopTrace = nil
+	desktopFailMsg = ""
+	desktopTraceMu.Unlock()
 	_ = os.Remove(filepath.Join(desktopAppBaseDir(), "app.log"))
 }
 
 func runDesktopApp(p int) bool {
 	desktopLog("starting desktop app on port %d", p)
 	if err := ole32.Load(); err != nil {
-		desktopLog("ole32.Load failed: %v", err)
-		return false
+		return desktopFail(fmt.Sprintf("ole32.Load failed: %v", err))
 	}
 	if err := user32.Load(); err != nil {
-		desktopLog("user32.Load failed: %v", err)
-		return false
+		return desktopFail(fmt.Sprintf("user32.Load failed: %v", err))
 	}
 	if err := gdi32.Load(); err != nil {
-		desktopLog("gdi32.Load failed: %v", err)
-		return false
+		return desktopFail(fmt.Sprintf("gdi32.Load failed: %v", err))
 	}
 	if err := ole32CoInitializeEx.Find(); err != nil {
-		desktopLog("CoInitializeEx.Find failed: %v", err)
-		return false
+		return desktopFail(fmt.Sprintf("CoInitializeEx.Find failed: %v", err))
 	}
 
 	runtime.LockOSThread()
-	_, _, _ = ole32CoInitializeEx.Call(0, 2) // COINIT_APARTMENTTHREADED
+	hrCo, _, _ := ole32CoInitializeEx.Call(0, 2) // COINIT_APARTMENTTHREADED
+	if int32(hrCo) < 0 && uint32(hrCo) != 0x80010106 {
+		return desktopFail(fmt.Sprintf("CoInitializeEx failed: 0x%08x", uint32(hrCo)))
+	}
 	defer ole32CoUninitialize.Call()
 
 	ensureWebView2LoaderDLL()
 
 	if ver, err := webviewloader.GetInstalledVersion(); err != nil || strings.TrimSpace(ver) == "" {
-		desktopLog("GetInstalledVersion ver=%q err=%v", ver, err)
+		desktopFail(fmt.Sprintf("GetInstalledVersion ver=%q err=%v", ver, err))
 		u := fmt.Sprintf("http://127.0.0.1:%d/", p)
 		_ = copyToClipboard(u)
 		showDesktopError("未检测到 Microsoft Edge WebView2 运行环境，无法启动独立窗口。\n\n已将播放地址复制到剪贴板，请在浏览器打开：\n" + u + "\n\n（确认后本地服务仍会继续在后台运行）")
@@ -420,7 +448,9 @@ func runDesktopApp(p int) bool {
 	enableDPIAwareness()
 
 	var hinst windows.Handle
-	_ = windows.GetModuleHandleEx(0, nil, &hinst)
+	if err := windows.GetModuleHandleEx(windows.GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, nil, &hinst); err != nil {
+		desktopLog("GetModuleHandleEx failed: %v", err)
+	}
 
 	icon, _, _ := user32LoadImageW.Call(uintptr(hinst), 1, 1, 0, 0, 0x0040|0x8000)
 	if icon == 0 {
@@ -441,7 +471,11 @@ func runDesktopApp(p int) bool {
 		HbrBackground: windows.Handle(brush),
 		LpszClassName: clsPtr,
 	}
-	_, _, _ = user32RegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+	atom, _, regErr := user32RegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+	if atom == 0 && regErr != windows.ERROR_CLASS_ALREADY_EXISTS {
+		showDesktopError(fmt.Sprintf("注册桌面窗口类失败：%v", regErr))
+		return desktopFail(fmt.Sprintf("RegisterClassExW failed: %v", regErr))
+	}
 
 	sw, _, _ := user32GetSystemMetrics.Call(0)
 	sh, _, _ := user32GetSystemMetrics.Call(1)
@@ -459,13 +493,13 @@ func runDesktopApp(p int) bool {
 		y = (sh - h) / 2
 	}
 
-	hwnd, _, _ := user32CreateWindowExW.Call(
+	hwnd, _, createErr := user32CreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(clsPtr)), uintptr(unsafe.Pointer(titlePtr)),
 		wsOverlappedWindow, x, y, w, h, 0, 0, uintptr(hinst), 0,
 	)
 	if hwnd == 0 {
-		desktopLog("CreateWindowExW returned 0")
-		return false
+		showDesktopError(fmt.Sprintf("创建桌面窗口失败：%v", createErr))
+		return desktopFail(fmt.Sprintf("CreateWindowExW failed: %v", createErr))
 	}
 	if icon != 0 {
 		_, _, _ = user32PostMessageW.Call(hwnd, wmSetIcon, 1, icon)
@@ -505,7 +539,7 @@ func runDesktopApp(p int) bool {
 	app.host = host
 
 	if err := host.embed(desktopDataDir()); err != nil || host.webview == nil {
-		desktopLog("host.embed failed: err=%v webview=%v", err, host.webview != nil)
+		desktopFail(fmt.Sprintf("host.embed failed: err=%v webview=%v", err, host.webview != nil))
 		_, _, _ = user32DestroyWindow.Call(hwnd)
 		u := fmt.Sprintf("http://127.0.0.1:%d/", p)
 		_ = copyToClipboard(u)

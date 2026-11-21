@@ -54,17 +54,20 @@ type wvHandlerVtbl struct {
 }
 
 var (
-	iidIUnknown     = windows.GUID{Data1: 0x00000000, Data2: 0x0000, Data3: 0x0000, Data4: [8]byte{0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
-	iidIAgileObject = windows.GUID{Data1: 0x94EA2B94, Data2: 0xE9CC, Data3: 0x49E0, Data4: [8]byte{0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90}}
+	iidIUnknown          = windows.GUID{Data1: 0x00000000, Data2: 0x0000, Data3: 0x0000, Data4: [8]byte{0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}}
+	iidIAgileObject      = windows.GUID{Data1: 0x94EA2B94, Data2: 0xE9CC, Data3: 0x49E0, Data4: [8]byte{0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90}}
+	iidEnvCompleted      = windows.GUID{Data1: 0x4E8A3389, Data2: 0xC9D8, Data3: 0x4BD2, Data4: [8]byte{0xB6, 0xB5, 0x12, 0x4F, 0xEE, 0x6C, 0xC1, 0x4D}}
+	iidCtrlCompleted     = windows.GUID{Data1: 0x6C4819F3, Data2: 0xC9B7, Data3: 0x4260, Data4: [8]byte{0x81, 0x27, 0xC9, 0xF5, 0xBD, 0xE7, 0xF6, 0x8C}}
+	iidGetCookiesDone    = windows.GUID{Data1: 0x5A4F5069, Data2: 0x5C15, Data3: 0x47C3, Data4: [8]byte{0x86, 0x46, 0xF4, 0xDE, 0x1C, 0x11, 0x66, 0x70}}
 )
 
 const hrNoInterface = uintptr(0x80004002)
 
-func comQueryInterface(self unsafe.Pointer, riid *windows.GUID, ppv *unsafe.Pointer) uintptr {
+func comQueryInterface(self unsafe.Pointer, riid *windows.GUID, ppv *unsafe.Pointer, extra *windows.GUID) uintptr {
 	if ppv == nil {
 		return uintptr(0x80004003) // E_POINTER
 	}
-	if riid != nil && (*riid == iidIUnknown || *riid == iidIAgileObject) {
+	if riid != nil && (*riid == iidIUnknown || *riid == iidIAgileObject || (extra != nil && *riid == *extra)) {
 		*ppv = self
 		return 0
 	}
@@ -75,13 +78,18 @@ func comQueryInterface(self unsafe.Pointer, riid *windows.GUID, ppv *unsafe.Poin
 // wvResObjHandler 用于 Invoke(this, HRESULT, *IUnknown) 类型回调（Env/Ctrl/GetCookies）
 type wvResObjHandler struct {
 	vtbl *wvHandlerVtbl
+	iid  *windows.GUID
 	fn   func(res uintptr, obj unsafe.Pointer)
 }
 
 var wvResObjVtbl = wvHandlerVtbl{
 	wvIUnknownVtbl: wvIUnknownVtbl{
 		QueryInterface: windows.NewCallback(func(h *wvResObjHandler, riid *windows.GUID, ppv *unsafe.Pointer) uintptr {
-			return comQueryInterface(unsafe.Pointer(h), riid, ppv)
+			var extra *windows.GUID
+			if h != nil {
+				extra = h.iid
+			}
+			return comQueryInterface(unsafe.Pointer(h), riid, ppv, extra)
 		}),
 		AddRef:  windows.NewCallback(func(h *wvResObjHandler) uintptr { return 1 }),
 		Release: windows.NewCallback(func(h *wvResObjHandler) uintptr { return 1 }),
@@ -103,7 +111,7 @@ type wvEventHandler struct {
 var wvEventVtbl = wvHandlerVtbl{
 	wvIUnknownVtbl: wvIUnknownVtbl{
 		QueryInterface: windows.NewCallback(func(h *wvEventHandler, riid *windows.GUID, ppv *unsafe.Pointer) uintptr {
-			return comQueryInterface(unsafe.Pointer(h), riid, ppv)
+			return comQueryInterface(unsafe.Pointer(h), riid, ppv, nil)
 		}),
 		AddRef:  windows.NewCallback(func(h *wvEventHandler) uintptr { return 1 }),
 		Release: windows.NewCallback(func(h *wvEventHandler) uintptr { return 1 }),
@@ -120,6 +128,7 @@ func newWVHost(hwnd uintptr) *wvHost {
 	h := &wvHost{hwnd: hwnd}
 	h.hEnv = &wvResObjHandler{
 		vtbl: &wvResObjVtbl,
+		iid:  &iidEnvCompleted,
 		fn: func(res uintptr, obj unsafe.Pointer) {
 			if int32(res) < 0 || obj == nil {
 				h.fatalErr = fmt.Errorf("create WebView2 environment failed: 0x%08x", uint32(res))
@@ -138,6 +147,7 @@ func newWVHost(hwnd uintptr) *wvHost {
 	}
 	h.hCtrl = &wvResObjHandler{
 		vtbl: &wvResObjVtbl,
+		iid:  &iidCtrlCompleted,
 		fn: func(res uintptr, obj unsafe.Pointer) {
 			if int32(res) < 0 || obj == nil {
 				h.fatalErr = fmt.Errorf("create WebView2 controller failed: 0x%08x", uint32(res))
@@ -502,6 +512,7 @@ func (cm *wvCookieManager) getCookiesAsync(uri string, cb func(pairs [][2]string
 	var handler *wvResObjHandler
 	handler = &wvResObjHandler{
 		vtbl: &wvResObjVtbl,
+		iid:  &iidGetCookiesDone,
 		fn: func(res uintptr, listPtr unsafe.Pointer) {
 			defer cm.release()
 			wvPinDelete(handler)

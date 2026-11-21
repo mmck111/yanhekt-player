@@ -15,3 +15,5 @@ func showDesktopError(msg string) {}
 func resetDesktopLog() {}
 
 func desktopLog(format string, args ...any) {}
+
+func desktopFailTrace() string { return "" }
