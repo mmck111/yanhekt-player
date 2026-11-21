@@ -758,6 +758,7 @@ func (a *desktopApp) startLogin(which, curURL string) {
 	if which == "old" {
 		target = "https://www.yanhekt.cn/"
 	}
+	desktopLog("startLogin which=%s target=%s", which, target)
 	a.host.navigate(target)
 }
 
@@ -866,6 +867,7 @@ func (a *desktopApp) onNavCompleted(cur string) {
 	if pending == "" {
 		return
 	}
+	desktopLog("onNavCompleted pending=%s url=%s", pending, cur)
 	a.host.eval(showBannerEvalJS(pending))
 	if strings.Contains(cur, "yanhekt.cn") {
 		a.pollWebViewCookies(cur, "", "", false)
@@ -904,12 +906,14 @@ func (a *desktopApp) forceFinishOrReturn() {
 func (a *desktopApp) pollWebViewCookies(uri, extraOld, extraY2 string, fallbackReturn bool) {
 	cm := a.host.getCookieManager()
 	if cm == nil {
+		desktopLog("pollWebViewCookies: CookieManager nil url=%s", uri)
 		if fallbackReturn {
 			a.handleCaptured(uri, extraOld+"\n"+extraY2, "", true)
 		}
 		return
 	}
 	ok := cm.getCookiesAsync(uri, func(cookies [][2]string) {
+		desktopLog("getCookiesAsync ok url=%s count=%d", uri, len(cookies))
 		var pairs, vals []string
 		for _, kv := range cookies {
 			n, v := kv[0], kv[1]
@@ -984,7 +988,9 @@ func (a *desktopApp) handleCaptured(host, tokenBlob, cookie string, fallbackRetu
 		a.pendingLogin = ""
 		a.authMu.Unlock()
 
-		code := issueAppAuthTicket(which, verified, a.returnTargetFor(which))
+		retPath := a.returnTargetFor(which)
+		desktopLog("login verified which=%s return=%s", which, retPath)
+		code := issueAppAuthTicket(which, verified, retPath)
 		a.dispatch(func() {
 			a.host.eval("window.__yhktShowLoginBar&&window.__yhktShowLoginBar(" + jsStr(which) + ",'✓ 登录成功，正在返回播放器…',true)")
 		})

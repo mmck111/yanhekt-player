@@ -568,7 +568,6 @@ func (cm *wvCookieManager) getCookiesAsync(uri string, cb func(pairs [][2]string
 						}
 					}
 				}
-				_, _, _ = syscall.SyscallN(list.vtbl.Release, uintptr(listPtr))
 			}
 			cb(out)
 		},
