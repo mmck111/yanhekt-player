@@ -1,17 +1,20 @@
-//go:build windows
+//go:build windows && !nogui
 
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/jchv/go-webview2/webviewloader"
@@ -24,6 +27,11 @@ var (
 	ole32                        = windows.NewLazySystemDLL("ole32.dll")
 	ole32CoInitializeEx          = ole32.NewProc("CoInitializeEx")
 	ole32CoUninitialize          = ole32.NewProc("CoUninitialize")
+	ole32CoTaskMemFree           = ole32.NewProc("CoTaskMemFree")
+	comdlg32                     = windows.NewLazySystemDLL("comdlg32.dll")
+	comdlg32GetSaveFileNameW     = comdlg32.NewProc("GetSaveFileNameW")
+	shell32                      = windows.NewLazySystemDLL("shell32.dll")
+	shell32SHGetKnownFolderPath  = shell32.NewProc("SHGetKnownFolderPath")
 	dwmapi                       = windows.NewLazySystemDLL("dwmapi.dll")
 	dwmSetWindowAttribute        = dwmapi.NewProc("DwmSetWindowAttribute")
 	shcore                       = windows.NewLazySystemDLL("shcore.dll")
@@ -246,6 +254,9 @@ type desktopApp struct {
 	capturedY2    string
 	tried         map[string]bool
 	completing    bool
+
+	saveMu      sync.Mutex
+	lastSaveDir string
 }
 
 func (a *desktopApp) dispatch(fn func()) {
@@ -703,10 +714,285 @@ func (a *desktopApp) onNewWindow(uri string) {
 		return
 	}
 	if strings.HasPrefix(uri, a.localBase+"/dl") || strings.HasPrefix(uri, a.localBase+"/y2dl") {
-		a.host.eval("(()=>{var a=document.createElement('a');a.href=" + jsStr(uri) + ";a.download='';document.body.appendChild(a);a.click();a.remove();})()")
+		a.startDesktopDownload(uri)
 		return
 	}
 	a.host.navigate(uri)
+}
+
+// ---------------- 桌面原生另存为与直连下载 ----------------
+
+type winOpenFileNameW struct {
+	LStructSize       uint32
+	HwndOwner         uintptr
+	HInstance         uintptr
+	LpstrFilter       *uint16
+	LpstrCustomFilter *uint16
+	NMaxCustFilter    uint32
+	NFilterIndex      uint32
+	LpstrFile         *uint16
+	NMaxFile          uint32
+	LpstrFileTitle    *uint16
+	NMaxFileTitle     uint32
+	LpstrInitialDir   *uint16
+	LpstrTitle        *uint16
+	Flags             uint32
+	NFileOffset       uint16
+	NFileExtension    uint16
+	LpstrDefExt       *uint16
+	LCustData         uintptr
+	LpfnHook          uintptr
+	LpTemplateName    *uint16
+	PvReserved        uintptr
+	DwReserved        uint32
+	FlagsEx           uint32
+}
+
+var (
+	folderIDVideos    = windows.GUID{Data1: 0x18989B1D, Data2: 0x99B5, Data3: 0x455B, Data4: [8]byte{0x84, 0x1C, 0xAB, 0x7C, 0x74, 0xE4, 0xDD, 0xFC}}
+	folderIDDownloads = windows.GUID{Data1: 0x374DE290, Data2: 0x123F, Data3: 0x4565, Data4: [8]byte{0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B}}
+)
+
+func knownFolderPath(id windows.GUID) string {
+	if err := shell32SHGetKnownFolderPath.Find(); err != nil {
+		return ""
+	}
+	var p *uint16
+	hr, _, _ := shell32SHGetKnownFolderPath.Call(uintptr(unsafe.Pointer(&id)), 0, 0, uintptr(unsafe.Pointer(&p)))
+	if p != nil {
+		defer ole32CoTaskMemFree.Call(uintptr(unsafe.Pointer(p)))
+	}
+	if hr != 0 || p == nil {
+		return ""
+	}
+	return windows.UTF16PtrToString(p)
+}
+
+func pickWritableSaveDir(lastDir string) string {
+	var cands []string
+	if lastDir != "" {
+		cands = append(cands, lastDir)
+	}
+	if v := knownFolderPath(folderIDVideos); v != "" {
+		cands = append(cands, v)
+	}
+	if d := knownFolderPath(folderIDDownloads); d != "" {
+		cands = append(cands, d)
+	}
+	if up := os.Getenv("USERPROFILE"); up != "" {
+		cands = append(cands, filepath.Join(up, "Videos"), filepath.Join(up, "Desktop"), filepath.Join(up, "Downloads"))
+	}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		cands = append(cands, filepath.Join(filepath.Dir(exe), "downloads"))
+	}
+	cands = append(cands, filepath.Join(desktopAppBaseDir(), "downloads"))
+	for _, d := range cands {
+		if probeWritableDir(d) {
+			return d
+		}
+	}
+	return os.TempDir()
+}
+
+func sanitizeWinFileName(name string) string {
+	name = strings.TrimSpace(name)
+	repl := strings.NewReplacer("<", "_", ">", "_", ":", "_", `"`, "_", "/", "_", `\`, "_", "|", "_", "?", "_", "*", "_")
+	name = repl.Replace(name)
+	name = strings.Trim(name, ". ")
+	if name == "" {
+		return "延河课堂视频.mp4"
+	}
+	return name
+}
+
+func parseDownloadFilename(cdHeader, rawURL string) string {
+	if cdHeader != "" {
+		low := strings.ToLower(cdHeader)
+		if idx := strings.Index(low, "filename*=utf-8''"); idx >= 0 {
+			rest := cdHeader[idx+len("filename*=utf-8''"):]
+			if semi := strings.IndexByte(rest, ';'); semi >= 0 {
+				rest = rest[:semi]
+			}
+			rest = strings.Trim(rest, `" `)
+			if dec, err := url.QueryUnescape(rest); err == nil && strings.TrimSpace(dec) != "" {
+				return sanitizeWinFileName(dec)
+			}
+		}
+		if idx := strings.Index(low, "filename="); idx >= 0 {
+			rest := cdHeader[idx+len("filename="):]
+			if semi := strings.IndexByte(rest, ';'); semi >= 0 {
+				rest = rest[:semi]
+			}
+			rest = strings.Trim(rest, `" `)
+			if rest != "" {
+				return sanitizeWinFileName(rest)
+			}
+		}
+	}
+	if u, err := url.Parse(rawURL); err == nil {
+		if t := strings.TrimSpace(u.Query().Get("title")); t != "" {
+			if filepath.Ext(t) == "" {
+				t += ".mp4"
+			}
+			return sanitizeWinFileName(t)
+		}
+	}
+	return "延河课堂视频.mp4"
+}
+
+func pickSaveFileDialog(hwnd uintptr, initialDir, defaultName, defExt string) (string, bool) {
+	if err := comdlg32GetSaveFileNameW.Find(); err != nil {
+		return filepath.Join(initialDir, defaultName), true
+	}
+	buf := make([]uint16, 4096)
+	initName := utf16.Encode([]rune(defaultName))
+	if len(initName) >= len(buf) {
+		initName = initName[:len(buf)-1]
+	}
+	copy(buf, initName)
+
+	filter := utf16.Encode([]rune("视频文件 (*.mp4;*.ts)\x00*.mp4;*.ts\x00所有文件 (*.*)\x00*.*\x00\x00"))
+	titlePtr, _ := windows.UTF16PtrFromString("保存课程视频")
+	var dirPtr *uint16
+	if initialDir != "" {
+		dirPtr, _ = windows.UTF16PtrFromString(initialDir)
+	}
+	var extPtr *uint16
+	if defExt != "" {
+		extPtr, _ = windows.UTF16PtrFromString(defExt)
+	}
+	ofn := winOpenFileNameW{
+		LStructSize:     uint32(unsafe.Sizeof(winOpenFileNameW{})),
+		HwndOwner:       hwnd,
+		LpstrFilter:     &filter[0],
+		NFilterIndex:    1,
+		LpstrFile:       &buf[0],
+		NMaxFile:        uint32(len(buf)),
+		LpstrInitialDir: dirPtr,
+		LpstrTitle:      titlePtr,
+		Flags:           0x00000002 | 0x00000800 | 0x00000008, // OVERWRITEPROMPT | PATHMUSTEXIST | NOCHANGEDIR
+		LpstrDefExt:     extPtr,
+	}
+	r, _, _ := comdlg32GetSaveFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	if r == 0 {
+		return "", false
+	}
+	return windows.UTF16ToString(buf), true
+}
+
+func (a *desktopApp) uiToast(msg string) {
+	a.dispatch(func() {
+		a.host.eval("if(typeof toast==='function')toast(" + jsStr(msg) + ",4500)")
+	})
+}
+
+func (a *desktopApp) startDesktopDownload(rawURL string) {
+	fullURL := strings.TrimSpace(rawURL)
+	if strings.HasPrefix(fullURL, "/") {
+		fullURL = a.localBase + fullURL
+	}
+	if !strings.HasPrefix(fullURL, a.localBase+"/dl") && !strings.HasPrefix(fullURL, a.localBase+"/y2dl") {
+		return
+	}
+	runWithCookie := func(cookieHdr string) {
+		go func() {
+			req, err := http.NewRequest("GET", fullURL, nil)
+			if err != nil {
+				a.uiToast("下载请求失败：" + err.Error())
+				return
+			}
+			if cookieHdr != "" {
+				req.Header.Set("Cookie", cookieHdr)
+			}
+			resp, err := (&http.Client{}).Do(req)
+			if err != nil {
+				desktopLog("desktop download HTTP failed: %v", err)
+				a.uiToast("下载失败：" + err.Error())
+				return
+			}
+			if resp.StatusCode != 200 {
+				b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+				_ = resp.Body.Close()
+				msg := strings.TrimSpace(string(b))
+				if msg == "" {
+					msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+				}
+				a.uiToast("下载失败：" + msg)
+				return
+			}
+
+			fname := parseDownloadFilename(resp.Header.Get("Content-Disposition"), fullURL)
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fname)), ".")
+			if ext == "" {
+				ext = "mp4"
+			}
+
+			type saveChoice struct {
+				path string
+				ok   bool
+			}
+			ch := make(chan saveChoice, 1)
+			a.dispatch(func() {
+				a.saveMu.Lock()
+				lastDir := a.lastSaveDir
+				a.saveMu.Unlock()
+				initDir := pickWritableSaveDir(lastDir)
+				p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
+				if ok && p != "" {
+					a.saveMu.Lock()
+					a.lastSaveDir = filepath.Dir(p)
+					a.saveMu.Unlock()
+				}
+				ch <- saveChoice{p, ok}
+			})
+			choice := <-ch
+			if !choice.ok || choice.path == "" {
+				_ = resp.Body.Close()
+				return
+			}
+
+			outFile, err := os.Create(choice.path)
+			if err != nil {
+				_ = resp.Body.Close()
+				desktopLog("download os.Create(%s) failed: %v", choice.path, err)
+				a.dispatch(func() {
+					showDesktopError("无法保存到该位置：\n" + choice.path + "\n\n" + err.Error())
+				})
+				return
+			}
+			a.uiToast("正在保存到 " + filepath.Base(choice.path) + "，可在「下载管理」看进度")
+			written, copyErr := io.Copy(outFile, resp.Body)
+			closeErr := outFile.Close()
+			_ = resp.Body.Close()
+			if copyErr != nil || closeErr != nil {
+				e := copyErr
+				if e == nil {
+					e = closeErr
+				}
+				desktopLog("download write failed path=%s bytes=%d err=%v", choice.path, written, e)
+				a.uiToast("下载中断：" + e.Error())
+				return
+			}
+			desktopLog("download saved path=%s bytes=%d", choice.path, written)
+			a.uiToast("✓ 已保存：" + filepath.Base(choice.path))
+		}()
+	}
+
+	cm := a.host.getCookieManager()
+	if cm == nil {
+		runWithCookie("")
+		return
+	}
+	ok := cm.getCookiesAsync(a.localBase, func(cookies [][2]string) {
+		var parts []string
+		for _, kv := range cookies {
+			parts = append(parts, kv[0]+"="+kv[1])
+		}
+		runWithCookie(strings.Join(parts, "; "))
+	})
+	if !ok {
+		runWithCookie("")
+	}
 }
 
 // ---------------- 登录截取与跳回流程 ----------------
@@ -717,6 +1003,7 @@ type webMsgPayload struct {
 	Host   string `json:"host"`
 	Token  string `json:"token"`
 	Cookie string `json:"cookie"`
+	URL    string `json:"url"`
 }
 
 func (a *desktopApp) onWebMessage(raw, source string) {
@@ -733,6 +1020,8 @@ func (a *desktopApp) onWebMessage(raw, source string) {
 		a.startLogin(which, source)
 	case "clearAuth":
 		a.clearWebCookies(msg.Which)
+	case "download":
+		a.startDesktopDownload(msg.URL)
 	case "captured":
 		a.handleCaptured(msg.Host, msg.Token, msg.Cookie, false)
 	case "forceBack":
@@ -1047,12 +1336,7 @@ func desktopInitScript(localBase string) string {
     window.open = function(u, n, f) {
       try {
         if (u && /^\/(dl|y2dl)(\?|$)/.test(String(u))) {
-          const a = document.createElement('a');
-          a.href = new URL(String(u), location.href).href;
-          a.download = '';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
+          post({ type: 'download', url: new URL(String(u), location.href).href });
           return null;
         }
       } catch (e) {}
