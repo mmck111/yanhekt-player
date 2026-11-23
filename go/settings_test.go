@@ -71,4 +71,10 @@ func TestSettingsRoundTripAndValidation(t *testing.T) {
 		!loaded.DualPip || loaded.DefaultRate != 1.5 || !loaded.AutoNext || loaded.RememberPos {
 		t.Fatalf("persisted mismatch: %+v", loaded)
 	}
+
+	// Verify effectiveDownloadDirOf falls back to default generator when DownloadDir is blank.
+	sEmpty := defaultAppSettings()
+	if got := effectiveDownloadDirOf(sEmpty); got != filepath.Join(tmp, "downloads") {
+		t.Fatalf("effectiveDownloadDirOf=%q, want default downloads", got)
+	}
 }

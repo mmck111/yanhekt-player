@@ -3,6 +3,8 @@ dist/
 
 # Go 版构建时从 ../public 同步过来的页面（go:embed 用，别提交）
 go/web/
+go/cmd/setup/payload/
+go/cmd/setup/*.syso
 
 # 依赖
 node_modules/

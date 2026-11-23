@@ -32,11 +32,44 @@ var (
 )
 
 func defaultAppSettings() appSettings {
-	return appSettings{
+	s := appSettings{
 		DefaultView: "camera",
 		DefaultRate: 1,
 		RememberPos: true,
 	}
+	if def := loadInstallDefaults(); def != "" {
+		s.DownloadDir = def
+	}
+	return s
+}
+
+func installDefaultsPath() string {
+	if settingsPathOverride != "" {
+		return ""
+	}
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(exe), "defaults.json")
+}
+
+func loadInstallDefaults() string {
+	p := installDefaultsPath()
+	if p == "" {
+		return ""
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || len(b) == 0 {
+		return ""
+	}
+	var d struct {
+		DownloadDir string `json:"downloadDir"`
+	}
+	if json.Unmarshal(b, &d) != nil {
+		return ""
+	}
+	return strings.TrimSpace(d.DownloadDir)
 }
 
 func sanitizeAppSettings(in appSettings) appSettings {

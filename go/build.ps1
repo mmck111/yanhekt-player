@@ -38,8 +38,28 @@ try {
   $tags = 'nethttpomithttp2'
 
   $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
-  & $go build -trimpath -tags $tags -ldflags $ldflags -o (Join-Path $root 'dist\yanhekt.exe') .
+  $exeOut = Join-Path $root 'dist\yanhekt.exe'
+  & $go build -trimpath -tags $tags -ldflags $ldflags -o $exeOut .
   if ($LASTEXITCODE -ne 0) { throw 'windows build failed' }
+
+  # 3. 压缩主程序并编译安装向导（dist\yanhekt-setup-<ver>-windows-amd64.exe）
+  $verMatch = Select-String -Path (Join-Path $PSScriptRoot 'main.go') -Pattern 'const build = "([^"]+)"'
+  $ver = if ($verMatch) { $verMatch.Matches[0].Groups[1].Value } else { '2.1.0' }
+  $payloadDir = Join-Path $PSScriptRoot 'cmd\setup\payload'
+  New-Item -ItemType Directory -Force -Path $payloadDir | Out-Null
+  $gzPath = Join-Path $payloadDir 'yanhekt.exe.gz'
+  $srcStream = [System.IO.File]::OpenRead($exeOut)
+  try {
+    $dstStream = [System.IO.File]::Create($gzPath)
+    try {
+      $gzStream = [System.IO.Compression.GZipStream]::new($dstStream, [System.IO.Compression.CompressionLevel]::Optimal)
+      try { $srcStream.CopyTo($gzStream) } finally { $gzStream.Dispose() }
+    } finally { $dstStream.Dispose() }
+  } finally { $srcStream.Dispose() }
+  Copy-Item -Force (Join-Path $PSScriptRoot 'rsrc_windows_amd64.syso') (Join-Path $PSScriptRoot 'cmd\setup\rsrc_windows_amd64.syso')
+  $setupOut = Join-Path $root ("dist\yanhekt-setup-{0}-windows-amd64.exe" -f $ver)
+  & $go build -trimpath -tags "$tags setup" -ldflags $ldflags -o $setupOut ./cmd/setup
+  if ($LASTEXITCODE -ne 0) { throw 'windows setup build failed' }
 } finally {
   Pop-Location
   Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
