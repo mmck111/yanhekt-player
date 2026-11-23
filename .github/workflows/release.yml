@@ -55,10 +55,6 @@ jobs:
             go vet ./...
             go test -count=1 ./...
             go build -trimpath -tags nethttpomithttp2 -ldflags "-s -w -H=windowsgui" -o ..\dist\yanhekt.exe .
-
-            go vet -tags nogui ./...
-            go test -tags nogui -count=1 ./...
-            go build -trimpath -tags "nethttpomithttp2 nogui" -ldflags "-s -w" -o ..\dist\yanhekt-browser.exe .
           } finally {
             Pop-Location
           }
@@ -87,7 +83,6 @@ jobs:
           path: |
             dist/yanhekt-setup-*.exe
             dist/yanhekt.exe
-            dist/yanhekt-browser.exe
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -96,10 +91,8 @@ jobs:
           files: |
             dist/yanhekt-setup-*.exe
             dist/yanhekt.exe
-            dist/yanhekt-browser.exe
           body: |
             ### Windows 安装说明
             - 推荐下载 **`yanhekt-setup-${{ steps.ver.outputs.version }}-windows-amd64.exe`** 一键安装（会创建桌面快捷方式；支持无管理员权限安装到当前用户目录，或可选为所有用户安装）。
             - 安装完成后的 `yanhekt.exe` 位于标准目录，可在软件内「⚙ 设置」自由指定任意本地文件夹作为下载目录。
             - **关于 Windows SmartScreen 提示**：开源个人构建未购买商业代码签名证书，首次运行安装包若弹出「Windows 已保护你的电脑」，点 **「更多信息」→「仍要运行」** 即可。安装完成后从桌面快捷方式日常启动不再弹出下载拦截。
-            - 如果你更喜欢以前「黑框复制网址去自己浏览器打开」的方式，可用同目录的 `yanhekt-browser.exe`。

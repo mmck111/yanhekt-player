@@ -40,9 +40,6 @@ try {
   $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
   & $go build -trimpath -tags $tags -ldflags $ldflags -o (Join-Path $root 'dist\yanhekt.exe') .
   if ($LASTEXITCODE -ne 0) { throw 'windows build failed' }
-
-  & $go build -trimpath -tags "$tags nogui" -ldflags '-s -w' -o (Join-Path $root 'dist\yanhekt-browser.exe') .
-  if ($LASTEXITCODE -ne 0) { throw 'windows browser edition build failed' }
 } finally {
   Pop-Location
   Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue

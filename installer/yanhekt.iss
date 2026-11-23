@@ -30,19 +30,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut for Yanhekt Player"; GroupDescription: "Additional shortcuts:"
-Name: "browsericon"; Description: "Create a desktop shortcut for Yanhekt Player (Browser Edition)"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
 Source: "..\dist\yanhekt.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\yanhekt-browser.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Yanhekt Player"; Filename: "{app}\yanhekt.exe"
-Name: "{group}\Yanhekt Player (Browser Edition)"; Filename: "{app}\yanhekt-browser.exe"
 Name: "{group}\Uninstall Yanhekt Player"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Yanhekt Player"; Filename: "{app}\yanhekt.exe"; Tasks: desktopicon
-Name: "{autodesktop}\Yanhekt Player (Browser)"; Filename: "{app}\yanhekt-browser.exe"; Tasks: browsericon
 
 [Run]
 Filename: "{app}\yanhekt.exe"; Description: "Launch Yanhekt Player"; Flags: nowait postinstall skipifsilent
