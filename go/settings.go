@@ -27,6 +27,7 @@ var (
 	// 由桌面宿主在启动时注入（无头/Android 保持 nil）
 	desktopCheckWritableDir   func(string) bool
 	desktopDefaultDownloadDir func() string
+	desktopLowIntegrityFn     func() bool
 	settingsPathOverride      string
 )
 
@@ -139,11 +140,16 @@ func effectiveDownloadDirOf(s appSettings) string {
 }
 
 func settingsPayload(s appSettings) map[string]any {
+	lowIL := false
+	if desktopLowIntegrityFn != nil {
+		lowIL = desktopLowIntegrityFn()
+	}
 	return map[string]any{
 		"ok":                   true,
 		"settings":             s,
 		"effectiveDownloadDir": effectiveDownloadDirOf(s),
 		"desktop":              desktopSupported(),
+		"lowIntegrity":         lowIL,
 	}
 }
 

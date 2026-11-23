@@ -1,0 +1,105 @@
+name: Build & Release Windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 2.1.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = '${{ github.event.inputs.version }}'
+          if (-not $v -and '${{ github.ref }}' -like 'refs/tags/v*') {
+            $v = '${{ github.ref_name }}'.TrimStart('v')
+          }
+          if (-not $v) {
+            $m = Select-String -Path 'go/main.go' -Pattern 'const build = "([^"]+)"'
+            $v = if ($m) { $m.Matches[0].Groups[1].Value } else { '2.1.0' }
+          }
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Sync web assets, vet, test, and build Windows binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'go\web', 'dist' | Out-Null
+          foreach ($f in 'index.html', 'y2.html', 'settings.js', 'icon.png', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
+            Copy-Item -Force "public\$f" "go\web\$f"
+          }
+          Push-Location go
+          try {
+            $env:CGO_ENABLED = '0'
+            $env:GOOS = 'windows'
+            $env:GOARCH = 'amd64'
+            go vet ./...
+            go test -count=1 ./...
+            go build -trimpath -tags nethttpomithttp2 -ldflags "-s -w -H=windowsgui" -o ..\dist\yanhekt.exe .
+
+            go vet -tags nogui ./...
+            go test -tags nogui -count=1 ./...
+            go build -trimpath -tags "nethttpomithttp2 nogui" -ldflags "-s -w" -o ..\dist\yanhekt-browser.exe .
+          } finally {
+            Pop-Location
+          }
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            $cmd = Get-Command iscc.exe -ErrorAction SilentlyContinue
+            if ($cmd) { $iscc = $cmd.Source }
+          }
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "installer\yanhekt.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with code $LASTEXITCODE" }
+          Get-ChildItem dist\*.exe | Select-Object Name, Length
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yanhekt-windows-${{ steps.ver.outputs.version }}
+          path: |
+            dist/yanhekt-setup-*.exe
+            dist/yanhekt.exe
+            dist/yanhekt-browser.exe
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/yanhekt-setup-*.exe
+            dist/yanhekt.exe
+            dist/yanhekt-browser.exe
+          body: |
+            ### Windows 安装说明
+            - 推荐下载 **`yanhekt-setup-${{ steps.ver.outputs.version }}-windows-amd64.exe`** 一键安装（会创建桌面快捷方式；支持无管理员权限安装到当前用户目录，或可选为所有用户安装）。
+            - 安装完成后的 `yanhekt.exe` 位于标准目录，可在软件内「⚙ 设置」自由指定任意本地文件夹作为下载目录。
+            - **关于 Windows SmartScreen 提示**：开源个人构建未购买商业代码签名证书，首次运行安装包若弹出「Windows 已保护你的电脑」，点 **「更多信息」→「仍要运行」** 即可。安装完成后从桌面快捷方式日常启动不再弹出下载拦截。
+            - 如果你更喜欢以前「黑框复制网址去自己浏览器打开」的方式，可用同目录的 `yanhekt-browser.exe`。

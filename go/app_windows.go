@@ -164,9 +164,32 @@ func wvPinDelete(h *wvResObjHandler) {
 
 func desktopSupported() bool { return true }
 
+func isLowIntegrityProcess() bool {
+	tok := windows.GetCurrentProcessToken()
+	var need uint32
+	_ = windows.GetTokenInformation(tok, windows.TokenIntegrityLevel, nil, 0, &need)
+	if need == 0 {
+		return false
+	}
+	buf := make([]byte, need)
+	if err := windows.GetTokenInformation(tok, windows.TokenIntegrityLevel, &buf[0], need, &need); err != nil {
+		return false
+	}
+	tml := (*windows.Tokenmandatorylabel)(unsafe.Pointer(&buf[0]))
+	if tml.Label.Sid == nil {
+		return false
+	}
+	cnt := int(tml.Label.Sid.SubAuthorityCount())
+	if cnt <= 0 {
+		return false
+	}
+	return tml.Label.Sid.SubAuthority(uint32(cnt-1)) < 0x2000 // < SECURITY_MANDATORY_MEDIUM_RID
+}
+
 func desktopInitHooks() {
 	desktopCheckWritableDir = probeWritableDir
 	desktopDefaultDownloadDir = func() string { return pickWritableSaveDir("") }
+	desktopLowIntegrityFn = isLowIntegrityProcess
 }
 
 func attachParentConsoleIfNeeded() {
@@ -793,13 +816,13 @@ func pickWritableSaveDir(lastDir string) string {
 			cands = append(cands, filepath.Join(filepath.Dir(exe), "downloads"))
 		}
 	}
-	if v := knownFolderPath(folderIDVideos); v != "" {
-		cands = append(cands, v)
-	}
 	if !localRestricted {
 		if d := knownFolderPath(folderIDDownloads); d != "" {
 			cands = append(cands, d)
 		}
+	}
+	if v := knownFolderPath(folderIDVideos); v != "" {
+		cands = append(cands, v)
 	}
 	if up := os.Getenv("USERPROFILE"); up != "" {
 		cands = append(cands, filepath.Join(up, "Videos"), filepath.Join(up, "Desktop"))
@@ -1360,13 +1383,18 @@ func (a *desktopApp) onWebMessage(raw, source string) {
 	case "download":
 		a.startDesktopDownload(msg.URL)
 	case "pickDownloadDir":
-		cur := effectiveDownloadDirOf(loadAppSettings())
-		if dir, ok := pickFolderDialog(a.hwnd, cur); ok && dir != "" {
+		// Defer modal IFileOpenDialog out of WebMessageReceived so WebView2 never deadlocks on COM re-entrancy.
+		a.dispatch(func() {
+			cur := effectiveDownloadDirOf(loadAppSettings())
+			dir, ok := pickFolderDialog(a.hwnd, cur)
+			if !ok || dir == "" {
+				return
+			}
 			if !probeWritableDir(dir) {
 				res, _ := json.Marshal(map[string]any{
 					"ok":    false,
 					"dir":   dir,
-					"error": "该目录没有写入权限（可能是系统保护目录如 D:\\Downloads），请改选其他可写目录",
+					"error": "该目录没有写入权限（如在工作区低完整性目录运行，或选择了受保护目录），请安装/复制到普通文件夹或换选可写目录",
 				})
 				a.host.eval("window.__yhktOnDownloadDirPicked&&window.__yhktOnDownloadDirPicked(" + string(res) + ")")
 				return
@@ -1380,7 +1408,7 @@ func (a *desktopApp) onWebMessage(raw, source string) {
 			persistSavedDownloadDir(dir)
 			res, _ := json.Marshal(map[string]any{"ok": true, "dir": dir})
 			a.host.eval("window.__yhktOnDownloadDirPicked&&window.__yhktOnDownloadDirPicked(" + string(res) + ")")
-		}
+		})
 	case "openDir":
 		openFolderInExplorer(msg.Dir)
 	case "captured":

@@ -28,6 +28,7 @@
   };
   let effectiveDir = '';
   let isDesktop = false;
+  let isLowIL = false;
   let onApplyCb = null;
   let toastFn = m => { try { if (typeof toast === 'function') toast(m, 2600); } catch(e){} };
 
@@ -51,6 +52,7 @@
             <button class="setbtn" id="setOpenDir" type="button">打开</button>
           </div>
           <div class="sethint" id="setDirEff"></div>
+          <div class="sethint" id="setLowIlWarn" style="display:none;color:#fbbf24"></div>
         </div>
         <label class="setchk"><input id="setAskSave" type="checkbox"> 每次下载前弹窗「另存为」（不勾选则直接保存到默认目录，无权限弹窗）</label>
       </div>
@@ -127,6 +129,13 @@
     modal.querySelector('#setBrowserNote').style.display = desk ? 'none' : '';
     modal.querySelector('#setDirInput').value = state.downloadDir || '';
     modal.querySelector('#setDirEff').textContent = effectiveDir ? ('当前实际保存目录：' + effectiveDir) : '';
+    const lowEl = modal.querySelector('#setLowIlWarn');
+    if (desk && isLowIL) {
+      lowEl.style.display = '';
+      lowEl.textContent = '⚠ 当前 exe 正在受限的低完整性目录下运行，系统会拦截写入桌面/下载/视频目录；通过安装包安装或复制到普通文件夹后即可保存到任意目录。';
+    } else {
+      lowEl.style.display = 'none';
+    }
     modal.querySelector('#setAskSave').checked = !!state.askSavePath;
     modal.querySelector('#setView').value = state.defaultView || 'camera';
     modal.querySelector('#setDualPip').value = state.dualPip ? '1' : '0';
@@ -190,6 +199,7 @@
         state = j.settings;
         effectiveDir = j.effectiveDownloadDir || '';
         isDesktop = !!j.desktop;
+        isLowIL = !!j.lowIntegrity;
       }
     } catch (e) {}
     return state;
