@@ -145,15 +145,22 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	dlTrackInit()
 	registerPages(mux, sub)
 	registerAPI(mux)
 	mux.HandleFunc("/_app/auth", safe(handleAppAuth))
 	mux.HandleFunc("/_app/focus", safe(handleAppFocus))
 
-	// 签名器后台初始化（抓官网 JS 要几秒，别挡住页面）
+	// 签名器与本地课程索引后台预热（首搜 0ms 响应）
 	go func() {
 		if _, live := signerInit(false); live && !useDesktop {
 			fmt.Println("  签名算法：已从官网实时提取（可自愈）")
+		}
+	}()
+	go func() {
+		_ = loadCatalog()
+		if cat := y2CatalogLoad(); cat != nil {
+			cat.ensureIndex()
 		}
 	}()
 	// 每 6 小时静默刷新一次签名算法
@@ -349,6 +356,8 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("/api/selftest", safe(handleSelftest))
 	mux.HandleFunc("/api/downloads", safe(handleDownloads))
 	mux.HandleFunc("/api/downloads/cancel", safe(handleDownloadsCancel))
+	mux.HandleFunc("/api/downloads/remove", safe(handleDownloadsRemove))
+	mux.HandleFunc("/api/downloads/clear", safe(handleDownloadsClear))
 	mux.HandleFunc("/api/settings", safe(handleSettings))
 
 	// ---- 直播 ----

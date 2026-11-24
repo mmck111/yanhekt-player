@@ -106,3 +106,28 @@ func TestY2CatalogSearchMatchedTotal(t *testing.T) {
 		t.Errorf("total 应该是 30，实际 %d", matched)
 	}
 }
+
+func TestY2CatalogSearchScoreAndTimeRecency(t *testing.T) {
+	cat := &y2Catalog{Ver: 1, Rows: []y2CatRow{
+		{ID: "old-exact", Title: "数值分析", Teacher: "孙新", Term: "2024-2025 第一学期"},
+		{ID: "new-partial", Title: "工程数值分析及应用", Teacher: "孙新", Term: "2026-2027 第二学期"},
+		{ID: "mid-exact", Title: "数值分析", Teacher: "孙新", Term: "2025-2026 第二学期"},
+		{ID: "new-exact", Title: "数值分析", Teacher: "孙新", Term: "2026-2027 第一学期"},
+		{ID: "newest-exact", Title: "数值分析", Teacher: "孙新", Term: "2026-2027 第二学期"},
+	}}
+	hits, matched := y2CatalogSearch(cat, "数值分析 孙新", 10)
+	if matched != 5 || len(hits) != 5 {
+		t.Fatalf("expected 5 hits, got matched=%d len=%d", matched, len(hits))
+	}
+	want := []string{"newest-exact", "new-exact", "mid-exact", "old-exact", "new-partial"}
+	for i, w := range want {
+		if hits[i].ID != w {
+			t.Errorf("pos %d: want %s, got %s (%s / %s)", i, w, hits[i].ID, hits[i].Title, hits[i].Term)
+		}
+	}
+
+	scoped, sMatched := y2CatalogSearchScoped(cat, "数值分析 孙新", "2025-2026 第二学期", 10)
+	if sMatched != 1 || len(scoped) != 1 || scoped[0].ID != "mid-exact" {
+		t.Fatalf("scoped term search failed: %+v", scoped)
+	}
+}

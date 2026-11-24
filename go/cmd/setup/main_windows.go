@@ -14,7 +14,6 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 var (
@@ -31,6 +30,11 @@ var (
 	gdi32                      = windows.NewLazySystemDLL("gdi32.dll")
 	gdi32CreateFontW           = gdi32.NewProc("CreateFontW")
 	gdi32CreateSolidBrush      = gdi32.NewProc("CreateSolidBrush")
+	gdi32CreatePen             = gdi32.NewProc("CreatePen")
+	gdi32SelectObject          = gdi32.NewProc("SelectObject")
+	gdi32RoundRect             = gdi32.NewProc("RoundRect")
+	gdi32MoveToEx              = gdi32.NewProc("MoveToEx")
+	gdi32LineTo                = gdi32.NewProc("LineTo")
 	gdi32DeleteObject          = gdi32.NewProc("DeleteObject")
 	gdi32SetBkMode             = gdi32.NewProc("SetBkMode")
 	gdi32SetTextColor          = gdi32.NewProc("SetTextColor")
@@ -51,6 +55,10 @@ var (
 	user32EnableWindow         = user32.NewProc("EnableWindow")
 	user32ShowWindow           = user32.NewProc("ShowWindow")
 	user32UpdateWindow         = user32.NewProc("UpdateWindow")
+	user32InvalidateRect       = user32.NewProc("InvalidateRect")
+	user32FillRect             = user32.NewProc("FillRect")
+	user32DrawTextW            = user32.NewProc("DrawTextW")
+	user32DrawFocusRect        = user32.NewProc("DrawFocusRect")
 	user32GetSystemMetrics     = user32.NewProc("GetSystemMetrics")
 	user32GetDpiForWindow      = user32.NewProc("GetDpiForWindow")
 	user32LoadImageW           = user32.NewProc("LoadImageW")
@@ -76,10 +84,9 @@ const (
 	wmDestroy       = 0x0002
 	wmSetFont       = 0x0030
 	wmClose         = 0x0010
+	wmDrawItem      = 0x002B
 	wmCommand       = 0x0111
 	wmCtlColorStat  = 0x0138
-	bmGetCheck      = 0x00F0
-	bmSetCheck      = 0x00F1
 	wsChild         = 0x40000000
 	wsVisible       = 0x10000000
 	wsTabStop       = 0x00010000
@@ -88,10 +95,24 @@ const (
 	esAutoHScroll   = 0x0080
 	bsPushButton    = 0x0000
 	bsDefPushButton = 0x0001
-	bsAutoCheckBox  = 0x0003
+	bsOwnerDraw     = 0x000B
 )
 
 type winPoint struct{ X, Y int32 }
+
+type winRect struct{ Left, Top, Right, Bottom int32 }
+
+type winDrawItemStruct struct {
+	CtlType    uint32
+	CtlID      uint32
+	ItemID     uint32
+	ItemAction uint32
+	ItemState  uint32
+	HwndItem   uintptr
+	HDC        uintptr
+	RcItem     winRect
+	ItemData   uintptr
+}
 
 type winMsg struct {
 	Hwnd     windows.HWND
@@ -170,13 +191,16 @@ type setupState struct {
 	hwnd         uintptr
 	hinst        windows.Handle
 	bgBrush      uintptr
+	dpi          int32
 	fontBody     uintptr
 	fontTitle    uintptr
 	fontNote     uintptr
 	editInstall  uintptr
 	editDownload uintptr
 	chkDesktop   uintptr
+	chkDesktopOn bool
 	chkLaunch    uintptr
+	chkLaunchOn  bool
 	lblStatus    uintptr
 	btnGo        uintptr
 	btnCancel    uintptr
@@ -329,11 +353,6 @@ func setText(hwnd uintptr, s string) {
 	_, _, _ = user32SetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(p)))
 }
 
-func isChecked(hwnd uintptr) bool {
-	r, _, _ := user32SendMessageW.Call(hwnd, bmGetCheck, 0, 0)
-	return r == 1
-}
-
 func probeDirWritable(dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -353,54 +372,6 @@ func killRunningApp() {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	_ = cmd.Run()
 	time.Sleep(180 * time.Millisecond)
-}
-
-func registerUninstall(installDir, exePath string) {
-	self, err := os.Executable()
-	if err != nil || self == "" {
-		return
-	}
-	uninst := filepath.Join(installDir, "uninstall.exe")
-	if b, err := os.ReadFile(self); err == nil {
-		_ = os.WriteFile(uninst, b, 0755)
-	}
-	k, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\YanhektPlayer`, registry.SET_VALUE)
-	if err != nil {
-		return
-	}
-	defer k.Close()
-	_ = k.SetStringValue("DisplayName", "延河课堂在线播放器")
-	_ = k.SetStringValue("DisplayVersion", appVersion)
-	_ = k.SetStringValue("Publisher", "Yanhekt Player")
-	_ = k.SetStringValue("InstallLocation", installDir)
-	_ = k.SetStringValue("DisplayIcon", exePath)
-	_ = k.SetStringValue("UninstallString", fmt.Sprintf(`"%s" --uninstall "%s"`, uninst, installDir))
-	_ = k.SetDWordValue("NoModify", 1)
-	_ = k.SetDWordValue("NoRepair", 1)
-}
-
-func runUninstall(installDir string) {
-	killRunningApp()
-	if installDir == "" {
-		if exe, err := os.Executable(); err == nil {
-			installDir = filepath.Dir(exe)
-		}
-	}
-	if d := knownFolder(folderIDDesktop); d != "" {
-		_ = os.Remove(filepath.Join(d, "延河课堂在线播放器.lnk"))
-	}
-	if p := knownFolder(folderIDPrograms); p != "" {
-		_ = os.Remove(filepath.Join(p, "Yanhekt Player.lnk"))
-	}
-	_ = registry.DeleteKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Uninstall\YanhektPlayer`)
-	_ = os.Remove(filepath.Join(installDir, "yanhekt.exe"))
-	_ = os.Remove(filepath.Join(installDir, "defaults.json"))
-	if installDir != "" {
-		cmd := exec.Command("cmd", "/c", "ping -n 2 127.0.0.1 >nul & rmdir /s /q "+`"`+installDir+`"`)
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		_ = cmd.Start()
-	}
-	msgBox(0, "延河课堂在线播放器 · 卸载", "已卸载延河课堂在线播放器（已保留您已下载的视频文件）。", 0x40)
 }
 
 func (s *setupState) runInstall() {
@@ -454,9 +425,10 @@ func (s *setupState) runInstall() {
 
 	setText(s.lblStatus, "正在保存默认下载配置...")
 	_ = applyInstallSettings(installDir, downloadDir, os.Getenv("LOCALAPPDATA"))
+	_ = os.Remove(filepath.Join(installDir, "uninstall.exe"))
 
-	setText(s.lblStatus, "正在创建快捷方式...")
-	if isChecked(s.chkDesktop) {
+	if s.chkDesktopOn {
+		setText(s.lblStatus, "正在创建快捷方式...")
 		if d := knownFolder(folderIDDesktop); d != "" {
 			_ = createShortcut(filepath.Join(d, "延河课堂在线播放器.lnk"), exePath, installDir, "延河课堂在线播放器")
 		}
@@ -464,9 +436,8 @@ func (s *setupState) runInstall() {
 			_ = createShortcut(filepath.Join(p, "Yanhekt Player.lnk"), exePath, installDir, "延河课堂在线播放器")
 		}
 	}
-	registerUninstall(installDir, exePath)
 
-	launch := isChecked(s.chkLaunch)
+	launch := s.chkLaunchOn
 	setText(s.lblStatus, "安装完成")
 	if launch {
 		cmd := exec.Command(exePath)
@@ -478,9 +449,100 @@ func (s *setupState) runInstall() {
 	_, _, _ = user32DestroyWindow.Call(s.hwnd)
 }
 
+func drawCheckboxItem(s *setupState, di *winDrawItemStruct) uintptr {
+	if s == nil || di == nil || di.HDC == 0 {
+		return 0
+	}
+	dpi := s.dpi
+	if dpi < 96 {
+		dpi = 96
+	}
+	checked := s.chkDesktopOn
+	label := "创建桌面与开始菜单快捷方式（默认不选）"
+	if di.CtlID == idChkLaunch {
+		checked = s.chkLaunchOn
+		label = "安装完成后立即启动 延河课堂在线播放器"
+	}
+
+	_, _, _ = user32FillRect.Call(di.HDC, uintptr(unsafe.Pointer(&di.RcItem)), s.bgBrush)
+
+	box := 20 * dpi / 96
+	if box < 18 {
+		box = 18
+	}
+	rcH := di.RcItem.Bottom - di.RcItem.Top
+	bx := di.RcItem.Left + 2*dpi/96
+	by := di.RcItem.Top + (rcH-box)/2
+	rad := 5 * dpi / 96
+
+	var fillCol, borderCol uint32
+	if checked {
+		fillCol = 0x00D27619   // #1976D2 in COLORREF BGR
+		borderCol = 0x00D27619
+	} else {
+		fillCol = 0x00FFFFFF
+		borderCol = 0x008B7464
+	}
+	br, _, _ := gdi32CreateSolidBrush.Call(uintptr(fillCol))
+	penW := 2 * dpi / 96
+	if penW < 2 {
+		penW = 2
+	}
+	pen, _, _ := gdi32CreatePen.Call(0, uintptr(penW), uintptr(borderCol))
+	oldBr, _, _ := gdi32SelectObject.Call(di.HDC, br)
+	oldPen, _, _ := gdi32SelectObject.Call(di.HDC, pen)
+	_, _, _ = gdi32RoundRect.Call(di.HDC, uintptr(bx), uintptr(by), uintptr(bx+box), uintptr(by+box), uintptr(rad), uintptr(rad))
+	_, _, _ = gdi32SelectObject.Call(di.HDC, oldPen)
+	_, _, _ = gdi32SelectObject.Call(di.HDC, oldBr)
+	_, _, _ = gdi32DeleteObject.Call(pen)
+	_, _, _ = gdi32DeleteObject.Call(br)
+
+	if checked {
+		ckW := 3 * dpi / 96
+		if ckW < 2 {
+			ckW = 2
+		}
+		ckPen, _, _ := gdi32CreatePen.Call(0, uintptr(ckW), 0x00FFFFFF)
+		oldCk, _, _ := gdi32SelectObject.Call(di.HDC, ckPen)
+		x1, y1 := bx+box*24/100, by+box*52/100
+		x2, y2 := bx+box*43/100, by+box*72/100
+		x3, y3 := bx+box*78/100, by+box*28/100
+		_, _, _ = gdi32MoveToEx.Call(di.HDC, uintptr(x1), uintptr(y1), 0)
+		_, _, _ = gdi32LineTo.Call(di.HDC, uintptr(x2), uintptr(y2))
+		_, _, _ = gdi32LineTo.Call(di.HDC, uintptr(x3), uintptr(y3))
+		_, _, _ = gdi32SelectObject.Call(di.HDC, oldCk)
+		_, _, _ = gdi32DeleteObject.Call(ckPen)
+	}
+
+	_, _, _ = gdi32SetBkMode.Call(di.HDC, 1)
+	_, _, _ = gdi32SetTextColor.Call(di.HDC, 0x00241B14)
+	oldFont, _, _ := gdi32SelectObject.Call(di.HDC, s.fontBody)
+	txtRc := winRect{
+		Left:   bx + box + 10*dpi/96,
+		Top:    di.RcItem.Top,
+		Right:  di.RcItem.Right,
+		Bottom: di.RcItem.Bottom,
+	}
+	tp, _ := windows.UTF16PtrFromString(label)
+	_, _, _ = user32DrawTextW.Call(di.HDC, uintptr(unsafe.Pointer(tp)), ^uintptr(0), uintptr(unsafe.Pointer(&txtRc)), 0x24) // DT_LEFT|DT_VCENTER|DT_SINGLELINE
+	_, _, _ = gdi32SelectObject.Call(di.HDC, oldFont)
+
+	if di.ItemState&0x0010 != 0 { // ODS_FOCUS
+		_, _, _ = user32DrawFocusRect.Call(di.HDC, uintptr(unsafe.Pointer(&txtRc)))
+	}
+	return 1
+}
+
 func setupWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 	s := appSetup
 	switch msg {
+	case wmDrawItem:
+		if s != nil && lp != 0 {
+			di := *(**winDrawItemStruct)(unsafe.Pointer(&lp))
+			if di.CtlID == idChkDesktop || di.CtlID == idChkLaunch {
+				return drawCheckboxItem(s, di)
+			}
+		}
 	case wmCtlColorStat:
 		if s != nil {
 			_, _, _ = gdi32SetBkMode.Call(wp, 1) // TRANSPARENT
@@ -496,7 +558,7 @@ func setupWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 			return s.bgBrush
 		}
 	case wmCommand:
-		if s != nil && (wp>>16)&0xFFFF == 0 {
+		if s != nil && ((wp>>16)&0xFFFF == 0 || (wp>>16)&0xFFFF == 5) {
 			switch wp & 0xFFFF {
 			case idBtnInstallDir:
 				if p, ok := pickFolder(hwnd, "选择软件安装路径", getText(s.editInstall)); ok && p != "" {
@@ -509,6 +571,12 @@ func setupWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 				if p, ok := pickFolder(hwnd, "选择默认视频下载路径", getText(s.editDownload)); ok && p != "" {
 					setText(s.editDownload, p)
 				}
+			case idChkDesktop:
+				s.chkDesktopOn = !s.chkDesktopOn
+				_, _, _ = user32InvalidateRect.Call(s.chkDesktop, 0, 1)
+			case idChkLaunch:
+				s.chkLaunchOn = !s.chkLaunchOn
+				_, _, _ = user32InvalidateRect.Call(s.chkLaunch, 0, 1)
 			case idBtnGo:
 				s.runInstall()
 			case idBtnCancel:
@@ -569,17 +637,6 @@ func main() {
 	_, _, _ = ole32CoInitializeEx.Call(0, 2)
 	defer ole32CoUninitialize.Call()
 
-	for i, a := range os.Args[1:] {
-		if a == "--uninstall" {
-			dir := ""
-			if i+2 < len(os.Args) {
-				dir = os.Args[i+2]
-			}
-			runUninstall(dir)
-			return
-		}
-	}
-
 	if isLowIntegrityProcess() {
 		msgBox(0, "延河课堂在线播放器 · 安装向导",
 			"检测到当前安装包位于低完整性受限目录（例如工作区 dist 目录），Windows 会阻止它写入程序安装目录与桌面。\n\n请先把本安装包「复制」到桌面或其他普通文件夹（勿同盘剪切），然后再双击运行。",
@@ -621,7 +678,7 @@ func main() {
 	sh, _, _ := user32GetSystemMetrics.Call(1)
 
 	sc := func(v int32) uintptr { return uintptr(v * dpi / 96) }
-	winW, winH := int32(600), int32(385)
+	winW, winH := int32(640), int32(410)
 	// Create initially at logical size then re-measure DPI if monitor > 96 DPI.
 	x := (int32(sw) - winW) / 2
 	y := (int32(sh) - winH) / 2
@@ -632,7 +689,13 @@ func main() {
 		y = 100
 	}
 
-	s := &setupState{hinst: hinst, bgBrush: bgBrush}
+	s := &setupState{
+		hinst:        hinst,
+		bgBrush:      bgBrush,
+		dpi:          dpi,
+		chkDesktopOn: false,
+		chkLaunchOn:  true,
+	}
 	appSetup = s
 	s.hwnd, _, _ = user32CreateWindowExW.Call(
 		0, uintptr(unsafe.Pointer(clsName)), uintptr(unsafe.Pointer(titleStr)),
@@ -644,11 +707,12 @@ func main() {
 	if user32GetDpiForWindow.Find() == nil {
 		if d, _, _ := user32GetDpiForWindow.Call(s.hwnd); d >= 96 {
 			dpi = int32(d)
+			s.dpi = dpi
 		}
 	}
 	if dpi != 96 {
-		winW = 600 * dpi / 96
-		winH = 385 * dpi / 96
+		winW = 640 * dpi / 96
+		winH = 410 * dpi / 96
 		x = (int32(sw) - winW) / 2
 		y = (int32(sh) - winH) / 2
 		_, _, _ = user32.NewProc("SetWindowPos").Call(s.hwnd, 0, uintptr(x), uintptr(y), uintptr(winW), uintptr(winH), 0x0004)
@@ -666,26 +730,24 @@ func main() {
 	initInstall := defaultInstallDir(os.Getenv("LOCALAPPDATA"), home)
 	initDL := defaultDownloadDir(knownFolder(folderIDDownloads), knownFolder(folderIDVideos), home, initInstall)
 
-	ctrl("STATIC", "延河课堂在线播放器 · 安装向导", 0, 0, sc(24), sc(20), sc(520), sc(28), s.hwnd, idLblTitle, s.fontTitle, hinst)
-	ctrl("STATIC", "独立桌面窗口版（v"+appVersion+"）· 窗内登录、双画同步、自由目录下载", 0, 0, sc(24), sc(50), sc(520), sc(20), s.hwnd, idLblSub, s.fontNote, hinst)
+	ctrl("STATIC", "延河课堂在线播放器 · 安装向导", 0, 0, sc(24), sc(20), sc(560), sc(28), s.hwnd, idLblTitle, s.fontTitle, hinst)
+	ctrl("STATIC", "独立桌面窗口版（v"+appVersion+"）· 窗内登录、双画同步、自由目录下载", 0, 0, sc(24), sc(50), sc(560), sc(20), s.hwnd, idLblSub, s.fontNote, hinst)
 
-	ctrl("STATIC", "1. 软件安装路径：", 0, 0, sc(24), sc(84), sc(520), sc(20), s.hwnd, 0, s.fontBody, hinst)
-	s.editInstall = ctrl("EDIT", initInstall, wsTabStop|wsBorder|esAutoHScroll, 0, sc(24), sc(108), sc(424), sc(26), s.hwnd, idEditInstall, s.fontBody, hinst)
-	ctrl("BUTTON", "浏览...", wsTabStop|bsPushButton, 0, sc(456), sc(107), sc(92), sc(28), s.hwnd, idBtnInstallDir, s.fontBody, hinst)
+	ctrl("STATIC", "1. 软件安装路径：", 0, 0, sc(24), sc(84), sc(560), sc(20), s.hwnd, 0, s.fontBody, hinst)
+	s.editInstall = ctrl("EDIT", initInstall, wsTabStop|wsBorder|esAutoHScroll, 0, sc(24), sc(108), sc(464), sc(28), s.hwnd, idEditInstall, s.fontBody, hinst)
+	ctrl("BUTTON", "浏览...", wsTabStop|bsPushButton, 0, sc(496), sc(107), sc(96), sc(30), s.hwnd, idBtnInstallDir, s.fontBody, hinst)
 
-	ctrl("STATIC", "2. 默认视频下载路径：", 0, 0, sc(24), sc(148), sc(520), sc(20), s.hwnd, 0, s.fontBody, hinst)
-	s.editDownload = ctrl("EDIT", initDL, wsTabStop|wsBorder|esAutoHScroll, 0, sc(24), sc(172), sc(424), sc(26), s.hwnd, idEditDownload, s.fontBody, hinst)
-	ctrl("BUTTON", "浏览...", wsTabStop|bsPushButton, 0, sc(456), sc(171), sc(92), sc(28), s.hwnd, idBtnDownloadDir, s.fontBody, hinst)
-	ctrl("STATIC", "注：安装完成后，随时可在播放器左侧「⚙ 设置」中修改默认下载路径及其他播放偏好。", 0, 0, sc(24), sc(204), sc(526), sc(20), s.hwnd, idLblNote, s.fontNote, hinst)
+	ctrl("STATIC", "2. 默认视频下载路径：", 0, 0, sc(24), sc(148), sc(560), sc(20), s.hwnd, 0, s.fontBody, hinst)
+	s.editDownload = ctrl("EDIT", initDL, wsTabStop|wsBorder|esAutoHScroll, 0, sc(24), sc(172), sc(464), sc(28), s.hwnd, idEditDownload, s.fontBody, hinst)
+	ctrl("BUTTON", "浏览...", wsTabStop|bsPushButton, 0, sc(496), sc(171), sc(96), sc(30), s.hwnd, idBtnDownloadDir, s.fontBody, hinst)
+	ctrl("STATIC", "注：安装完成后，随时可在播放器左侧「⚙ 设置」中修改默认下载路径及其他播放偏好。", 0, 0, sc(24), sc(206), sc(570), sc(20), s.hwnd, idLblNote, s.fontNote, hinst)
 
-	s.chkDesktop = ctrl("BUTTON", "创建桌面与开始菜单快捷方式", wsTabStop|bsAutoCheckBox, 0, sc(24), sc(234), sc(260), sc(22), s.hwnd, idChkDesktop, s.fontBody, hinst)
-	_, _, _ = user32SendMessageW.Call(s.chkDesktop, bmSetCheck, 1, 0)
-	s.chkLaunch = ctrl("BUTTON", "安装完成后立即启动 延河课堂在线播放器", wsTabStop|bsAutoCheckBox, 0, sc(24), sc(260), sc(310), sc(22), s.hwnd, idChkLaunch, s.fontBody, hinst)
-	_, _, _ = user32SendMessageW.Call(s.chkLaunch, bmSetCheck, 1, 0)
+	s.chkDesktop = ctrl("BUTTON", "创建桌面与开始菜单快捷方式", wsTabStop|bsOwnerDraw, 0, sc(24), sc(236), sc(460), sc(30), s.hwnd, idChkDesktop, s.fontBody, hinst)
+	s.chkLaunch = ctrl("BUTTON", "安装完成后立即启动 延河课堂在线播放器", wsTabStop|bsOwnerDraw, 0, sc(24), sc(270), sc(460), sc(30), s.hwnd, idChkLaunch, s.fontBody, hinst)
 
-	s.lblStatus = ctrl("STATIC", "就绪", 0, 0, sc(24), sc(298), sc(300), sc(20), s.hwnd, idLblStatus, s.fontNote, hinst)
-	s.btnGo = ctrl("BUTTON", "立即安装", wsTabStop|bsDefPushButton, 0, sc(356), sc(292), sc(96), sc(30), s.hwnd, idBtnGo, s.fontBody, hinst)
-	s.btnCancel = ctrl("BUTTON", "取消", wsTabStop|bsPushButton, 0, sc(460), sc(292), sc(88), sc(30), s.hwnd, idBtnCancel, s.fontBody, hinst)
+	s.lblStatus = ctrl("STATIC", "就绪", 0, 0, sc(24), sc(320), sc(320), sc(22), s.hwnd, idLblStatus, s.fontNote, hinst)
+	s.btnGo = ctrl("BUTTON", "立即安装", wsTabStop|bsDefPushButton, 0, sc(388), sc(314), sc(100), sc(32), s.hwnd, idBtnGo, s.fontBody, hinst)
+	s.btnCancel = ctrl("BUTTON", "取消", wsTabStop|bsPushButton, 0, sc(496), sc(314), sc(96), sc(32), s.hwnd, idBtnCancel, s.fontBody, hinst)
 
 	_, _, _ = user32ShowWindow.Call(s.hwnd, 5)
 	_, _, _ = user32UpdateWindow.Call(s.hwnd)

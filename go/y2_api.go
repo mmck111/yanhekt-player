@@ -385,24 +385,45 @@ func y2ScheduleMap(jwt string, userId, days int) (map[string][]y2ScheduleRow, er
 	from := now.Add(-time.Duration(days) * 24 * time.Hour)
 
 	collect := func(span int) ([]y2WeekRow, bool, error) {
-		rows := []y2WeekRow{}
-		anyData := false
+		type spanWin struct{ from, to string }
+		wins := []spanWin{}
 		for t := from; t.Before(to); t = t.Add(time.Duration(span) * 24 * time.Hour) {
 			end := t.Add(time.Duration(span-1) * 24 * time.Hour)
 			if end.After(to) {
 				end = to
 			}
-			list, err := y2WeekSchedule(jwt, userId, y2Ymd(t), y2Ymd(end))
-			if err != nil {
-				if y2IsAuthRejected(err.Error()) {
-					return nil, anyData, err
+			wins = append(wins, spanWin{from: y2Ymd(t), to: y2Ymd(end)})
+		}
+		rows := []y2WeekRow{}
+		anyData := false
+		var firstErr error
+		var mu sync.Mutex
+		sem := make(chan struct{}, 4)
+		var wg sync.WaitGroup
+		for _, w := range wins {
+			wg.Add(1)
+			go func(w spanWin) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				list, err := y2WeekSchedule(jwt, userId, w.from, w.to)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					if y2IsAuthRejected(err.Error()) && firstErr == nil {
+						firstErr = err
+					}
+					return
 				}
-				continue
-			}
-			if len(list) > 0 {
-				anyData = true
-			}
-			rows = append(rows, list...)
+				if len(list) > 0 {
+					anyData = true
+					rows = append(rows, list...)
+				}
+			}(w)
+		}
+		wg.Wait()
+		if firstErr != nil {
+			return nil, anyData, firstErr
 		}
 		return rows, anyData, nil
 	}
@@ -520,8 +541,38 @@ type y2SubInfo struct {
 	Audio    string     `json:"audio"`
 }
 
-// y2SubInfoOf 一讲的取流信息（对应 yanhe2.js 的 subInfo）
+type y2SubCacheEntry struct {
+	at   time.Time
+	info *y2SubInfo
+}
+
+var (
+	y2SubMu    sync.Mutex
+	y2SubCache = map[string]y2SubCacheEntry{}
+)
+
+func y2SubCacheInvalidateCourse(jwt, courseID string) {
+	prefix := y2JwtTail(jwt) + ":" + courseID + ":"
+	y2SubMu.Lock()
+	for k := range y2SubCache {
+		if strings.HasPrefix(k, prefix) {
+			delete(y2SubCache, k)
+		}
+	}
+	y2SubMu.Unlock()
+}
+
+// y2SubInfoOf 一讲的取流信息（带短时缓存：列表校验或预热拿到后，点进视频播放可秒开）
 func y2SubInfoOf(jwt, courseID, subID string) (*y2SubInfo, error) {
+	ckey := y2JwtTail(jwt) + ":" + courseID + ":" + subID
+	if subID != "" {
+		y2SubMu.Lock()
+		hit, ok := y2SubCache[ckey]
+		y2SubMu.Unlock()
+		if ok && time.Since(hit.at) < 5*time.Minute && hit.info != nil {
+			return hit.info, nil
+		}
+	}
 	body, err := y2GetJSON(jwt, "/courseapi/v3/portal-home-setting/get-sub-info", y2Params{
 		y2P("course_id", courseID),
 		y2P("sub_id", subID),
@@ -529,7 +580,16 @@ func y2SubInfoOf(jwt, courseID, subID string) (*y2SubInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return y2ParseSubInfo(body)
+	info, err := y2ParseSubInfo(body)
+	if err == nil && info != nil && len(info.Streams) > 0 && subID != "" {
+		y2SubMu.Lock()
+		if len(y2SubCache) > 2000 {
+			y2SubCache = map[string]y2SubCacheEntry{}
+		}
+		y2SubCache[ckey] = y2SubCacheEntry{at: time.Now(), info: info}
+		y2SubMu.Unlock()
+	}
+	return info, err
 }
 
 // y2ParseSubInfo 只做解析（测试里用固定 JSON 直接调它）

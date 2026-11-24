@@ -334,6 +334,15 @@ func appWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 			a.host.focus()
 		}
 	case wmClose:
+		if dlTrackRunningCount() > 0 {
+			t, _ := windows.UTF16PtrFromString("确认退出延河课堂播放器？")
+			m, _ := windows.UTF16PtrFromString("当前仍有视频正在下载。\n\n• 点击「是」退出：未完成任务会保存在「下载管理」，下次打开可点击「继续下载」；\n• 点击「否」返回：留在窗口继续完成下载。")
+			r, _, _ := user32MessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(m)), uintptr(unsafe.Pointer(t)), 0x00000004|0x00000030|0x00000100)
+			if r != 6 { // IDYES == 6
+				return 0
+			}
+			dlTrackMarkAllInterrupted()
+		}
 		_, _, _ = user32DestroyWindow.Call(hwnd)
 	case wmDestroy:
 		_, _, _ = user32PostQuitMessage.Call(0)
@@ -641,6 +650,7 @@ func runDesktopApp(p int) bool {
 	host := newWVHost(hwnd)
 	host.onMessage = app.onWebMessage
 	host.onNavDone = app.onNavCompleted
+	host.shouldInspectReq = app.shouldInspectWebResource
 	host.onWebReq = app.onWebResource
 	host.onFullscreen = app.setFullscreen
 	host.onAccelKey = app.onAcceleratorKey
@@ -1194,7 +1204,35 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 	}
 	runWithCookie := func(cookieHdr string) {
 		go func() {
-			req, err := http.NewRequest("GET", fullURL, nil)
+			parsedURL, _ := url.Parse(fullURL)
+			var resumeID string
+			var oldItem dlTrackItem
+			var hasOld bool
+			reqURL := fullURL
+			if parsedURL != nil {
+				q := parsedURL.Query()
+				resumeID = strings.TrimSpace(q.Get("resumeId"))
+				if resumeID != "" {
+					if old, ok := dlTrackGet(resumeID); ok && old.SavePath != "" {
+						oldItem = old
+						hasOld = true
+						if fi, err := os.Stat(old.SavePath); err == nil && fi.Size() > 0 {
+							if old.TotalSegs > 1 && old.DoneSegs > 0 && old.DoneSegs < old.TotalSegs && fi.Size() == old.Bytes {
+								q.Set("startSeg", fmt.Sprintf("%d", old.DoneSegs))
+								q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
+							} else if old.TotalSegs <= 1 {
+								q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
+							}
+						}
+					}
+					q.Del("resumeId")
+					parsedURL.RawQuery = q.Encode()
+					reqURL = parsedURL.String()
+				}
+			}
+			cleanReq := cleanDLReqPath(reqURL)
+
+			req, err := http.NewRequest("GET", reqURL, nil)
 			if err != nil {
 				a.uiToast("下载请求失败：" + err.Error())
 				return
@@ -1220,6 +1258,7 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 			}
 
 			dlID := resp.Header.Get("X-YHKT-DL-ID")
+			resumedOK := resp.Header.Get("X-YHKT-Resume-Seg") != "" || resp.Header.Get("X-YHKT-Resume-Offset") != ""
 			fname := parseDownloadFilename(resp.Header.Get("Content-Disposition"), fullURL)
 			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fname)), ".")
 			if ext == "" {
@@ -1239,7 +1278,23 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 			var outFile *os.File
 			var savePath string
 
-			if !curSet.AskSavePath {
+			if hasOld && oldItem.SavePath != "" {
+				if resumedOK {
+					if f, err := os.OpenFile(oldItem.SavePath, os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+						outFile = f
+						savePath = oldItem.SavePath
+						desktopLog("download resume path=%s", savePath)
+					}
+				} else if probeWritableDir(filepath.Dir(oldItem.SavePath)) {
+					if f, err := os.Create(oldItem.SavePath); err == nil {
+						outFile = f
+						savePath = oldItem.SavePath
+						desktopLog("download restart path=%s", savePath)
+					}
+				}
+			}
+
+			if outFile == nil && !curSet.AskSavePath {
 				defDir := effectiveDownloadDirOf(curSet)
 				if defDir != "" && probeWritableDir(defDir) {
 					cand := uniqueDestPath(defDir, fname)
@@ -1286,6 +1341,9 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 					choice := pickOnce(attempt > 0)
 					if !choice.ok || choice.path == "" {
 						dlTrackCancel(dlID)
+						if resumeID == "" {
+							dlTrackDeleteEntry(dlID)
+						}
 						_ = resp.Body.Close()
 						a.uiToast("已取消下载")
 						return
@@ -1313,7 +1371,16 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 				return
 			}
 
-			a.uiToast("正在保存到 " + savePath + "（可在「下载管理」查看进度或取消）")
+			if resumeID != "" {
+				dlTrackDeleteEntry(resumeID)
+			}
+			dlTrackAttachFile(dlID, cleanReq, savePath)
+
+			toastPrefix := "正在保存到 "
+			if resumedOK {
+				toastPrefix = "继续下载到 "
+			}
+			a.uiToast(toastPrefix + savePath + "（可在「下载管理」查看进度或取消）")
 			written, copyErr := io.Copy(outFile, resp.Body)
 			closeErr := outFile.Close()
 			_ = resp.Body.Close()
@@ -1328,8 +1395,9 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 				if e == nil {
 					e = closeErr
 				}
-				desktopLog("download write failed path=%s bytes=%d err=%v", savePath, written, e)
-				a.uiToast("下载中断：" + e.Error())
+				dlTrackSetStatus(dlID, "interrupted", "传输中断，可在下载管理中继续")
+				desktopLog("download interrupted path=%s bytes=%d err=%v", savePath, written, e)
+				a.uiToast("下载中断（可在「下载管理」继续）：" + e.Error())
 				return
 			}
 			desktopLog("download saved path=%s bytes=%d", savePath, written)
@@ -1437,7 +1505,10 @@ func (a *desktopApp) startLogin(which, curURL string) {
 		target = "https://www.yanhekt.cn/"
 	}
 	desktopLog("startLogin which=%s target=%s", which, target)
-	a.host.navigate(target)
+	// 从 WebMessageReceived 回调外异步发起导航，避免 COM 回调重入延迟
+	a.dispatch(func() {
+		a.host.navigate(target)
+	})
 }
 
 func (a *desktopApp) returnTargetFor(which string) string {
@@ -1491,6 +1562,22 @@ func (a *desktopApp) clearWebCookies(which string) {
 		cm.deleteCookies(y2Cookie, a.localBase)
 		cm.deleteCookies("_token", "https://aita.yanhekt.cn")
 	}
+}
+
+func (a *desktopApp) shouldInspectWebResource(uri string) bool {
+	a.authMu.Lock()
+	pending := a.pendingLogin
+	a.authMu.Unlock()
+	if pending == "" || !strings.Contains(uri, "yanhekt.cn") {
+		return false
+	}
+	base := strings.ToLower(strings.Split(uri, "?")[0])
+	for _, ext := range []string{".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".woff", ".woff2", ".ttf", ".eot", ".ico", ".map"} {
+		if strings.HasSuffix(base, ext) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *desktopApp) onWebResource(uri string, hdrs map[string]string) {
@@ -1715,10 +1802,45 @@ func desktopInitScript(localBase string) string {
     try { window.chrome && window.chrome.webview && window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) {}
   };
 
+  const showLoginLoading = which => {
+    try {
+      const mount = () => {
+        if (!document.body) return;
+        let ov = document.getElementById('__yhktNavLoading');
+        if (!ov) {
+          ov = document.createElement('div');
+          ov.id = '__yhktNavLoading';
+          ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(11,13,18,.78);backdrop-filter:blur(6px);'
+            + 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#eef2f7;'
+            + 'font:14px/1.5 -apple-system,"Segoe UI",system-ui,"Microsoft YaHei",sans-serif;';
+          ov.innerHTML = '<div style="width:28px;height:28px;border:3px solid rgba(91,156,255,.25);border-top-color:#5b9cff;border-radius:50%;animation:spin .75s linear infinite"></div>'
+            + '<div id="__yhktNavTxt" style="font-weight:600">正在打开官网登录页，请稍候…</div>'
+            + '<div style="font-size:12px;color:#8f99ac">首次连接延河官网约需 2~5 秒</div>';
+          if (!document.getElementById('__yhktSpinKF')) {
+            const st = document.createElement('style');
+            st.id = '__yhktSpinKF';
+            st.textContent = '@keyframes spin{to{transform:rotate(360deg)}}';
+            document.head && document.head.appendChild(st);
+          }
+          document.body.appendChild(ov);
+        }
+        const t = ov.querySelector('#__yhktNavTxt');
+        if (t) t.textContent = which === 'old' ? '正在打开延河课堂（老平台）登录页…' : '正在打开延河课堂（新版平台）登录页…';
+        ov.style.display = 'flex';
+      };
+      mount();
+    } catch (e) {}
+  };
+  window.__yhktShowLoginLoading = showLoginLoading;
+
   if (location.origin === LOCAL_BASE) {
     window.yhktApp = {
       isDesktop: true,
-      login(which) { post({ type: 'login', which: String(which || 'y2') }); },
+      login(which) {
+        const w = String(which || 'y2');
+        showLoginLoading(w);
+        post({ type: 'login', which: w });
+      },
       clearAuth(which) { post({ type: 'clearAuth', which: String(which || 'all') }); },
       pickDownloadDir() { post({ type: 'pickDownloadDir' }); },
       openDownloadDir(dir) { post({ type: 'openDir', dir: String(dir || '') }); },

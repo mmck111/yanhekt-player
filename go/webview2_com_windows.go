@@ -34,12 +34,13 @@ type wvHost struct {
 	hAccel  *wvEventHandler
 	hNewWin *wvEventHandler
 
-	onMessage    func(msg string, source string)
-	onNavDone    func(source string)
-	onWebReq     func(uri string, headers map[string]string)
-	onFullscreen func(on bool)
-	onAccelKey   func(vk uint32) bool
-	onNewWindow  func(uri string)
+	onMessage        func(msg string, source string)
+	onNavDone        func(source string)
+	shouldInspectReq func(uri string) bool
+	onWebReq         func(uri string, headers map[string]string)
+	onFullscreen     func(on bool)
+	onAccelKey       func(vk uint32) bool
+	onNewWindow      func(uri string)
 }
 
 type wvIUnknownVtbl struct {
@@ -237,6 +238,9 @@ func newWVHost(hwnd uintptr) *wvHost {
 			}
 			uri := windows.UTF16PtrToString(_uri)
 			windows.CoTaskMemFree(unsafe.Pointer(_uri))
+			if h.shouldInspectReq != nil && !h.shouldInspectReq(uri) {
+				return
+			}
 
 			h.onWebReq(uri, readRequestHeaders(req))
 		},

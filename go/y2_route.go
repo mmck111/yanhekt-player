@@ -219,6 +219,24 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := y2Who(jwt)
+	resolveTermFilter := func(rawTerm, j string) string {
+		if rawTerm == "" {
+			return ""
+		}
+		if strings.Contains(rawTerm, "-") || strings.Contains(rawTerm, "学期") {
+			return rawTerm
+		}
+		if j != "" {
+			if terms, err := y2TermList(j); err == nil {
+				for _, t := range terms {
+					if t.ID == rawTerm {
+						return t.Name
+					}
+				}
+			}
+		}
+		return ""
+	}
 	if id == nil {
 		// 没登录也能搜本地课程库：先把课找出来，点播放时再让用户登录
 		if q != "" {
@@ -227,7 +245,8 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 				if reqLimit > 0 {
 					lim = reqLimit
 				}
-				if hits, matched := y2CatalogSearch(cat, q, lim); len(hits) > 0 {
+				tf := resolveTermFilter(term, "")
+				if hits, matched := y2CatalogSearchScoped(cat, q, tf, lim); len(hits) > 0 {
 					out := make([]y2Course, 0, len(hits))
 					for _, h := range hits {
 						c := y2CatRowCourse(h)
@@ -264,7 +283,8 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 			if reqLimit > 0 {
 				lim = reqLimit
 			}
-			hits, matched := y2CatalogSearch(cat, q, lim)
+			tf := resolveTermFilter(term, jwt)
+			hits, matched := y2CatalogSearchScoped(cat, q, tf, lim)
 			for _, h := range hits {
 				courses = append(courses, y2CatRowCourse(h))
 			}
@@ -514,6 +534,43 @@ func handleY2Search(w http.ResponseWriter, r *http.Request) {
 		courses = kept
 	}
 
+	if len(courses) > 1 && q != "" && localHits == 0 {
+		qn, tokNorms := y2NormalizeTokens(q)
+		termNames := map[string]string{}
+		if terms, e := y2TermList(jwt); e == nil {
+			for _, t := range terms {
+				termNames[t.ID] = t.Name
+			}
+		}
+		scoreOf := func(c y2Course) int {
+			var tNorms []string
+			for _, p := range splitTeacherNames(jstr(c["teacher"])) {
+				if np := y2NormText(p); np != "" {
+					tNorms = append(tNorms, np)
+				}
+			}
+			return y2ScoreNormalized(y2NormText(jstr(c["title"])), y2NormText(jstr(c["code"])), tNorms, qn, tokNorms)
+		}
+		timeOf := func(c y2Course) int {
+			tn := jstr(c["termName"])
+			if tn == "" {
+				tn = termNames[jstr(c["termId"])]
+			}
+			return y2TermRankOfString(tn, jstr(c["code"]))
+		}
+		sort.SliceStable(courses, func(i, j int) bool {
+			si, sj := scoreOf(courses[i]), scoreOf(courses[j])
+			if si != sj {
+				return si > sj
+			}
+			ti, tj := timeOf(courses[i]), timeOf(courses[j])
+			if ti != tj {
+				return ti > tj
+			}
+			return len([]rune(jstr(courses[i]["title"]))) < len([]rune(jstr(courses[j]["title"])))
+		})
+	}
+
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "courses": courses, "total": total, "shown": len(courses),
 		"hidden": hidden, "unverified": unverified, "source": source, "notes": notes,
@@ -749,7 +806,8 @@ func handleY2Download(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := y2ProxyPlay(w, r, st.URL, id, y2ProxyOpts{filename: name + ".mp4", ext: ".mp4"}); err != nil {
+	resumeOff, _ := strconv.ParseInt(strings.TrimSpace(qv.Get("startBytes")), 10, 64)
+	if err := y2ProxyPlay(w, r, st.URL, id, y2ProxyOpts{filename: name + ".mp4", ext: ".mp4", reqPath: r.URL.RequestURI(), resumeFrom: resumeOff}); err != nil {
 		w.Header().Set("content-type", "text/plain; charset=utf-8")
 		w.WriteHeader(502)
 		_, _ = w.Write([]byte("下载出错：" + err.Error()))
@@ -867,8 +925,15 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		order = append([]string{initURL}, segs...)
 	}
 
-	// 先取第一片：取不到就直接报错，别给用户一个空文件
-	st, first, err := get(order[0])
+	startSeg, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("startSeg")))
+	startBytes, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("startBytes")), 10, 64)
+	if startSeg < 0 || startSeg >= len(order) {
+		startSeg = 0
+		startBytes = 0
+	}
+
+	// 先取起始分片：取不到就直接报错，别给用户一个空文件或损毁断点
+	st, first, err := get(order[startSeg])
 	if err != nil {
 		return fmt.Errorf("第一片取不到：%v", err)
 	}
@@ -879,6 +944,11 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 	dlCtx, dlCancel := context.WithCancel(r.Context())
 	defer dlCancel()
 	tracker := dlTrackStart("y2", name+".ts", len(order), 0)
+	tracker.setReqPath(r.URL.RequestURI())
+	if startSeg > 0 {
+		tracker.setResumeInit(startSeg, startBytes)
+		w.Header().Set("X-YHKT-Resume-Seg", strconv.Itoa(startSeg))
+	}
 	tracker.setCancel(dlCancel)
 	w.Header().Set("content-type", "video/mp2t")
 	w.Header().Set("content-disposition", `attachment; filename="lecture.ts"; filename*=UTF-8''`+y2FormEncode(name+".ts"))
@@ -891,11 +961,11 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 	if flusher != nil {
 		flusher.Flush()
 	}
-	done, failed := 1, 0
-	doneBytes := int64(len(first))
+	done, failed := startSeg+1, 0
+	doneBytes := startBytes + int64(len(first))
 	tracker.update(done, doneBytes)
 	gone := false
-	for i := 1; i < len(order); i++ {
+	for i := startSeg + 1; i < len(order); i++ {
 		if dlCtx.Err() != nil || tracker.isCancelled() {
 			gone = true
 			break
@@ -926,7 +996,7 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 			break
 		}
 		doneBytes += int64(len(buf))
-		tracker.update(done, doneBytes)
+		tracker.update(i+1, doneBytes)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -934,12 +1004,10 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 			sleepMs(100)
 		}
 	}
-	if gone || tracker.isCancelled() {
-		msg := "连接已断开"
-		if tracker.isCancelled() {
-			msg = "用户已取消"
-		}
-		tracker.finish("cancelled", msg)
+	if tracker.isCancelled() {
+		tracker.finish("cancelled", "用户已取消")
+	} else if gone || dlCtx.Err() != nil {
+		tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
 	} else {
 		tracker.finish("done", "")
 	}
@@ -995,8 +1063,10 @@ func y2PickStream(info *y2SubInfo, kind string) (y2Stream, bool) {
 
 // y2ProxyOpts 下载模式（要整份文件 + 附件文件名）
 type y2ProxyOpts struct {
-	filename string
-	ext      string
+	filename   string
+	ext        string
+	reqPath    string
+	resumeFrom int64
 }
 
 // y2ProxyPlay /play/ 转发：透传 Range；m3u8 会把分片地址改回本代理（每片现签）
@@ -1012,8 +1082,11 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	req.Header.Set("User-Agent", y2UA)
 	req.Header.Set("Referer", y2Base+"/")
 	req.Header.Set("Accept", "*/*")
-	// 下载模式下不要 Range，要整份文件
-	if opts.filename == "" {
+	if opts.filename != "" {
+		if opts.resumeFrom > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", opts.resumeFrom))
+		}
+	} else {
 		if rg := r.Header.Get("Range"); rg != "" {
 			req.Header.Set("Range", rg)
 		}
@@ -1091,18 +1164,29 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 		status = 200
 	}
 	if opts.filename != "" {
+		resumed := opts.resumeFrom > 0 && up.StatusCode == 206
 		totalBytes, _ := strconv.ParseInt(up.Header.Get("content-length"), 10, 64)
+		if resumed && totalBytes > 0 {
+			totalBytes += opts.resumeFrom
+		}
 		tracker := dlTrackStart("y2", opts.filename, 1, totalBytes)
+		if opts.reqPath != "" {
+			tracker.setReqPath(opts.reqPath)
+		} else {
+			tracker.setReqPath(r.URL.RequestURI())
+		}
+		if resumed {
+			tracker.setResumeInit(0, opts.resumeFrom)
+			w.Header().Set("X-YHKT-Resume-Offset", strconv.FormatInt(opts.resumeFrom, 10))
+		}
 		tracker.setCancel(func() { _ = up.Body.Close() })
 		w.Header().Set("X-YHKT-DL-ID", tracker.ID)
-		w.WriteHeader(status)
+		w.WriteHeader(200)
 		_, copyErr := io.Copy(&dlTrackWriter{w: w, tracker: tracker}, up.Body)
-		if tracker.isCancelled() || copyErr != nil || r.Context().Err() != nil {
-			msg := "连接已断开"
-			if tracker.isCancelled() {
-				msg = "用户已取消"
-			}
-			tracker.finish("cancelled", msg)
+		if tracker.isCancelled() {
+			tracker.finish("cancelled", "用户已取消")
+		} else if copyErr != nil || r.Context().Err() != nil {
+			tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
 		} else {
 			tracker.markDone()
 		}

@@ -17,7 +17,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupIconFile=..\android\icon\icon.ico
-UninstallDisplayIcon={app}\yanhekt.exe
+Uninstallable=no
 OutputDir=..\dist
 OutputBaseFilename=yanhekt-setup-{#AppVersion}-windows-amd64
 Compression=lzma2/max
@@ -30,15 +30,14 @@ RestartApplications=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut for Yanhekt Player"; GroupDescription: "Additional shortcuts:"
+Name: "desktopicon"; Description: "Create a desktop shortcut for Yanhekt Player"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
 Source: "..\dist\yanhekt.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Yanhekt Player"; Filename: "{app}\yanhekt.exe"
-Name: "{group}\Uninstall Yanhekt Player"; Filename: "{uninstallexe}"
+Name: "{group}\Yanhekt Player"; Filename: "{app}\yanhekt.exe"; Tasks: desktopicon
 Name: "{autodesktop}\Yanhekt Player"; Filename: "{app}\yanhekt.exe"; Tasks: desktopicon
 
 [Run]

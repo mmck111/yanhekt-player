@@ -60,9 +60,15 @@
   .userline a:hover{color:var(--fg);background:rgba(255,255,255,.06)}
   .userline a#btnLogout:hover{color:var(--err)}
   .userline a#oldlink{color:#9cc2ff;background:rgba(91,156,255,.1);border:1px solid rgba(91,156,255,.24);font-weight:600}
-  .dlentry{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid rgba(91,156,255,.25);
-    background:rgba(22,35,58,.65);color:#a9d4ff;border-radius:6px;font-size:11.5px;font-weight:600;text-decoration:none}
-  .dlentry.busy{border-color:rgba(52,211,153,.45);color:var(--ok);background:rgba(18,36,27,.8)}
+  .sb-tools{padding:8px 14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.02)}
+  .toolbtn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7.5px 10px;border-radius:9px;
+    font-size:13px;font-weight:700;text-decoration:none;cursor:pointer;transition:all .15s;white-space:nowrap}
+  .dlentry{border:1px solid rgba(91,156,255,.38);background:rgba(28,45,76,.78);color:#bfe0ff}
+  .dlentry:hover{background:rgba(41,66,112,.94);border-color:rgba(91,156,255,.65);color:#fff}
+  .dlentry.busy{border-color:rgba(52,211,153,.55);color:var(--ok);background:rgba(18,44,32,.85)}
+  .dlentry.warn{border-color:rgba(251,191,36,.5);color:#fde68a;background:rgba(56,42,16,.75)}
+  .setentry{border:1px solid rgba(255,255,255,.18);background:var(--panel2);color:var(--fg)}
+  .setentry:hover{border-color:rgba(91,156,255,.5);background:var(--panel3);color:#fff}
 
   .fmeta{font-size:11px;color:var(--dim);padding:4px 5px 7px;line-height:1.55}
   .list{overflow:auto;padding:8px 9px 14px;flex:1}
@@ -323,9 +329,11 @@
       <span class="yt" id="ytime">未登录新版</span>
       <a id="btnSetup" title="登录或重登新版">登录</a>
       <a id="btnLogout" style="display:none">退出</a>
-      <a href="#" id="dlnk" class="dlentry">⤓ 下载管理</a>
-      <a href="#" id="btnSet" title="默认下载目录与播放器设置">⚙ 设置</a>
       <a id="oldlink" href="/" title="老平台包含全校历史课程与直播">← 老平台</a>
+    </div>
+    <div class="sb-tools">
+      <a href="#" id="dlnk" class="toolbtn dlentry" title="查看下载任务与断点续传">⤓ 下载管理</a>
+      <a href="#" id="btnSet" class="toolbtn setentry" title="默认下载目录与播放器设置">⚙ 设置</a>
     </div>
     <div class="fmeta" id="fmeta" style="padding:6px 12px 0"></div>
     <div class="list" id="list"></div>
@@ -422,8 +430,8 @@
 <div class="lgmodal" id="lgmodal"></div>
 <div class="lgmodal" id="dlModal">
   <div class="login">
-    <h2><span>下载管理</span><button class="xbtn" id="dlClose" type="button">×</button></h2>
-    <p class="sub">新版视频优先原样下载为 <code>.mp4</code>，分片流自动拼接为 <code>.ts</code>；进行中的任务可点击「取消」中止。</p>
+    <h2><span>下载管理</span><span style="display:flex;align-items:center;gap:6px"><button class="dlcancel" id="dlClear" type="button" style="color:var(--dim);background:var(--panel2)">清空已完成</button><button class="xbtn" id="dlClose" type="button">×</button></span></h2>
+    <p class="sub">新版视频优先原样下载为 <code>.mp4</code>，分片流自动拼接为 <code>.ts</code>；支持中断后「继续下载」或清理残留文件。</p>
     <div id="dlBody"></div>
   </div>
 </div>
@@ -479,24 +487,54 @@ function saveProgMap(m){
     localStorage.setItem(LS_PROG, JSON.stringify(m));
   } catch(e){}
 }
+let suppressProgressSave = false;
+let pendingSeekGuard = 0;
+
+function updateSidebarItemProg(sid, t, dur){
+  if (!sid || !dur || dur <= 0) return;
+  const el = document.querySelector(`.item[data-sid="${CSS.escape(String(sid))}"]`);
+  if (!el) return;
+  const pct = Math.min(100, Math.round(t / dur * 100));
+  if (pct <= 0) return;
+  let bar = el.querySelector('.progbar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'progbar';
+    bar.innerHTML = '<i></i>';
+    el.appendChild(bar);
+  }
+  const inner = bar.querySelector('i');
+  if (inner) inner.style.width = pct + '%';
+}
+
 function saveCourseProgress(force){
-  if (window.__yhktRememberPos === false) return;
+  if (suppressProgressSave || window.__yhktRememberPos === false) return;
   if (!curCourse || !curSub) return;
   const now = performance.now();
-  if (!force && now - lastSaveAt < 4000) return;
+  if (!force && now - lastSaveAt < 3500) return;
   const t = v.currentTime || 0;
-  const dur = v.duration || Number(curSub.duration) || 0;
+  const dur = (isFinite(v.duration) && v.duration > 0 ? v.duration : 0) || Number(curSub.duration) || 0;
+  if (pendingSeekGuard > 0) {
+    if (Math.abs(t - pendingSeekGuard) <= 6) {
+      pendingSeekGuard = 0;
+    } else if (t < Math.max(3, pendingSeekGuard - 6)) {
+      return;
+    }
+  }
   if (t < 3 && !force) return;
   lastSaveAt = now;
   const cid = String(curCourse.courseId);
   const sid = String(curSub.subId);
   const m = loadProgMap();
   const c = m[cid] || { sessions: {} };
+  const prev = c.sessions && c.sessions[sid];
+  if (force && t < 3 && prev && prev.t > 5) return;
   c.lastSid = sid; c.at = Date.now();
   c.sessions = c.sessions || {};
   c.sessions[sid] = { t: Math.floor(t), d: Math.floor(dur), at: Date.now() };
   m[cid] = c;
   saveProgMap(m);
+  updateSidebarItemProg(sid, t, dur);
 }
 function getSessionProg(cid, sid){
   if (window.__yhktRememberPos === false) return null;
@@ -619,9 +657,13 @@ function showLoginModal(msg){
     </div>`;
   box.style.display = 'flex';
   box.onclick = e => { if (e.target === box) hideLoginModal(); };
-  const go = w => { hideLoginModal(); try { yhktApp.login(w); } catch(e){ toast('调不起登录：' + e.message); } };
-  box.querySelector('#mY2').onclick = () => go('y2');
-  box.querySelector('#mOld').onclick = () => go('old');
+  const go = (w, btn) => {
+    box.querySelectorAll('button').forEach(x => { x.disabled = true; });
+    if (btn) btn.innerHTML = '<b>正在打开官网登录页…</b><i>正在连接延河课堂官网（首次约 2~5 秒）</i>';
+    try { yhktApp.login(w); } catch(e){ hideLoginModal(); toast('调不起登录：' + e.message); }
+  };
+  box.querySelector('#mY2').onclick = () => go('y2', box.querySelector('#mY2'));
+  box.querySelector('#mOld').onclick = () => go('old', box.querySelector('#mOld'));
   const mi = box.querySelector('#mImport');
   if (mi) mi.onclick = async () => {
     mi.disabled = true;
@@ -890,60 +932,89 @@ async function doFind(limitOverride){
 
   if (searchAbort) { try { searchAbort.abort(); } catch(e){} }
   searchAbort = new AbortController();
+  const sig = searchAbort.signal;
   const seq = ++searchSeq;
 
-  $('#list').innerHTML = '<div class="splash"><span>正在检索…<br><span class="tiny">内置课程库本地秒查</span></span></div>';
+  $('#list').innerHTML = '<div class="splash"><span>正在极速检索…<br><span class="tiny">内置课程库本地毫秒命中</span></span></div>';
   $('#fmeta').textContent = '';
 
-  try{
-    const [j, db] = await Promise.all([
-      !isOldTerm
-        ? fetch('/api/y2/search?q=' + encodeURIComponent(q) + (term ? '&term=' + encodeURIComponent(term) : '') + '&limit=' + curSearchLimit, { signal: searchAbort.signal })
-            .then(r => r.json()).catch(e => ({ ok:false, error:e.message, courses:[] }))
-        : Promise.resolve({ ok:true, courses:[], hidden:0, unverified:0, source:'skipped', notes:[] }),
-      fetch('/api/db/search?q=' + encodeURIComponent(q)
-        + (oldTermName ? '&term=' + encodeURIComponent(oldTermName) : '')
-        + '&probe=1&limit=' + (isOldTerm ? 80 : 20), { signal: searchAbort.signal })
-        .then(r => r.json()).catch(() => ({ ok:false, courses:[], total:0 })),
-    ]);
-    if (seq !== searchSeq) return;
+  const list = $('#list');
+  const section = (title) => {
+    const h = document.createElement('div');
+    h.className = 'fmeta'; h.style.padding = '8px 4px 4px';
+    h.textContent = title;
+    return h;
+  };
 
-    const newOnes = (j.ok && j.courses) ? j.courses : [];
-    const oldOnes = (db.ok && db.courses) ? db.courses : [];
-    if (!j.ok && j.error && !oldOnes.length) $('#fmeta').textContent = '新版检索提示：' + j.error;
+  let newOnes = [];
+  let jMeta = { ok:true, total:0, hidden:0, unverified:0, notes:[] };
+  let dbMeta = { ok:false, courses:[], total:0 };
+  let oldSlot = null;
 
-    const list = $('#list'); list.innerHTML = '';
-    if (!newOnes.length && !oldOnes.length){
-      list.innerHTML = '<div class="splash"><b>没找到</b><span>课程库里没有匹配的课</span>'
-        + '<span class="tiny">换个说法，或把学期改成「全部学期」</span></div>';
-      return;
-    }
-
+  const updateHeaderMeta = (loadingOld) => {
+    if (seq !== searchSeq || curCourse) return;
     const bits = [];
-    if (newOnes.length) bits.push('新版 ' + newOnes.length + (j.total > newOnes.length ? '/' + j.total : '') + ' 门');
-    if (oldOnes.length) bits.push('老平台库 ' + db.total + ' 门');
-    if (j.hidden) bits.push('已隐藏 ' + j.hidden + ' 门无录像');
-    if (j.unverified) bits.push(j.unverified + ' 门未确认');
-    const noteText = (j.notes || []).join('；');
-    $('#fmeta').innerHTML = esc(bits.join(' · ')) + (noteText ? ' · ' + esc(noteText) : '') + diagHint(j.notes);
+    if (newOnes.length) bits.push('新版 ' + newOnes.length + (jMeta.total > newOnes.length ? '/' + jMeta.total : '') + ' 门');
+    if (dbMeta.courses && dbMeta.courses.length) bits.push('老平台库 ' + dbMeta.total + ' 门');
+    else if (loadingOld) bits.push('正同步老平台往届课程…');
+    if (jMeta.hidden) bits.push('已隐藏 ' + jMeta.hidden + ' 门无录像');
+    if (jMeta.unverified) bits.push(jMeta.unverified + ' 门未确认');
+    const noteText = (jMeta.notes || []).join('；');
+    $('#fmeta').innerHTML = esc(bits.join(' · ')) + (noteText ? ' · ' + esc(noteText) : '') + diagHint(jMeta.notes);
+  };
 
-    const section = (title) => {
-      const h = document.createElement('div');
-      h.className = 'fmeta'; h.style.padding = '8px 4px 4px';
-      h.textContent = title;
-      list.appendChild(h);
-    };
+  const renderOldSection = (oldOnes) => {
+    if (seq !== searchSeq || curCourse) return;
+    if (!oldSlot) {
+      oldSlot = document.createElement('div');
+      list.appendChild(oldSlot);
+    }
+    oldSlot.innerHTML = '';
+    if (!oldOnes.length) return;
+    oldSlot.appendChild(section('老平台课程库（往届学期，点开转老平台）'));
+    oldOnes.forEach(c=>{
+      const el = document.createElement('div');
+      el.className='item';
+      el.innerHTML = '<div class="d">' + esc(c.name) + '<span class="badge" style="margin-left:6px">课号 ' + esc(c.id) + '</span></div>'
+        + '<div class="m">'
+        + (c.term ? '<span class="badge">' + esc(c.term) + '</span>' : '')
+        + (c.teacher ? '<span>' + esc(c.teacher) + '</span>' : '')
+        + '</div>'
+        + '<div class="m">'
+        + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
+        + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>' : '')
+        + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'没探到') + '">未确认</span>' : '')
+        + '</div>';
+      el.onclick = ()=>{ location.href = '/old?course=' + encodeURIComponent(c.id); };
+      oldSlot.appendChild(el);
+    });
+  };
 
+  const y2Promise = !isOldTerm
+    ? fetch('/api/y2/search?q=' + encodeURIComponent(q) + (term ? '&term=' + encodeURIComponent(term) : '') + '&limit=' + curSearchLimit, { signal: sig })
+        .then(r => r.json()).catch(e => (e && e.name === 'AbortError' ? { aborted:true } : { ok:false, error:e.message, courses:[] }))
+    : Promise.resolve({ ok:true, courses:[], hidden:0, unverified:0, source:'skipped', notes:[] });
+
+  const dbQS = 'q=' + encodeURIComponent(q) + (oldTermName ? '&term=' + encodeURIComponent(oldTermName) : '') + '&limit=' + (isOldTerm ? 80 : 20);
+  const dbFastPromise = fetch('/api/db/search?' + dbQS + '&probe=0', { signal: sig })
+    .then(r => r.json()).catch(() => ({ ok:false, courses:[], total:0 }));
+
+  try{
+    const j = await y2Promise;
+    if (j && j.aborted || seq !== searchSeq) return;
+    jMeta = j || jMeta;
+    newOnes = (j.ok && j.courses) ? j.courses : [];
+
+    // 立即先渲染新版结果（毫秒级出图），绝不卡在老平台网络探测上
+    list.innerHTML = '';
     if (newOnes.length) {
-      section('新版平台（播放快，拖动秒定位）');
+      list.appendChild(section('新版平台（播放快，拖动秒定位）'));
       const pending = [];
-      const progAll = loadProgMap();
       newOnes.forEach(c=>{
         const el = document.createElement('div');
         el.className='item';
         el.dataset.cid = c.courseId;
         const tn = c.termName || (c.termId ? termName(c.termId) : '');
-        const p = progAll[String(c.courseId)];
         el.innerHTML = '<div class="d">' + esc(c.title || '（未命名课程）') + '</div>'
           + '<div class="m">'
           + (tn ? '<span class="badge">' + esc(tn) + '</span>' : '')
@@ -965,26 +1036,38 @@ async function doFind(limitOverride){
         more.onclick = () => doFind(Math.min(80, curSearchLimit + 30));
         list.appendChild(more);
       }
+      oldSlot = document.createElement('div');
+      oldSlot.innerHTML = '<div class="listnote" style="margin-top:8px">正在同步补充老平台往届课程…</div>';
+      list.appendChild(oldSlot);
+      updateHeaderMeta(true);
+    } else {
+      updateHeaderMeta(true);
+      list.innerHTML = '<div class="splash"><span>正在同步老平台课程库…</span></div>';
     }
 
-    if (oldOnes.length) {
-      section('老平台课程库（往届学期，点开转老平台）');
-      oldOnes.forEach(c=>{
-        const el = document.createElement('div');
-        el.className='item';
-        el.innerHTML = '<div class="d">' + esc(c.name) + '<span class="badge" style="margin-left:6px">课号 ' + esc(c.id) + '</span></div>'
-          + '<div class="m">'
-          + (c.term ? '<span class="badge">' + esc(c.term) + '</span>' : '')
-          + (c.teacher ? '<span>' + esc(c.teacher) + '</span>' : '')
-          + '</div>'
-          + '<div class="m">'
-          + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
-          + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>' : '')
-          + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'没探到') + '">未确认</span>' : '')
-          + '</div>';
-        el.onclick = ()=>{ location.href = '/old?course=' + encodeURIComponent(c.id); };
-        list.appendChild(el);
-      });
+    const db0 = await dbFastPromise;
+    if (seq !== searchSeq || curCourse) return;
+    dbMeta = db0 || dbMeta;
+    const oldOnes = (db0.ok && db0.courses) ? db0.courses : [];
+    if (!newOnes.length && !oldOnes.length){
+      if (!j.ok && j.error) $('#fmeta').textContent = '新版检索提示：' + j.error;
+      list.innerHTML = '<div class="splash"><b>没找到</b><span>课程库里没有匹配的课</span>'
+        + '<span class="tiny">换个说法，或把学期改成「全部学期」</span></div>';
+      return;
+    }
+    if (!newOnes.length) list.innerHTML = '';
+    updateHeaderMeta(false);
+    renderOldSection(oldOnes);
+
+    if (db0.ok && !db0.probed && oldOnes.length > 0) {
+      fetch('/api/db/search?' + dbQS + '&probe=1', { signal: sig })
+        .then(r => r.json())
+        .then(db1 => {
+          if (seq !== searchSeq || curCourse || !db1 || !db1.ok) return;
+          dbMeta = db1;
+          updateHeaderMeta(false);
+          renderOldSection(db1.courses || []);
+        }).catch(() => {});
     }
   }catch(e){
     if (e.name === 'AbortError' || seq !== searchSeq) return;
@@ -1158,6 +1241,11 @@ async function loadSessions(c, el, opts){
         target.el2.classList.add('on');
         play(target.s, target.el2);
       }
+    } else {
+      const warm = resumeNode || firstPlayable;
+      if (warm) {
+        fetch(`/api/y2/sub?courseId=${encodeURIComponent(c.courseId)}&subId=${encodeURIComponent(warm.s.subId)}`).catch(()=>{});
+      }
     }
   }catch(e){
     if (e.message === 'need login') return;
@@ -1170,21 +1258,23 @@ async function loadSessions(c, el, opts){
 
 async function play(s, el, { noResume = false } = {}){
   saveCourseProgress(true);
+  suppressProgressSave = true;
   document.querySelectorAll('.item').forEach(x=>x.classList.toggle('on', x===el));
   const t0 = performance.now();
   curSub = s;
   const saved = !noResume ? getSessionProg(curCourse.courseId, s.subId) : null;
-  const resumeAt = (saved && saved.t > 8 && (!saved.d || saved.t < saved.d - 15)) ? saved.t : 0;
+  const resumeAt = (saved && saved.t > 5 && (!saved.d || saved.t < saved.d - 15)) ? saved.t : 0;
+  pendingSeekGuard = resumeAt;
 
   try{
     const j = await jget(`/api/y2/sub?courseId=${encodeURIComponent(curCourse.courseId)}&subId=${encodeURIComponent(s.subId)}`);
-    if(!j.ok){ toast('读取失败：'+(j.error||''), 4000); return; }
+    if(!j.ok){ suppressProgressSave = false; pendingSeekGuard = 0; toast('读取失败：'+(j.error||''), 4000); return; }
     info = j.info;
     updateTabs();
     updateNavButtons();
     if (resumeAt > 0) toast('已从 ' + fmt(resumeAt) + ' 续播', 2600);
     pick(t0, { seekTo: resumeAt, autoPlay: true });
-  }catch(e){ if (e.message !== 'need login') toast('出错：'+e.message, 4000); }
+  }catch(e){ suppressProgressSave = false; pendingSeekGuard = 0; if (e.message !== 'need login') toast('出错：'+e.message, 4000); }
 }
 
 function adjacentSession(dir){
@@ -1248,24 +1338,63 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
   vid.defaultPlaybackRate = rate;
   vid.playbackRate = rate;
 
-  const applySeekAndRate = () => {
+  let needSeek = (seekTo && seekTo > 1) ? Number(seekTo) : 0;
+  const doSeek = () => {
     vid.playbackRate = getSavedRate();
-    if (seekTo > 1) {
-      const doSeek = () => {
-        if (!vid.duration || seekTo < vid.duration - 2) {
-          try { vid.currentTime = seekTo; } catch(e){}
-        }
-      };
-      if (vid.readyState >= 1) doSeek();
-      else vid.addEventListener('loadedmetadata', doSeek, { once: true });
+    if (!needSeek) {
+      if (!isSub) suppressProgressSave = false;
+      return;
     }
+    if (isFinite(vid.duration) && vid.duration > 0 && needSeek >= vid.duration - 2) {
+      needSeek = 0;
+      if (!isSub) { pendingSeekGuard = 0; suppressProgressSave = false; }
+      return;
+    }
+    if (Math.abs((vid.currentTime || 0) - needSeek) <= 2.5) {
+      needSeek = 0;
+      if (!isSub) { pendingSeekGuard = 0; suppressProgressSave = false; }
+      return;
+    }
+    try { vid.currentTime = needSeek; } catch(e){}
+  };
+
+  if (needSeek) {
+    vid.addEventListener('loadedmetadata', doSeek);
+    vid.addEventListener('loadeddata', doSeek);
+    vid.addEventListener('canplay', doSeek);
+    const onSeeked = () => {
+      if (needSeek && Math.abs((vid.currentTime || 0) - needSeek) <= 3) {
+        needSeek = 0;
+        if (!isSub) { pendingSeekGuard = 0; suppressProgressSave = false; }
+        vid.removeEventListener('seeked', onSeeked);
+      }
+    };
+    vid.addEventListener('seeked', onSeeked);
+    if (!isSub) {
+      setTimeout(() => {
+        needSeek = 0;
+        pendingSeekGuard = 0;
+        suppressProgressSave = false;
+      }, 3500);
+    }
+  } else {
+    if (!isSub) suppressProgressSave = false;
+  }
+
+  const applySeekAndRate = () => {
+    doSeek();
     if (autoPlay) vid.play().catch(()=>{});
   };
 
   const retry = () => attachStream(vid, paneSel, st, { seekTo: vid.currentTime || seekTo || 0, autoPlay: true, isSub });
 
   if (st.format === 'hls' && window.Hls && Hls.isSupported()) {
-    const h = new Hls({ maxBufferLength: 25, liveDurationInfinity: true, abortLoadingOnSeek: true });
+    const h = new Hls({
+      maxBufferLength: 25,
+      liveDurationInfinity: !!(info && info.kind === 'live'),
+      startPosition: needSeek ? needSeek : -1,
+      abortLoadingOnSeek: true,
+    });
     h.on(Hls.Events.MANIFEST_PARSED, () => { clearErr(paneSel); applySeekAndRate(); });
     h.on(Hls.Events.ERROR, (_, d) => {
       if (!d.fatal) return;
@@ -1409,6 +1538,7 @@ function updateProgressUI(){
 }
 function seekToFraction(frac){
   if (!isFinite(v.duration) || v.duration <= 0) return;
+  pendingSeekGuard = 0; suppressProgressSave = false;
   const target = Math.max(0, Math.min(v.duration, frac * v.duration));
   v.currentTime = target;
   if (kind === 'dual') { try { vSub.currentTime = target; } catch(e){} }
@@ -1540,6 +1670,7 @@ let dlPoll = 0;
 function openWebDownloads(){ $('#dlModal').style.display = 'flex'; refreshWebDownloads(); }
 function closeWebDownloads(){ $('#dlModal').style.display = 'none'; clearTimeout(dlPoll); dlPoll = 0; }
 $('#dlClose').onclick = closeWebDownloads;
+if ($('#dlClear')) $('#dlClear').onclick = clearWebDownloads;
 $('#dlModal').onclick = e => { if (e.target === $('#dlModal')) closeWebDownloads(); };
 
 async function refreshWebDownloads(){
@@ -1548,10 +1679,15 @@ async function refreshWebDownloads(){
     const j = await (await fetch('/api/downloads')).json();
     const items = (j && j.items) || [];
     const running = items.filter(x => x.status === 'running').length;
+    const interrupted = items.filter(x => x.status === 'interrupted').length;
     const dlEntry = $('#dlnk');
     if (dlEntry && !NATIVE_DL) {
-      dlEntry.textContent = '⤓ 下载管理' + (running > 0 ? '（' + running + '）' : '');
+      let badge = '';
+      if (running > 0) badge = '（' + running + ' 下载中）';
+      else if (interrupted > 0) badge = '（' + interrupted + ' 未完成）';
+      dlEntry.textContent = '⤓ 下载管理' + badge;
       dlEntry.classList.toggle('busy', running > 0);
+      dlEntry.classList.toggle('warn', running === 0 && interrupted > 0);
     }
     if ($('#dlModal').style.display === 'flex') {
       const body = $('#dlBody');
@@ -1563,19 +1699,60 @@ async function refreshWebDownloads(){
             : (it.totalBytes > 0 ? Math.round(it.bytes / it.totalBytes * 100) : (it.status === 'done' ? 100 : 0));
           const stText = it.status === 'running' ? '下载中'
             : it.status === 'done' ? '已完成'
+            : it.status === 'interrupted' ? '已中断（可继续）'
             : it.status === 'cancelled' ? '已取消' : ('失败 ' + (it.error || ''));
           const segText = it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '';
-          const act = it.status === 'running'
-            ? `<button class="dlcancel" type="button" onclick="cancelWebDownload('${esc(it.id)}')">取消</button>`
-            : '';
+          let act = '';
+          if (it.status === 'running') {
+            act = `<button class="dlcancel" type="button" onclick="cancelWebDownload('${esc(it.id)}')">取消</button>`;
+          } else if (it.status === 'interrupted' || it.status === 'error' || it.status === 'cancelled') {
+            const btnTxt = it.status === 'interrupted' ? '继续下载' : '重下';
+            const resumeBtn = it.reqPath ? `<button class="dlcancel" style="color:#a9d4ff;background:rgba(91,156,255,.15)" type="button" onclick="resumeWebDownload('${esc(it.id)}','${esc(it.reqPath)}')">${btnTxt}</button>` : '';
+            const delBtn = `<button class="dlcancel" type="button" onclick="removeWebDownload('${esc(it.id)}',true)">删除</button>`;
+            act = resumeBtn + delBtn;
+          } else if (it.status === 'done') {
+            const dirBtn = (DESKTOP_APP && it.savePath) ? `<button class="dlcancel" style="color:#8be9be;background:rgba(52,211,153,.14)" type="button" onclick="openSavedFolder('${esc(it.savePath)}')">打开目录</button>` : '';
+            const rmBtn = `<button class="dlcancel" style="color:var(--dim);background:var(--panel2)" type="button" onclick="removeWebDownload('${esc(it.id)}',false)">移除</button>`;
+            act = dirBtn + rmBtn;
+          }
+          const pathHint = it.savePath ? `<div style="font-size:10.5px;color:var(--muted);margin-top:3px;word-break:break-all">${esc(it.savePath)}</div>` : '';
           return `<div class="dlrow"><div class="dt">${esc(it.title)}</div>`
-            + `<div class="dm"><span>${esc(stText)}</span><span style="display:flex;align-items:center;gap:8px">${segText}${fmtMB(it.bytes)}${act}</span></div>`
+            + `<div class="dm"><span>${esc(stText)}</span><span style="display:flex;align-items:center;gap:6px">${segText}${fmtMB(it.bytes)}${act}</span></div>`
+            + pathHint
             + `<div class="dlbar"><i style="width:${Math.min(100,pct)}%"></i></div></div>`;
         }).join('');
       }
     }
     if (running > 0 || $('#dlModal').style.display === 'flex') dlPoll = setTimeout(refreshWebDownloads, 900);
   } catch(e){}
+}
+
+function resumeWebDownload(id, reqPath){
+  if (!reqPath) return;
+  const sep = reqPath.indexOf('?') >= 0 ? '&' : '?';
+  window.open(reqPath + sep + 'resumeId=' + encodeURIComponent(id), '_blank');
+  toast('正在恢复下载…', 2600);
+  setTimeout(refreshWebDownloads, 600);
+}
+
+async function removeWebDownload(id, deleteFile){
+  try {
+    await fetch('/api/downloads/remove?id=' + encodeURIComponent(id) + (deleteFile ? '&deleteFile=1' : ''), { method: 'POST' });
+    refreshWebDownloads();
+  } catch(e){}
+}
+
+async function clearWebDownloads(){
+  try {
+    await fetch('/api/downloads/clear', { method: 'POST' });
+    refreshWebDownloads();
+  } catch(e){}
+}
+
+function openSavedFolder(p){
+  if (!p) return;
+  const dir = p.replace(/[\\/][^\\/]+$/, '');
+  if (window.yhktApp && window.yhktApp.openDownloadDir) window.yhktApp.openDownloadDir(dir);
 }
 
 async function cancelWebDownload(id){
@@ -1701,6 +1878,7 @@ $('#btnSwap').onclick = () => { dualSwapped = !dualSwapped; renderStage(); };
 $('#btnAudioSrc').onclick = () => { audioFrom = (audioFrom === 'camera') ? 'screen' : 'camera'; renderStage(); };
 
 document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
+  pendingSeekGuard = 0; suppressProgressSave = false;
   const target = Math.max(0, (v.currentTime || 0) + Number(b.dataset.jump));
   v.currentTime = target;
   if (kind === 'dual') { try { vSub.currentTime = target; } catch(e){} }
@@ -1774,6 +1952,9 @@ function applyAppSettings(s){
   if (window.yhktSettings) {
     await window.yhktSettings.init({ toast, onBeforeOpen: closeDrawer, onApply: applyAppSettings });
   }
+  refreshWebDownloads();
+  window.addEventListener('pagehide', () => saveCourseProgress(true));
+  window.addEventListener('beforeunload', () => saveCourseProgress(true));
   fetch('/api/status').then(r => r.json()).then(j => { if (j.build) $('#build').textContent = 'build ' + j.build; }).catch(()=>{});
 
   const hp = new URLSearchParams(location.hash.replace(/^#/, ''));

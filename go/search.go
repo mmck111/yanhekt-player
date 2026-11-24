@@ -67,8 +67,17 @@ func searchRaw(q, term, token string, user *userInfo, limit, page int, notes *[]
 			// 学期表里没有 semesters 这项（有的部署就是这样）→ 客户端按学年/学期筛，最多翻 4 页
 			collected := []courseRow{}
 			seen := map[string]bool{}
+			apiQ := q
+			apiTokens := strings.Fields(q)
+			if len(apiTokens) > 1 {
+				for _, t := range apiTokens {
+					if len([]rune(t)) > len([]rune(apiQ)) || apiQ == q {
+						apiQ = t
+					}
+				}
+			}
 			for p := 1; p <= 4; p++ {
-				r, err := oldSearch(q, nil, p, 50)
+				r, err := oldSearch(apiQ, nil, p, 50)
 				if err != nil {
 					*notes = append(*notes, "服务端检索失败："+err.Error())
 					return
@@ -81,10 +90,14 @@ func searchRaw(q, term, token string, user *userInfo, limit, page int, notes *[]
 				}
 				for _, c := range rows {
 					row := oldCourseRow(c)
-					if row != nil && !seen[row.ID] {
-						seen[row.ID] = true
-						collected = append(collected, *row)
+					if row == nil || seen[row.ID] {
+						continue
 					}
+					if len(apiTokens) > 1 && searchScore(row.Name, row.Teacher, jstr(row.Code), q) == 0 {
+						continue
+					}
+					seen[row.ID] = true
+					collected = append(collected, *row)
 				}
 				total = r.total
 				if len(collected) >= limit {
@@ -152,22 +165,45 @@ func searchRaw(q, term, token string, user *userInfo, limit, page int, notes *[]
 			return
 		}
 
-		r, err := oldSearch(q, semesterIDs, page, minInt(limit, 50))
+		apiQ := q
+		apiTokens := strings.Fields(q)
+		if len(apiTokens) > 1 {
+			apiQ = ""
+			for _, t := range apiTokens {
+				if len([]rune(t)) > len([]rune(apiQ)) {
+					apiQ = t
+				}
+			}
+		}
+		r, err := oldSearch(apiQ, semesterIDs, page, minInt(limit, 50))
 		if err != nil {
 			*notes = append(*notes, "服务端检索失败："+err.Error())
 			return
 		}
 		for _, c := range r.list {
 			if row := oldCourseRow(c); row != nil {
+				if len(apiTokens) > 1 && searchScore(row.Name, row.Teacher, jstr(row.Code), q) == 0 {
+					continue
+				}
 				courses = append(courses, *row)
 			}
 		}
-		total = r.total
+		total = len(courses)
+		if len(apiTokens) <= 1 && r.total > total {
+			total = r.total
+		}
 	}()
 
-	// 2) 教师名：服务端 keyword 只匹配课程名，所以再用课程库按教师找，反查补齐
+	// 2) 教师名 / 多关键词补齐：服务端 keyword 只匹配课程名，多关键词或搜老师名时需要走课程库补齐
 	if len(courses) < 5 && q != "" {
-		if byTeacher := catalogByTeacher(q, 20); len(byTeacher) > 0 {
+		tokens := strings.Fields(q)
+		byTeacher := []catalogCourse{}
+		if len(tokens) > 1 {
+			byTeacher, _ = catalogSearch(q, term, 20)
+		} else {
+			byTeacher = catalogByTeacher(q, 20)
+		}
+		if len(byTeacher) > 0 {
 			have := map[string]bool{}
 			for _, c := range courses {
 				have[c.ID] = true
@@ -313,58 +349,25 @@ type dbSearchFail struct {
 
 // searchScore 搜索结果的"匹配度"打分（和录像多少无关）：
 //   - 关键词按空格拆词，每个词都要在 课程名 / 教师名 / 课程号 里至少命中一处
-//   - 完全相等 6 分，前缀 4 分，包含 3 分（教师名按顿号/逗号拆开逐个比）
-//   - 整串和课程名 / 教师名完全相等再加分
+//   - 支持全角/半角、罗马数字 Ⅱ=II=2 归一化
 func searchScore(name, teacher, code, q string) int {
-	qn := strings.ToLower(strings.TrimSpace(q))
-	if qn == "" {
+	qn, tokNorms := y2NormalizeTokens(q)
+	if len(tokNorms) == 0 {
 		return 0
 	}
-	tokens := strings.Fields(qn)
-	nm := strings.ToLower(name)
-	cd := strings.ToLower(code)
-	teachers := splitTeacherNames(teacher)
-	fieldScore := func(f, t string) int {
-		if f == "" {
-			return 0
+	nm := y2NormText(name)
+	cd := y2NormText(code)
+	teachers := make([]string, 0, 4)
+	for _, p := range splitTeacherNames(teacher) {
+		if np := y2NormText(p); np != "" {
+			teachers = append(teachers, np)
 		}
-		if f == t {
-			return 6
-		}
-		if strings.HasPrefix(f, t) {
-			return 4
-		}
-		if len([]rune(t)) >= 2 && strings.Contains(f, t) {
-			return 3
-		}
+	}
+	hay := nm + " " + strings.Join(teachers, " ") + " " + cd
+	if !y2QueryTokensMatch(hay, tokNorms) {
 		return 0
 	}
-	total := 0
-	for _, t := range tokens {
-		best := fieldScore(nm, t)
-		if s := fieldScore(cd, t) - 1; s > best {
-			best = s
-		}
-		for _, tn := range teachers {
-			if s := fieldScore(tn, t); s > best {
-				best = s
-			}
-		}
-		if best <= 0 {
-			return 0 // 有一个词没命中，就不算匹配
-		}
-		total += best
-	}
-	if nm != "" && nm == qn {
-		total += 4
-	}
-	for _, tn := range teachers {
-		if tn == qn {
-			total += 3
-			break
-		}
-	}
-	return total
+	return y2ScoreNormalized(nm, cd, teachers, qn, tokNorms)
 }
 
 func splitTeacherNames(s string) []string {
@@ -441,27 +444,54 @@ func handleDBSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	courses := []any{}
-	for _, c := range raw.courses {
+	rawCourses := append([]courseRow{}, raw.courses...)
+	// 统一排序：1) 关键词匹配程度优先 2) 时间（学期）越新越前
+	if q != "" {
+		sort.SliceStable(rawCourses, func(i, j int) bool {
+			si := searchScore(rawCourses[i].Name, rawCourses[i].Teacher, jstr(rawCourses[i].Code), q)
+			sj := searchScore(rawCourses[j].Name, rawCourses[j].Teacher, jstr(rawCourses[j].Code), q)
+			if si != sj {
+				return si > sj
+			}
+			ti, tj := oldTermSortKey(rawCourses[i].Term), oldTermSortKey(rawCourses[j].Term)
+			if ti != tj {
+				return ti > tj
+			}
+			return rawCourses[i].ID < rawCourses[j].ID
+		})
+	} else {
+		sort.SliceStable(rawCourses, func(i, j int) bool {
+			ti, tj := oldTermSortKey(rawCourses[i].Term), oldTermSortKey(rawCourses[j].Term)
+			if ti != tj {
+				return ti > tj
+			}
+			return rawCourses[i].ID < rawCourses[j].ID
+		})
+	}
+
+	courses := make([]any, 0, len(rawCourses))
+	for _, c := range rawCourses {
 		courses = append(courses, c)
 	}
 
 	// 要"有几讲有录像"就得逐门探节次（每门 1 个请求）。
-	// **全都探**（单次最多 120 门），再按录像多少排序 —— 只给前 N 门会漏掉有录像的课
+	// **全都探**（单次最多 120 门），排序严格遵循：匹配度优先 → 时间越新越前 → 录像数较多
 	if qs.Get("probe") == "1" && user != nil {
 		const cap = 120
-		list := raw.courses
+		list := rawCourses
 		if len(list) > cap {
 			list = list[:cap]
 		}
 		probed, hidden := probeOldCourses(list, token, 8)
-		// 排序：先看课名/教师名的匹配度，再按录像数从多到少。
-		// 不然搜「数值分析」，名字里只有「分析」的课（刚好录像多）会排到真正的「数值分析」前面。
 		sort.SliceStable(probed, func(i, j int) bool {
-			si := searchScore(probed[i].Name, probed[i].Teacher, "", q)
-			sj := searchScore(probed[j].Name, probed[j].Teacher, "", q)
+			si := searchScore(probed[i].Name, probed[i].Teacher, jstr(probed[i].Code), q)
+			sj := searchScore(probed[j].Name, probed[j].Teacher, jstr(probed[j].Code), q)
 			if si != sj {
 				return si > sj
+			}
+			ti, tj := oldTermSortKey(probed[i].Term), oldTermSortKey(probed[j].Term)
+			if ti != tj {
+				return ti > tj
 			}
 			return videoCountOf(probed[i]) > videoCountOf(probed[j])
 		})
@@ -469,7 +499,7 @@ func handleDBSearch(w http.ResponseWriter, r *http.Request) {
 		for _, p := range probed {
 			sorted = append(sorted, p)
 		}
-		truncated := len(raw.courses) > cap
+		truncated := len(rawCourses) > cap
 		capN := cap
 		writeJSON(w, 200, dbSearchOK{
 			Ok: true, Source: raw.src, Total: raw.total, Courses: sorted,

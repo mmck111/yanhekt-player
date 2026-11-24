@@ -61,10 +61,13 @@ type catalogData struct {
 	rows     []catRow
 	meta     map[string]any
 	byID     map[string]*catRow
-	// 预先把小写形式算好，搜索时不用每行都转一次
-	nameLow    []string
-	teacherLow []string
-	err        string
+	// 预先把小写/归一化形式算好，搜索时不用每行都重复转换
+	nameLow     []string
+	teacherLow  []string
+	nameNorm    []string
+	teacherNorm []string
+	termRank    []int
+	err         string
 }
 
 var (
@@ -155,12 +158,20 @@ func readCatalog() *catalogData {
 		cat.meta = file.Meta
 	}
 	cat.nameLow = make([]string, len(cat.names))
+	cat.nameNorm = make([]string, len(cat.names))
 	for i, s := range cat.names {
 		cat.nameLow[i] = strings.ToLower(s)
+		cat.nameNorm[i] = y2NormText(s)
 	}
 	cat.teacherLow = make([]string, len(cat.teachers))
+	cat.teacherNorm = make([]string, len(cat.teachers))
 	for i, s := range cat.teachers {
 		cat.teacherLow[i] = strings.ToLower(s)
+		cat.teacherNorm[i] = y2NormText(s)
+	}
+	cat.termRank = make([]int, len(cat.terms))
+	for i, s := range cat.terms {
+		cat.termRank[i] = oldTermSortKey(s)
 	}
 
 	cat.rows = make([]catRow, 0, len(file.Rows))
@@ -222,30 +233,100 @@ func noSpaceLower(s string) string {
 	return strings.ToLower(b.String())
 }
 
-// catalogSearch 在课程库里搜（课程名或教师名包含关键词），可按学期过滤
-func catalogSearch(q, term string, limit int) ([]catalogCourse, int) {
+// catalogSearchImpl 在课程库里做空格分词多关键词检索（支持课程名、教师名、课号，以及 Ⅱ=II=2 归一化），
+// 严格按「1. 关键词匹配程度优先 → 2. 时间越新越前」排序后再截取 limit 条。
+func catalogSearchImpl(q, term string, limit int, oldOnly bool) ([]catalogCourse, int) {
 	cat := loadCatalog()
-	key := noSpaceLower(q)
-	out := []catalogCourse{}
-	total := 0
+	qn, tokNorms := y2NormalizeTokens(q)
+	type catHit struct {
+		course   catalogCourse
+		score    int
+		timeRank int
+	}
+	hits := make([]catHit, 0, 64)
 	for _, r := range cat.rows {
-		name := cat.catName(r.n)
-		teacher := cat.catTeacher(r.t)
 		rterm := cat.catTerm(r.term)
 		if term != "" && rterm != term {
 			continue
 		}
-		if key != "" {
-			if !strings.Contains(cat.nameLower(r.n), key) && !strings.Contains(cat.teacherLower(r.t), key) {
-				continue
+		if oldOnly && (rterm == "" || termIsRecent(rterm)) {
+			continue
+		}
+		nn := ""
+		if r.n >= 0 && r.n < len(cat.nameNorm) {
+			nn = cat.nameNorm[r.n]
+		}
+		tn := ""
+		if r.t >= 0 && r.t < len(cat.teacherNorm) {
+			tn = cat.teacherNorm[r.t]
+		}
+		idNorm := y2NormText(r.id)
+		matchedAll := true
+		for _, tok := range tokNorms {
+			if !strings.Contains(nn, tok) && !strings.Contains(tn, tok) && !strings.Contains(idNorm, tok) {
+				matchedAll = false
+				break
 			}
 		}
-		total++
-		if len(out) < limit {
-			out = append(out, catalogCourse{ID: r.id, Name: name, Teacher: teacher, Term: rterm})
+		if !matchedAll {
+			continue
 		}
+		tr := 0
+		if r.term >= 0 && r.term < len(cat.termRank) {
+			tr = cat.termRank[r.term]
+		} else {
+			tr = oldTermSortKey(rterm)
+		}
+		sc := 1
+		if len(tokNorms) > 0 {
+			name := cat.catName(r.n)
+			teacher := cat.catTeacher(r.t)
+			tNorms := make([]string, 0, 2)
+			for _, p := range splitTeacherNames(teacher) {
+				if np := y2NormText(p); np != "" {
+					tNorms = append(tNorms, np)
+				}
+			}
+			sc = y2ScoreNormalized(nn, idNorm, tNorms, qn, tokNorms)
+			_ = name
+		}
+		hits = append(hits, catHit{
+			course: catalogCourse{
+				ID:      r.id,
+				Name:    cat.catName(r.n),
+				Teacher: cat.catTeacher(r.t),
+				Term:    rterm,
+			},
+			score:    sc,
+			timeRank: tr,
+		})
+	}
+	total := len(hits)
+	if total == 0 {
+		return []catalogCourse{}, 0
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].score != hits[j].score {
+			return hits[i].score > hits[j].score
+		}
+		if hits[i].timeRank != hits[j].timeRank {
+			return hits[i].timeRank > hits[j].timeRank
+		}
+		return hits[i].course.ID < hits[j].course.ID
+	})
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+	out := make([]catalogCourse, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, hits[i].course)
 	}
 	return out, total
+}
+
+// catalogSearch 在课程库里搜（课程名/教师名/课号，空格分隔多关键词），可按学期过滤
+func catalogSearch(q, term string, limit int) ([]catalogCourse, int) {
+	return catalogSearchImpl(q, term, limit, false)
 }
 
 // catalogCourseByID 按课程 id 从课程库里取课程名和学期（往年课程的详情被挡住时用它补名字）
@@ -264,29 +345,7 @@ func catalogCourseByID(id string) (name, term string) {
 // catalogSearchOld 只搜**往年**（已经结束的学期）的课：老平台检索现在只给当前学期，
 // 想找回放就得从课程库里把往年的同一门课捡出来。
 func catalogSearchOld(q, term string, limit int) ([]catalogCourse, int) {
-	cat := loadCatalog()
-	key := noSpaceLower(q)
-	out := []catalogCourse{}
-	total := 0
-	for _, r := range cat.rows {
-		rterm := cat.catTerm(r.term)
-		if term != "" && rterm != term {
-			continue
-		}
-		if key != "" {
-			if !strings.Contains(cat.nameLower(r.n), key) && !strings.Contains(cat.teacherLower(r.t), key) {
-				continue
-			}
-		}
-		if rterm == "" || termIsRecent(rterm) {
-			continue // 当前学期的课由服务端给，这里只要往年的
-		}
-		total++
-		if len(out) < limit {
-			out = append(out, catalogCourse{ID: r.id, Name: cat.catName(r.n), Teacher: cat.catTeacher(r.t), Term: rterm})
-		}
-	}
-	return out, total
+	return catalogSearchImpl(q, term, limit, true)
 }
 
 type catalogCourse struct {
@@ -345,6 +404,22 @@ func parseTermName(name string) (year string, sem int, ok bool) {
 		sem = 1
 	}
 	return m[1] + "-" + m[2], sem, true
+}
+
+// oldTermSortKey 把学期字符串转成可比较的时间整数（如 "2025-2026 第二学期" → 20252），越新越大
+func oldTermSortKey(term string) int {
+	year, sem, ok := parseTermName(term)
+	if !ok || len(year) < 4 {
+		return 0
+	}
+	y := 0
+	for i := 0; i < 4; i++ {
+		if year[i] < '0' || year[i] > '9' {
+			return 0
+		}
+		y = y*10 + int(year[i]-'0')
+	}
+	return y*10 + sem
 }
 
 // courseInTerm 这门课是不是这个学期的

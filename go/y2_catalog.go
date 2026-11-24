@@ -39,12 +39,26 @@ type y2CatRow struct {
 	Year    int    `json:"y,omitempty"`
 }
 
+// y2CatIdx 预归一化索引行：避免每次检索对 2.7 万门课重复分配字符串
+type y2CatIdx struct {
+	hay      string
+	title    string
+	teachers []string
+	code     string
+	termNorm string
+	timeRank int
+}
+
 // y2Catalog 整份索引
 type y2Catalog struct {
 	Ver    int        `json:"v"`
 	At     int64      `json:"at"` // 爬取时间（unix 秒）
 	Tenant int        `json:"tenant"`
 	Rows   []y2CatRow `json:"rows"`
+
+	idxMu  sync.Mutex
+	idxLen int
+	idx    []y2CatIdx
 }
 
 var (
@@ -448,6 +462,179 @@ func utf8DecodeRuneInString(s string) (rune, int) {
 	return 0, 0
 }
 
+// y2CatTimeRank 计算时间排序键：year*10 + semester(1..3)，越新越大；认不出给 0。
+func y2CatTimeRank(r y2CatRow) int {
+	year := y2CatYear(r)
+	if year == 0 {
+		return 0
+	}
+	sem := y2TermSem(r.Term)
+	if sem == 0 && len(r.Code) >= 9 && isDigits(r.Code[:9]) {
+		s := int(r.Code[8] - '0')
+		if s >= 1 && s <= 3 {
+			sem = s
+		}
+	}
+	return year*10 + sem
+}
+
+func y2TermSem(term string) int {
+	t := strings.TrimSpace(term)
+	switch {
+	case strings.Contains(t, "第三") || strings.Contains(t, "3学期") || strings.Contains(t, "夏") || strings.Contains(t, "Ⅲ") || strings.HasSuffix(t, "-3"):
+		return 3
+	case strings.Contains(t, "第二") || strings.Contains(t, "2学期") || strings.Contains(t, "春") || strings.Contains(t, "Ⅱ") || strings.HasSuffix(t, "-2"):
+		return 2
+	case strings.Contains(t, "第一") || strings.Contains(t, "1学期") || strings.Contains(t, "秋") || strings.Contains(t, "Ⅰ") || strings.HasSuffix(t, "-1"):
+		return 1
+	}
+	return 0
+}
+
+func y2TermRankOfString(term, code string) int {
+	return y2CatTimeRank(y2CatRow{Term: term, Code: code})
+}
+
+func (cat *y2Catalog) ensureIndex() []y2CatIdx {
+	cat.idxMu.Lock()
+	defer cat.idxMu.Unlock()
+	if cat.idx != nil && cat.idxLen == len(cat.Rows) {
+		return cat.idx
+	}
+	idx := make([]y2CatIdx, len(cat.Rows))
+	for i, r := range cat.Rows {
+		parts := splitTeacherNames(r.Teacher)
+		tNorms := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if np := y2NormText(p); np != "" {
+				tNorms = append(tNorms, np)
+			}
+		}
+		idx[i] = y2CatIdx{
+			hay:      y2NormText(r.Title + " " + r.Teacher + " " + r.Code + " " + r.ID),
+			title:    y2NormText(r.Title),
+			teachers: tNorms,
+			code:     y2NormText(r.Code),
+			termNorm: y2NormText(r.Term),
+			timeRank: y2CatTimeRank(r),
+		}
+	}
+	cat.idx = idx
+	cat.idxLen = len(cat.Rows)
+	return idx
+}
+
+func y2NormalizeTokens(q string) (string, []string) {
+	qn := y2NormText(q)
+	rawToks := strings.Fields(q)
+	tokNorms := make([]string, 0, len(rawToks))
+	for _, t := range rawToks {
+		if nt := y2NormText(t); nt != "" {
+			tokNorms = append(tokNorms, nt)
+		}
+	}
+	return qn, tokNorms
+}
+
+func y2ScoreNormalized(titleNorm, codeNorm string, teacherNorms []string, qNorm string, tokNorms []string) int {
+	if len(tokNorms) == 0 {
+		return 0
+	}
+	total := 0
+	titleHit := false
+	teacherHit := false
+
+	for _, nt := range tokNorms {
+		best := 0
+		if titleNorm != "" {
+			switch {
+			case titleNorm == nt:
+				best = 100
+				titleHit = true
+			case strings.HasPrefix(titleNorm, nt):
+				if y2TitleLevelMark(titleNorm, nt) {
+					best = 85
+				} else {
+					best = 75
+				}
+				titleHit = true
+			case strings.Contains(titleNorm, nt):
+				bonus := len(nt) * 18 / len(titleNorm)
+				if bonus > 18 {
+					bonus = 18
+				}
+				s := 45 + bonus
+				if s > best {
+					best = s
+				}
+				titleHit = true
+			}
+		}
+		for _, tn := range teacherNorms {
+			s := 0
+			switch {
+			case tn == nt:
+				s = 95
+			case strings.HasPrefix(tn, nt):
+				s = 70
+			case strings.Contains(tn, nt):
+				s = 45 + len(nt)*10/maxInt(len(tn), 1)
+			}
+			if s > 0 {
+				teacherHit = true
+				if s > best {
+					best = s
+				}
+			}
+		}
+		if codeNorm != "" && strings.Contains(codeNorm, nt) {
+			s := 35
+			if codeNorm == nt {
+				s = 60
+			}
+			if s > best {
+				best = s
+			}
+		}
+		if best == 0 {
+			best = 20
+		}
+		total += best
+	}
+
+	if titleNorm != "" && qNorm != "" {
+		switch {
+		case titleNorm == qNorm:
+			total += 120
+		case strings.HasPrefix(titleNorm, qNorm):
+			if y2TitleLevelMark(titleNorm, qNorm) {
+				total += 80
+			} else {
+				total += 55
+			}
+		}
+	}
+	for _, tn := range teacherNorms {
+		if qNorm != "" && tn == qNorm {
+			total += 80
+			break
+		}
+	}
+	if len(tokNorms) > 1 && titleHit && teacherHit {
+		total += 40
+	}
+	return total
+}
+
+func y2QueryTokensMatch(hayNorm string, tokNorms []string) bool {
+	for _, nt := range tokNorms {
+		if !strings.Contains(hayNorm, nt) {
+			return false
+		}
+	}
+	return true
+}
+
 // y2CatalogSearch 本地匹配：每个词都要命中（课名 / 老师 / 课程编号 / 课号），
 // 归一化后比较（Ⅱ=II=2、全角半角、空格、括号）。
 //
@@ -457,64 +644,66 @@ func utf8DecodeRuneInString(s string) (rune, int) {
 // （孙新的「数值分析」这学期就有 2 个），去重会把其中一个吃掉。
 // 只有课程 id 相同才算同一门课（爬取时已经按 id 去过重）。
 func y2CatalogSearch(cat *y2Catalog, q string, limit int) ([]y2CatRow, int) {
+	return y2CatalogSearchScoped(cat, q, "", limit)
+}
+
+func y2CatalogSearchScoped(cat *y2Catalog, q, termFilter string, limit int) ([]y2CatRow, int) {
 	if cat == nil || len(cat.Rows) == 0 {
 		return nil, 0
 	}
-	tokens := strings.Fields(q)
-	if len(tokens) == 0 {
+	qn, tokNorms := y2NormalizeTokens(q)
+	termNorm := y2NormText(termFilter)
+	if len(tokNorms) == 0 && termNorm == "" {
 		return nil, 0
 	}
 	if limit <= 0 {
 		limit = 60
 	}
-	qn := y2NormText(q)
 
+	idxRows := cat.ensureIndex()
 	type hit struct {
-		row  y2CatRow
-		rank int
+		row      y2CatRow
+		score    int
+		timeRank int
+		tNorm    string
 	}
 	hits := make([]hit, 0, 64)
-	for _, r := range cat.Rows {
-		hay := r.Title + " " + r.Teacher + " " + r.Code + " " + r.ID
-		if !y2FuzzyAll(hay, tokens) {
+	for i, r := range cat.Rows {
+		ix := &idxRows[i]
+		if termNorm != "" && ix.termNorm != termNorm && !strings.Contains(ix.termNorm, termNorm) {
 			continue
 		}
-		norm := y2NormText(r.Title)
-		rank := 3 // 只是包含
-		switch {
-		case norm == qn:
-			rank = 0
-		case strings.HasPrefix(norm, qn):
-			// 「大学物理」后面紧跟 A / Ⅱ / 2 这类"课程级别"标记的，比
-			// 「大学物理实验」这种另一个课名更接近用户想找的课。
-			if y2TitleLevelMark(norm, qn) {
-				rank = 1
-			} else {
-				rank = 2
-			}
-		case y2FuzzyHas(r.Teacher, q):
-			rank = 4 // 只命中老师
+		if len(tokNorms) > 0 && !y2QueryTokensMatch(ix.hay, tokNorms) {
+			continue
 		}
-		hits = append(hits, hit{row: r, rank: rank})
+		sc := 1
+		if len(tokNorms) > 0 {
+			sc = y2ScoreNormalized(ix.title, ix.code, ix.teachers, qn, tokNorms)
+		}
+		tFirst := ""
+		if len(ix.teachers) > 0 {
+			tFirst = ix.teachers[0]
+		}
+		hits = append(hits, hit{row: r, score: sc, timeRank: ix.timeRank, tNorm: tFirst})
 	}
 	matched := len(hits)
 	if matched == 0 {
 		return nil, 0
 	}
-	// 排序：匹配方式 → 学年新的 → 课名短的 → 老师名（让同一位老师的教学班挨在一起）→ id
+	// 排序：1. 关键词匹配程度 → 2. 时间越新越前 → 3. 课名短的 → 4. 老师名 → id
 	sort.SliceStable(hits, func(i, j int) bool {
 		a, b := hits[i], hits[j]
-		if a.rank != b.rank {
-			return a.rank < b.rank
+		if a.score != b.score {
+			return a.score > b.score
 		}
-		if ya, yb := y2CatYear(a.row), y2CatYear(b.row); ya != yb {
-			return ya > yb
+		if a.timeRank != b.timeRank {
+			return a.timeRank > b.timeRank
 		}
 		if li, lj := len([]rune(a.row.Title)), len([]rune(b.row.Title)); li != lj {
 			return li < lj
 		}
-		if ta, tb := y2NormText(a.row.Teacher), y2NormText(b.row.Teacher); ta != tb {
-			return ta < tb
+		if a.tNorm != b.tNorm {
+			return a.tNorm < b.tNorm
 		}
 		return a.row.ID < b.row.ID
 	})
@@ -554,6 +743,7 @@ func y2CatRowCourse(r y2CatRow) y2Course {
 		"courseId": r.ID,
 		"title":    r.Title,
 		"teacher":  r.Teacher,
+		"code":     r.Code,
 		"termId":   "",
 		"termName": r.Term,
 		"kind":     "record",

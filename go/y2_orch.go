@@ -162,6 +162,7 @@ func y2VideoInvalidate(jwt, courseID string) {
 	y2VideoMu.Lock()
 	delete(y2VideoCache, key)
 	y2VideoMu.Unlock()
+	y2SubCacheInvalidateCourse(jwt, courseID)
 }
 
 // y2RememberIf 只有"完整深挖"的结果才写缓存：搜索时为了快拿到的可能是少几讲的
@@ -171,6 +172,18 @@ func y2RememberIf(cache bool, key string, data *y2VideosData) *y2VideosData {
 		return y2Remember(key, data)
 	}
 	return data
+}
+
+// y2ScheduleCachedOnly 只从内存缓存取课表（零网络耗时）
+func y2ScheduleCachedOnly(jwt string) (map[string][]y2ScheduleRow, bool) {
+	key := y2JwtTail(jwt)
+	y2SchedMu.Lock()
+	hit, ok := y2SchedCache[key]
+	y2SchedMu.Unlock()
+	if ok && time.Since(hit.at) < y2VideoTTL && hit.err == nil {
+		return hit.mp, true
+	}
+	return nil, false
 }
 
 // y2Schedule 自己课表里近 150 天的讲次（讲次直读失败时的救命通道，一次覆盖所有课）
@@ -622,8 +635,15 @@ func y2MergeKnownSessions(jwt string, id *y2Identity, courseID string, sessions 
 			add([]y2Session{y2ScheduleToSession(s)})
 		}
 	}
-	if mp, err := y2Schedule(jwt, id); err == nil {
+	if mp, ok := y2ScheduleCachedOnly(jwt); ok {
 		addRows(mp[courseID])
+	} else if len(base) < 2 {
+		if mp, err := y2Schedule(jwt, id); err == nil {
+			addRows(mp[courseID])
+		}
+	} else if deep {
+		// 详情已给出完整讲次时不再阻塞等待 150 天课表，仅在后台预热缓存
+		go func(j string, ident *y2Identity) { _, _ = y2Schedule(j, ident) }(jwt, id)
 	}
 	// 搜索时已经扫好的课表缓存，有就用
 	if len(extra) == 0 && q != "" {
@@ -918,16 +938,40 @@ func y2Verify(jwt string, id *y2Identity, courses []y2Course, q string, skipScan
 		}
 	}
 
-	// 排序：先匹配度（课程名 / 教师名），再录像数，最后原始顺序
+	// 排序：1) 关键词匹配程度优先 2) 时间越新越前 3) 录像数 4) 原顺序
 	orig := map[string]int{}
 	for i, c := range courses {
 		orig[jstr(c["courseId"])] = i
 	}
+	qn, tokNorms := y2NormalizeTokens(q)
+	scoreRow := func(c y2Course) int {
+		if len(tokNorms) == 0 {
+			return 0
+		}
+		t := jstr(c["teacher"])
+		var tNorms []string
+		for _, p := range splitTeacherNames(t) {
+			if np := y2NormText(p); np != "" {
+				tNorms = append(tNorms, np)
+			}
+		}
+		return y2ScoreNormalized(y2NormText(jstr(c["title"])), y2NormText(jstr(c["code"])), tNorms, qn, tokNorms)
+	}
+	termRank := func(c y2Course) int {
+		tn := jstr(c["termName"])
+		if tn == "" {
+			tn = termNames[jstr(c["termId"])]
+		}
+		return y2TermRankOfString(tn, jstr(c["code"]))
+	}
 	sort.SliceStable(kept, func(i, j int) bool {
-		si := searchScore(jstr(kept[i]["title"]), jstr(kept[i]["teacher"]), "", q)
-		sj := searchScore(jstr(kept[j]["title"]), jstr(kept[j]["teacher"]), "", q)
+		si, sj := scoreRow(kept[i]), scoreRow(kept[j])
 		if si != sj {
 			return si > sj
+		}
+		ti, tj := termRank(kept[i]), termRank(kept[j])
+		if ti != tj {
+			return ti > tj
 		}
 		vi, vj := y2CourseVideoCount(kept[i]), y2CourseVideoCount(kept[j])
 		if vi != vj {

@@ -171,12 +171,16 @@ func verifyAppCandidate(which, blob, cookieHeader string) (string, bool) {
 
 	cookieOut := y2CleanCookie(cookieHeader)
 	seen := map[string]bool{}
+	nowUnix := time.Now().Unix()
 	tryJWT := func(raw string) (string, bool) {
 		jwt := y2ExtractJwt(strings.TrimSpace(raw))
 		if jwt == "" || seen[jwt] {
 			return "", false
 		}
 		seen[jwt] = true
+		if exp := y2JwtExp(jwt); exp > 0 && nowUnix > exp {
+			return "", false
+		}
 		ck := cookieOut
 		if ck == "" {
 			ck = y2CleanCookie(raw)

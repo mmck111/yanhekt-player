@@ -62,8 +62,8 @@ var y2StreamClient = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig:       insecureTLS,
 		ForceAttemptHTTP2:     false,
-		MaxConnsPerHost:       4,
-		MaxIdleConnsPerHost:   4,
+		MaxConnsPerHost:       16,
+		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       60 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,

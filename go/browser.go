@@ -198,18 +198,46 @@ func autoLoginOld() (token string, user *userInfo, from string, candidates, file
 	return "", nil, "", candidates, files
 }
 
-// autoLoginNew 自动登录新平台：逐个验证候选 JWT，返回第一个有效的
+// autoLoginNew 自动登录新平台：过滤掉本地已过期的 JWT 后并发验证，避免启动长时间卡顿
 func autoLoginNew() (jwt string, id *y2Identity, from string, candidates, files int) {
 	scan := scanBrowserStoreCached()
 	candidates = len(scan.jwts)
 	files = scan.files
-	limit := candidates
-	if limit > 8 {
-		limit = 8
+	now := time.Now().Unix()
+	validCands := make([][2]string, 0, len(scan.jwts))
+	for _, c := range scan.jwts {
+		if exp := y2JwtExp(c[0]); exp > 0 && now > exp {
+			continue
+		}
+		validCands = append(validCands, c)
+		if len(validCands) >= 6 {
+			break
+		}
 	}
-	for _, c := range scan.jwts[:limit] {
-		if who := y2Who(c[0]); who != nil {
-			return c[0], who, c[1], candidates, files
+	if len(validCands) == 0 {
+		return "", nil, "", candidates, files
+	}
+	type probeRes struct {
+		idx int
+		jwt string
+		id  *y2Identity
+		src string
+	}
+	results := make([]probeRes, len(validCands))
+	var wg sync.WaitGroup
+	for i, c := range validCands {
+		wg.Add(1)
+		go func(idx int, tok, src string) {
+			defer wg.Done()
+			if who := y2Who(tok); who != nil {
+				results[idx] = probeRes{idx: idx + 1, jwt: tok, id: who, src: src}
+			}
+		}(i, c[0], c[1])
+	}
+	wg.Wait()
+	for _, r := range results {
+		if r.id != nil {
+			return r.jwt, r.id, r.src, candidates, files
 		}
 	}
 	return "", nil, "", candidates, files

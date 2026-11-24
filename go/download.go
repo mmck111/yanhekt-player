@@ -301,7 +301,19 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	fmt.Printf("下载开始：%s，共 %d 片，约 %d 分钟\n", title, len(media.segments), int(media.duration/60+0.5))
 	dlCtx, dlCancel := context.WithCancel(r.Context())
 	defer dlCancel()
+	startSeg, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("startSeg")))
+	startBytes, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("startBytes")), 10, 64)
+	if startSeg < 0 || startSeg >= len(order) {
+		startSeg = 0
+		startBytes = 0
+	}
+
 	tracker := dlTrackStart("old", title+ext, len(order), 0)
+	tracker.setReqPath(r.URL.RequestURI())
+	if startSeg > 0 {
+		tracker.setResumeInit(startSeg, startBytes)
+		w.Header().Set("X-YHKT-Resume-Seg", strconv.Itoa(startSeg))
+	}
 	tracker.setCancel(dlCancel)
 
 	w.Header().Set("content-type", ctype)
@@ -313,10 +325,10 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	started = true
 
 	flusher, _ := w.(http.Flusher)
-	doneSegs, failedSegs := 0, 0
-	var doneBytes int64
+	doneSegs, failedSegs := startSeg, 0
+	doneBytes := startBytes
 	gone := false
-	for i := 0; i < len(order); i++ {
+	for i := startSeg; i < len(order); i++ {
 		if gone || dlCtx.Err() != nil || tracker.isCancelled() {
 			gone = true
 			break
@@ -324,7 +336,7 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 		buf := fetchSegment(order[i], vid, 5)
 		if buf == nil {
 			failedSegs++
-			if i == 0 {
+			if i == startSeg {
 				break // 第一片就取不到：多半是地址/权限问题，别硬下
 			}
 			continue // 中间断一片：跳过，接着下
@@ -335,7 +347,7 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 			break
 		}
 		doneBytes += int64(len(buf))
-		tracker.update(doneSegs, doneBytes)
+		tracker.update(i+1, doneBytes)
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -346,12 +358,10 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 			sleepMs(200) // 稍微放慢，别把 CDN 惹急
 		}
 	}
-	if gone || tracker.isCancelled() {
-		msg := "连接已断开"
-		if tracker.isCancelled() {
-			msg = "用户已取消"
-		}
-		tracker.finish("cancelled", msg)
+	if tracker.isCancelled() {
+		tracker.finish("cancelled", "用户已取消")
+	} else if gone || dlCtx.Err() != nil {
+		tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
 	} else if doneSegs == 0 {
 		tracker.finish("error", "分片拉取失败")
 	} else {
