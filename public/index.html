@@ -2130,27 +2130,48 @@ function startDownloadKind(kind){
   closeDlMenu();
   if (srcMode === 'live') { toast('直播是实时流，不能下载；想存就等它变成回放', 3600); return; }
   if (!cur) { toast('先点一个讲次', 2600); return; }
+  const pc = activePlayCourse();
+  const cid = pc && pc.course && pc.course.id;
+  if (!cid) { toast('还没有课程信息', 2600); return; }
+  const cname = (pc.course && pc.course.name) || '课程';
+  const makeReq = k => {
+    const lbl = k === 'dual' ? '双画面' : (k === 'vga' ? '课件' : '全景');
+    const title = cname + '_' + (cur.date || '') + '_' + lbl;
+    const url = '/dl?course=' + encodeURIComponent(cid)
+      + '&session=' + encodeURIComponent(cur.id) + '&kind=' + k + '&title=' + encodeURIComponent(title);
+    return { url, title, lbl };
+  };
+  if (kind === 'both') {
+    if (!cur.main || !cur.vga) { toast('这一讲缺少全景或课件画面', 3000); return; }
+    const tMain = makeReq('main'), tVga = makeReq('vga');
+    if (window.yhktApp && window.yhktApp.downloadBatch) {
+      window.yhktApp.downloadBatch([
+        { url: tMain.url, title: tMain.title },
+        { url: tVga.url, title: tVga.title },
+      ]);
+    } else {
+      window.open(tMain.url, '_blank');
+      setTimeout(() => window.open(tVga.url, '_blank'), 850);
+      toast('开始分别下载全景和课件两个原画文件，可在「下载管理」看进度', 4500);
+      if (!NATIVE_DL) setTimeout(refreshWebDownloads, 900);
+    }
+    return;
+  }
   const label = kind === 'dual' ? '双画面' : (kind === 'vga' ? '课件' : '全景');
   if (kind === 'dual') {
     if (!cur.main || !cur.vga) { toast('这一讲缺少全景或课件画面，无法合成双画面', 3000); return; }
   } else if (!cur[kind]) {
     toast('这一讲没有' + label + '画面', 3000); return;
   }
-  const pc = activePlayCourse();
-  const cid = pc && pc.course && pc.course.id;
-  if (!cid) { toast('还没有课程信息', 2600); return; }
-  const cname = (pc.course && pc.course.name) || '课程';
-  const title = cname + '_' + (cur.date || '') + '_' + label;
-  const url = '/dl?course=' + encodeURIComponent(cid)
-    + '&session=' + encodeURIComponent(cur.id) + '&kind=' + kind + '&title=' + encodeURIComponent(title);
-  window.open(url, '_blank');
+  const req = makeReq(kind);
+  window.open(req.url, '_blank');
   toast(kind === 'dual'
     ? '开始下载并合成双画面（完成后保存为单个 .mp4），可在「下载管理」看进度'
     : ('开始下载' + label + '画面，可在「下载管理」看进度'), 4500);
   if (!NATIVE_DL) setTimeout(refreshWebDownloads, 600);
 }
 
-function downloadCurrent(){
+async function downloadCurrent(){
   if (srcMode === 'live') { toast('直播是实时流，不能下载；想存就等它变成回放', 3600); return; }
   if (!cur) { toast('先点一个讲次', 2600); return; }
   const menu = $('#dlMenu');
@@ -2159,12 +2180,21 @@ function downloadCurrent(){
     return;
   }
   if (menu.classList.contains('show')) { closeDlMenu(); return; }
-  const ffHint = serverHasFFmpeg === false ? '需 ffmpeg' : '同屏单个 .mp4';
+  if (serverHasFFmpeg === null) {
+    try {
+      const j = await (await fetch('/api/status')).json();
+      serverHasFFmpeg = !!(j && j.hasFFmpeg);
+      window.__yhktHasFFmpeg = serverHasFFmpeg;
+    } catch (e) { serverHasFFmpeg = false; }
+  }
   const opts = [
     { k: 'main', label: '教师 / 全景画面', tag: mode === 'main' ? '当前视角' : '' },
     { k: 'vga', label: '课件画面', tag: mode === 'vga' ? '当前视角' : '' },
-    { k: 'dual', label: '双画面（合成）', tag: mode === 'dual' ? '当前视角 · ' + ffHint : ffHint },
+    { k: 'both', label: '教师 + 课件（两路都下）', tag: (mode === 'dual' && !serverHasFFmpeg) ? '当前视角 · 分别保存 2 个文件' : '分别保存 2 个文件' },
   ];
+  if (serverHasFFmpeg) {
+    opts.push({ k: 'dual', label: '双画面（同屏合成）', tag: mode === 'dual' ? '当前视角 · 单个 .mp4' : '单个 .mp4' });
+  }
   menu.innerHTML = '';
   opts.forEach(o => {
     const btn = document.createElement('button');
@@ -2390,7 +2420,10 @@ function applyAppSettings(s){
   window.addEventListener('beforeunload', () => saveCourseProgress(true));
   loadDbTerms();
   fetch('/api/status').then(r => r.json()).then(j => {
-    if (j && typeof j.hasFFmpeg === 'boolean') serverHasFFmpeg = j.hasFFmpeg;
+    if (j && typeof j.hasFFmpeg === 'boolean') {
+      serverHasFFmpeg = j.hasFFmpeg;
+      window.__yhktHasFFmpeg = j.hasFFmpeg;
+    }
     if (j.build) {
       $('#build').textContent = 'build ' + j.build;
       $('#verpill').textContent = 'v' + j.build;

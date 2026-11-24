@@ -1999,24 +1999,45 @@ function startY2DownloadKind(dlKind){
   const streams = (info && info.streams) || [];
   const hasCam = streams.some(x => x.type === 'camera' || x.type === 'room');
   const hasScreen = streams.some(x => x.type === 'screen');
+  const camKind = streams.some(x => x.type === 'camera') ? 'camera' : 'room';
+  const makeReq = k => {
+    const lbl = k === 'dual' ? '双画面' : k === 'screen' ? '课件' : k === 'room' ? '教室' : '教师画面';
+    const title = (pc.title || '课程') + '_' + ((curSub.date || '').slice(0, 10)) + '_' + lbl;
+    const url = '/y2dl?c=' + encodeURIComponent(pc.courseId)
+      + '&s=' + encodeURIComponent(curSub.subId)
+      + '&k=' + encodeURIComponent(k)
+      + '&title=' + encodeURIComponent(title);
+    return { url, title, lbl };
+  };
+  if (dlKind === 'both') {
+    if (!hasCam || !hasScreen) { toast('这一讲缺少教师或课件画面', 3000); return; }
+    const tCam = makeReq(camKind), tScr = makeReq('screen');
+    if (window.yhktApp && window.yhktApp.downloadBatch) {
+      window.yhktApp.downloadBatch([
+        { url: tCam.url, title: tCam.title },
+        { url: tScr.url, title: tScr.title },
+      ]);
+    } else {
+      window.open(tCam.url, '_blank');
+      setTimeout(() => window.open(tScr.url, '_blank'), 850);
+      toast('开始分别下载教师和课件两个原画文件，可在「下载管理」看进度', 4500);
+      if (!NATIVE_DL) setTimeout(refreshWebDownloads, 900);
+    }
+    return;
+  }
   if (dlKind === 'dual' && (!hasCam || !hasScreen)) {
     toast('这一讲缺少教师或课件画面，无法合成双画面', 3000);
     return;
   }
-  const label = dlKind === 'dual' ? '双画面' : dlKind === 'screen' ? '课件' : dlKind === 'room' ? '教室' : '教师画面';
-  const title = (pc.title || '课程') + '_' + ((curSub.date || '').slice(0, 10)) + '_' + label;
-  const url = '/y2dl?c=' + encodeURIComponent(pc.courseId)
-    + '&s=' + encodeURIComponent(curSub.subId)
-    + '&k=' + encodeURIComponent(dlKind)
-    + '&title=' + encodeURIComponent(title);
-  window.open(url, '_blank');
+  const req = makeReq(dlKind);
+  window.open(req.url, '_blank');
   toast(dlKind === 'dual'
     ? '开始下载并合成双画面（完成后保存为单个 .mp4），可在「下载管理」看进度'
-    : ('开始下载' + label + '，可在「下载管理」看进度'), 4500);
+    : ('开始下载' + req.lbl + '，可在「下载管理」看进度'), 4500);
   if (!NATIVE_DL) setTimeout(refreshWebDownloads, 600);
 }
 
-$('#dl').onclick = () => {
+$('#dl').onclick = async () => {
   const pc = activePlayCourse();
   if (!pc || !curSub || !info) { toast('先点一讲再下载', 2600); return; }
   const streams = (info && info.streams) || [];
@@ -2029,6 +2050,13 @@ $('#dl').onclick = () => {
     return;
   }
   if (menu.classList.contains('show')) { closeDlMenu(); return; }
+  if (serverHasFFmpeg === null) {
+    try {
+      const st = await (await fetch('/api/y2/status')).json();
+      serverHasFFmpeg = !!(st && st.hasFFmpeg);
+      window.__yhktHasFFmpeg = serverHasFFmpeg;
+    } catch (e) { serverHasFFmpeg = false; }
+  }
   const opts = [];
   if (types.has('camera') || !types.has('room')) {
     opts.push({ k: 'camera', label: '教师画面', tag: kind === 'camera' ? '当前视角' : '' });
@@ -2040,8 +2068,10 @@ $('#dl').onclick = () => {
     opts.push({ k: 'room', label: '教室画面', tag: kind === 'room' ? '当前视角' : '' });
   }
   if (hasCam && hasScreen) {
-    const ffHint = serverHasFFmpeg === false ? '需 ffmpeg' : '同屏单个 .mp4';
-    opts.push({ k: 'dual', label: '双画面（合成）', tag: kind === 'dual' ? '当前视角 · ' + ffHint : ffHint });
+    opts.push({ k: 'both', label: '教师 + 课件（两路都下）', tag: (kind === 'dual' && !serverHasFFmpeg) ? '当前视角 · 分别保存 2 个文件' : '分别保存 2 个文件' });
+    if (serverHasFFmpeg) {
+      opts.push({ k: 'dual', label: '双画面（同屏合成）', tag: kind === 'dual' ? '当前视角 · 单个 .mp4' : '单个 .mp4' });
+    }
   }
   menu.innerHTML = '';
   opts.forEach(o => {
@@ -2297,7 +2327,10 @@ function applyAppSettings(s){
   let logged = false;
   try {
     const st = await (await fetch('/api/y2/status')).json();
-    if (st && typeof st.hasFFmpeg === 'boolean') serverHasFFmpeg = st.hasFFmpeg;
+    if (st && typeof st.hasFFmpeg === 'boolean') {
+      serverHasFFmpeg = st.hasFFmpeg;
+      window.__yhktHasFFmpeg = st.hasFFmpeg;
+    }
     logged = !!st.loggedIn;
     if (!logged && (!APP || (DESKTOP_APP && !sessionStorage.getItem('yhkt_manual_logout')))) {
       const a = await (await fetch('/api/y2/login/auto', { method: 'POST' })).json();

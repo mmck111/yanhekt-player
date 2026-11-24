@@ -103,8 +103,8 @@
             <select id="bdViewMode" title="批量下载选择的画面视角" style="margin-left:auto;background:var(--panel,#111622);border:1px solid var(--line,rgba(255,255,255,.12));color:var(--fg,#edf2f7);border-radius:8px;padding:5px 8px;font-size:12px">
               <option value="camera">下载：教师 / 全景画面</option>
               <option value="screen">下载：课件画面</option>
-              <option value="dual">下载：双画面（同屏合成单个 .mp4）</option>
-              <option value="both">下载：全景 + 课件（分别保存 2 个文件）</option>
+              <option value="both">下载：教师 + 课件（分别保存 2 个文件）</option>
+              <option value="dual" data-ffmpeg-only="1" hidden disabled>下载：双画面（本机 ffmpeg 同屏合成单个 .mp4）</option>
             </select>
           </div>
           <div class="bdlist" id="bdSessionList">
@@ -566,9 +566,32 @@
     }
   }
 
+  async function syncFFmpegMode() {
+    if (!modal) return;
+    let hasFF = window.__yhktHasFFmpeg;
+    if (typeof hasFF !== 'boolean') {
+      try {
+        const st = await (await fetch('/api/status')).json();
+        hasFF = !!(st && st.hasFFmpeg);
+        window.__yhktHasFFmpeg = hasFF;
+      } catch (e) { hasFF = false; }
+    }
+    const sel = modal.querySelector('#bdViewMode');
+    if (!sel) return;
+    const optDual = sel.querySelector('option[data-ffmpeg-only="1"]');
+    if (optDual) {
+      optDual.hidden = !hasFF;
+      optDual.disabled = !hasFF;
+    }
+    if (!hasFF && sel.value === 'dual') {
+      sel.value = 'both';
+      updateCounts();
+    }
+  }
+
   async function openModal(preCourse) {
     ensureUI();
-    await Promise.all([loadTerms(), refreshSaveHint()]);
+    await Promise.all([loadTerms(), refreshSaveHint(), syncFFmpegMode()]);
     const platEl = modal.querySelector('#bdPlat');
     if (platEl && optsCfg.defaultPlatform) platEl.value = optsCfg.defaultPlatform;
     modal.style.display = 'flex';
