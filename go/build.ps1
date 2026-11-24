@@ -42,7 +42,10 @@ try {
   & $go build -trimpath -tags $tags -ldflags $ldflags -o $exeOut .
   if ($LASTEXITCODE -ne 0) { throw 'windows build failed' }
 
-  # 3. 压缩主程序并编译安装向导（dist\yanhekt-setup-<ver>-windows-amd64.exe）
+  & $go build -trimpath -tags "$tags nogui" -ldflags '-s -w' -o (Join-Path $root 'dist\yanhekt-browser.exe') .
+  if ($LASTEXITCODE -ne 0) { throw 'windows browser edition build failed' }
+
+  # 3. 压缩独立窗口主程序并编译安装向导（dist\yanhekt-setup-<ver>-windows-amd64.exe）
   $verMatch = Select-String -Path (Join-Path $PSScriptRoot 'main.go') -Pattern 'const build = "([^"]+)"'
   $ver = if ($verMatch) { $verMatch.Matches[0].Groups[1].Value } else { '2.1.0' }
   $payloadDir = Join-Path $PSScriptRoot 'cmd\setup\payload'
