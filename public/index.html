@@ -362,7 +362,7 @@
       <span class="who" id="who">未登录</span>
       <a id="btnSetup" title="打开登录引导">登录</a>
       <a id="btnLogout" style="display:none">退出</a>
-      <a href="/y2" id="btnY2" title="新版平台：2024 后课程更快，支持 MP4 下载">新版平台 →</a>
+      <a href="/y2" id="btnY2" title="切换新版平台（2024 后课程）">新版平台 →</a>
     </div>
     <div class="sb-tools">
       <a href="#" id="btnDl2" class="toolbtn dlentry" title="查看下载任务与断点续传">⤓ 下载管理</a>
@@ -1406,8 +1406,8 @@ function showLoginModal(msg){
   box.innerHTML = `<div class="login">
       <h2><span>登录 / 切换平台</span><button class="xbtn" id="mClose" type="button">×</button></h2>
       <p class="sub">${sub}</p>
-      <button class="autobtn" id="mOld"><b>${oldok ? '✓ 老平台已登录（点一下重登）' : '登录老平台'}</b><i>往年（2024 以前）的课要走这边</i></button>
-      <button class="autobtn altbtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课在那边，播放快 3~5 倍</i></button>
+      <button class="autobtn" id="mOld"><b>${oldok ? '✓ 老平台已登录（点一下重登）' : '登录老平台'}</b><i>2024 以前的课程</i></button>
+      <button class="autobtn altbtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课程</i></button>
       ${importBtn}
       <div class="msg ${msg?'err':''}" id="mModalMsg">${esc(msg||'')}</div>
     </div>`;
@@ -1446,7 +1446,7 @@ function showLogin(msg, keep){
     if (!cur) {
       $('#cname').textContent = '延河课堂在线播放器';
       $('#cmeta').textContent = '点登录开始，或切到「直播」免登录观看';
-      splash('<div class="big">尚未登录老平台</div><div>搜课可直接搜内置课程库；点开课程看录像需要登录</div><div class="actrow"><button class="sbtn2" id="spLogin">立即登录</button><button class="sbtn2 ghost" id="spLive">看正在直播</button></div>');
+      splash('<div class="big">尚未登录老平台</div><div>可直接搜索课程；播放录像需要登录</div><div class="actrow"><button class="sbtn2" id="spLogin">立即登录</button><button class="sbtn2 ghost" id="spLive">看正在直播</button></div>');
       const sl = $('#spLogin'); if (sl) sl.onclick = () => showLogin('', true);
       const slv = $('#spLive'); if (slv) slv.onclick = () => setSrcMode('live');
     }
@@ -1666,7 +1666,7 @@ async function openCourse(input, { force = false } = {}){
     n.className = 'listnote';
     n.innerHTML = (data.stats.unresolved > 0)
       ? '这门课有 ' + data.stats.total + ' 次课的记录，但播放地址没取到（多半是登录过期）。<a id="noteLogin">重新登录</a>'
-      : '这门课排了 ' + data.stats.total + ' 次课，老平台上暂无录像（可点左下角「新版平台 →」碰碰运气）。';
+      : '这门课排了 ' + data.stats.total + ' 次课，老平台上暂无录像（可点左下角「新版平台 →」查看）。';
     list.appendChild(n);
     const a = n.querySelector('#noteLogin');
     if (a) a.onclick = () => showLogin('', true);
@@ -1781,7 +1781,7 @@ function renderLive(){
   head.className = 'listnote';
   head.innerHTML = esc((q ? `筛出 ${view.length} 场（共 ${liveItems.length} 场）` : `直播 ${liveItems.length} 场`)
     + ` · 正在直播 ${onair} 场 · 每分钟自动刷新`)
-    + `<div style="margin-top:2px;color:var(--muted);font-size:10.5px">引擎 ${esc(liveTz || '?')} · 更新 ${esc(liveAtTxt || '刚刚')}</div>`;
+    + `<div style="margin-top:2px;color:var(--muted);font-size:10.5px">更新于 ${esc(liveAtTxt || '刚刚')}</div>`;
   list.appendChild(head);
 
   if (liveErr) {
@@ -1933,7 +1933,7 @@ async function dbSearch(){
   const seq = ++searchSeq;
 
   const list = $('#list');
-  list.innerHTML = '<div class="splash" style="padding:20px"><span style="font-size:12px">正在极速检索课程…</span></div>';
+  list.innerHTML = '<div class="splash" style="padding:20px"><span style="font-size:12px">正在搜索课程…</span></div>';
 
   const renderResult = (j, probing) => {
     if (seq !== searchSeq || curCourse) return;
@@ -1955,17 +1955,8 @@ async function dbSearch(){
     if (j.probed) bits.push(`${withVideo} 门有录像`);
     else if (probing) bits.push('正后台核对录像数…');
     if (j.hidden) bits.push(`跳过 ${j.hidden} 门无录像`);
-    if (j.source === 'catalog') bits.push('离线课程库');
-    if (!j.probed && !probing) bits.push('未登录 → 未查录像数');
     head.textContent = bits.join(' · ');
     list.appendChild(head);
-
-    if (q) {
-      const tip = document.createElement('div');
-      tip.className = 'listnote';
-      tip.innerHTML = `2024 后的课在 <a href="/y2?q=${encodeURIComponent(q)}">新版平台 →</a> 播放快 3~5 倍`;
-      list.appendChild(tip);
-    }
 
     j.courses.forEach(c => list.appendChild(dbRow(c)));
 

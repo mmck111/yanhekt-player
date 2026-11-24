@@ -320,8 +320,7 @@
   <aside>
     <div class="hd">
       <div class="brandhead">
-        <h1><span class="dot off" id="sdot"></span>新版平台 · 极速播放</h1>
-        <span class="fasttag">3~5× 快</span>
+        <h1><span class="dot off" id="sdot"></span>延河课堂 · 新版平台</h1>
       </div>
       <div class="search">
         <div class="inpbox">
@@ -356,7 +355,7 @@
       <button class="lgbtn" id="lgbtn" type="button" style="display:none" title="登录 / 切换平台">登录</button>
       <div class="who">
         <span class="t" id="now">延河课堂新版播放器</span>
-        <span class="subt" id="nowSub">内置 2.7 万门课程，支持秒拖与 MP4 下载</span>
+        <span class="subt" id="nowSub">搜索课程或选择左侧讲次开始播放</span>
       </div>
       <div class="tabs">
         <button class="tab on" data-k="camera">教师画面</button>
@@ -669,7 +668,7 @@ function showLoginModal(msg){
   box.innerHTML = `<div class="login">
       <h2><span>登录 / 切换平台</span><button class="xbtn" id="mClose" type="button">×</button></h2>
       <p class="sub">${sub}</p>
-      <button class="autobtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课，播放快 3~5 倍</i></button>
+      <button class="autobtn" id="mY2"><b>${y2ok ? '✓ 新版已登录（点一下重登）' : '登录新版平台'}</b><i>2024 以后的课程</i></button>
       <button class="autobtn altbtn" id="mOld"><b>${oldok ? '✓ 老平台已登录（点一下重登）' : '登录老平台'}</b><i>往年（2024 以前）的课要走这边</i></button>
       ${importBtn}
       <div class="msg ${msg?'err':''}" id="mModalMsg">${esc(msg||'')}</div>
@@ -712,7 +711,7 @@ function showLogin(msg){
   box.style.display = 'flex';
   box.innerHTML = `<div class="login">
     <h2><span>登录延河课堂 · 新版</span><button class="xbtn" id="lgClose" type="button" title="先搜本地课程库">×</button></h2>
-    <p class="sub">一次能用 24 小时。本地 2.7 万门课程库无需登录即可搜课；点看录像前登录即可。</p>
+    <p class="sub">登录一次有效约 24 小时；未登录也可先搜索课程。</p>
 
     <div class="paste">
       <b>① 打开新版延河并登录</b>
@@ -914,7 +913,7 @@ async function resumeLast(){
   if (!s || !s.course) {
     renderHist();
     $('#now').textContent = '延河课堂新版播放器';
-    $('#nowSub').textContent = '内置 2.7 万门课程，支持秒拖与 MP4 下载';
+    $('#nowSub').textContent = '搜索课程或选择左侧讲次开始播放';
     splash('<div class="big">在左上角搜课程名或教师名</div><div>支持空格 / 左右方向键控制播放，支持双画面与进度记忆</div>');
     return;
   }
@@ -954,7 +953,7 @@ async function doFind(limitOverride){
   const sig = searchAbort.signal;
   const seq = ++searchSeq;
 
-  $('#list').innerHTML = '<div class="splash"><span>正在极速检索…<br><span class="tiny">内置课程库本地毫秒命中</span></span></div>';
+  $('#list').innerHTML = '<div class="splash"><span>正在搜索课程…</span></div>';
   $('#fmeta').textContent = '';
 
   const list = $('#list');
@@ -975,7 +974,7 @@ async function doFind(limitOverride){
     const bits = [];
     if (newOnes.length) bits.push('新版 ' + newOnes.length + (jMeta.total > newOnes.length ? '/' + jMeta.total : '') + ' 门');
     if (dbMeta.courses && dbMeta.courses.length) bits.push('老平台库 ' + dbMeta.total + ' 门');
-    else if (loadingOld) bits.push('正同步老平台往届课程…');
+    else if (loadingOld) bits.push('正加载老平台课程…');
     if (jMeta.hidden) bits.push('已隐藏 ' + jMeta.hidden + ' 门无录像');
     if (jMeta.unverified) bits.push(jMeta.unverified + ' 门未确认');
     const noteText = (jMeta.notes || []).join('；');
@@ -990,7 +989,7 @@ async function doFind(limitOverride){
     }
     oldSlot.innerHTML = '';
     if (!oldOnes.length) return;
-    oldSlot.appendChild(section('老平台课程库（往届学期，点开转老平台）'));
+    oldSlot.appendChild(section('老平台课程（点开切换老平台）'));
     oldOnes.forEach(c=>{
       const el = document.createElement('div');
       el.className='item';
@@ -1027,7 +1026,7 @@ async function doFind(limitOverride){
     // 立即先渲染新版结果（毫秒级出图），绝不卡在老平台网络探测上
     list.innerHTML = '';
     if (newOnes.length) {
-      list.appendChild(section('新版平台（播放快，拖动秒定位）'));
+      list.appendChild(section('新版平台'));
       const pending = [];
       newOnes.forEach(c=>{
         const el = document.createElement('div');
@@ -1056,7 +1055,7 @@ async function doFind(limitOverride){
         list.appendChild(more);
       }
       oldSlot = document.createElement('div');
-      oldSlot.innerHTML = '<div class="listnote" style="margin-top:8px">正在同步补充老平台往届课程…</div>';
+      oldSlot.innerHTML = '<div class="listnote" style="margin-top:8px">正在加载老平台课程…</div>';
       list.appendChild(oldSlot);
       updateHeaderMeta(true);
     } else {
@@ -1210,7 +1209,7 @@ async function loadSessions(c, el, opts){
   $('#now').textContent = c.title || '读取中…';
   $('#nowSub').textContent = [c.teacher, c.termName].filter(Boolean).join(' · ') || '正在读取讲次列表…';
   $('#fsTitle').textContent = $('#now').textContent;
-  $('#list').innerHTML = '<div class="splash"><span>正在读取讲次列表…<br><span class="tiny">优先从详情接口秒取；必要时自动补全课表记录</span></span></div>';
+  $('#list').innerHTML = '<div class="splash"><span>正在读取讲次列表…</span></div>';
   try{
     const url = '/api/y2/sessions?courseId=' + encodeURIComponent(c.courseId)
       + '&q=' + encodeURIComponent(curQuery)
@@ -1237,8 +1236,7 @@ async function loadSessions(c, el, opts){
       list.appendChild(empty);
       return;
     }
-    if (j.source === 'schedule') $('#fmeta').textContent = '讲次来自扫课表（' + j.sessions.length + ' 节有录像）';
-    else $('#fmeta').textContent = j.sessions.length + ' 讲有录像' + (j.total > j.sessions.length ? '（共 ' + j.total + ' 讲）' : '');
+    $('#fmeta').textContent = j.sessions.length + ' 讲有录像' + (j.total > j.sessions.length ? '（共 ' + j.total + ' 讲）' : '');
 
     const progCourse = loadProgMap()[String(c.courseId)] || {};
     let resumeNode = null, firstPlayable = null;
@@ -2370,7 +2368,7 @@ function applyAppSettings(s){
   if (directId) {
     if (!logged) {
       setGuestSplash('需要登录新版平台', '登录后即可自动打开课程 ' + directId);
-      showLogin('这门课在新版平台上更快，先登录新版');
+      showLogin('请先登录新版平台');
       return;
     }
     await loadSessions({
@@ -2386,7 +2384,7 @@ function applyAppSettings(s){
     await resumeLast();
   } else {
     renderHist();
-    setGuestSplash('未登录新版平台', '可先直接搜索本地 2.7 万门课程库，或点击下方按钮登录');
+    setGuestSplash('未登录新版平台', '可先直接搜索课程，或点击下方按钮登录');
     if (!APP) showLogin();
   }
 })();
