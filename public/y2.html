@@ -185,6 +185,9 @@
   .item.dim{opacity:.52}
   .item .d{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;line-height:1.45;color:var(--fg)}
   .item .m{font-size:11.5px;color:var(--dim);margin-top:4px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .item .m:empty,.item .m:has(> .bd:empty):not(:has(> span:not(.bd))){display:none}
+  .bd{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .bd:empty{display:none}
   .badge{font-size:11px;font-weight:500;line-height:1.45;padding:1px 8px;border-radius:8px;color:var(--dim);background:var(--panel2);white-space:nowrap}
   .item.on .badge{background:rgba(255,255,255,.22);color:var(--on-sec-soft)}
   .badge.rec{color:var(--on-accent-soft);background:var(--accent-soft);font-weight:600}
@@ -1245,7 +1248,6 @@ async function doFind(limitOverride){
     if (dbMeta.courses && dbMeta.courses.length) bits.push('老平台库 ' + dbMeta.total + ' 门');
     else if (loadingOld) bits.push('正加载老平台课程…');
     if (jMeta.hidden) bits.push('已隐藏 ' + jMeta.hidden + ' 门无录像');
-    if (jMeta.unverified) bits.push(jMeta.unverified + ' 门未确认');
     const noteText = (jMeta.notes || []).join('；');
     $('#fmeta').innerHTML = esc(bits.join(' · ')) + (noteText ? ' · ' + esc(noteText) : '') + diagHint(jMeta.notes);
   };
@@ -1270,7 +1272,7 @@ async function doFind(limitOverride){
         + '<div class="m">'
         + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
         + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>' : '')
-        + (c.verified === false ? '<span class="badge" title="' + esc(c.note||'没探到') + '">未确认</span>' : '')
+        + (c.tag && c.tag !== '未确认' ? '<span class="badge" title="' + esc(c.note||'') + '">' + esc(c.tag) + '</span>' : '')
         + '</div>';
       el.onclick = ()=>{ location.href = '/old?course=' + encodeURIComponent(c.id); };
       oldSlot.appendChild(el);
@@ -1368,7 +1370,6 @@ function badges(c){
   else if(c.verified) h += '<span class="badge rec">有录像</span>';
   if(c.noVideo) h += '<span class="badge">没录像</span>';
   if(c.totalSessions > c.videoCount) h += '<span class="badge" title="共 ' + c.totalSessions + ' 讲">共 ' + c.totalSessions + ' 讲</span>';
-  if(c.verified === false && !c.noVideo) h += '<span class="badge" title="' + esc(c.note||'还没确认过') + '">未确认</span>';
   return h;
 }
 
