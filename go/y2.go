@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -48,25 +49,31 @@ var y2Client = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig:       insecureTLS,
 		ForceAttemptHTTP2:     false,
-		MaxIdleConnsPerHost:   8,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
 		ResponseHeaderTimeout: y2APITTL,
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		DisableCompression:    true,
 	},
 }
 
 // /play/ 流媒体的客户端：不能设整体超时（要整份转发几分钟的 MP4），
-// 只限"等首字节 60s"（Node 是 socket 空闲 60s）
+// 增大读写缓冲区与并发连接复用，加快起播与并发分片下载
 var y2StreamClient = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig:       insecureTLS,
 		ForceAttemptHTTP2:     false,
-		MaxConnsPerHost:       16,
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Second,
+		MaxIdleConns:          64,
+		MaxConnsPerHost:       24,
+		MaxIdleConnsPerHost:   24,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ReadBufferSize:        64 << 10,
+		WriteBufferSize:       64 << 10,
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		DisableCompression:    true,
 	},
 }

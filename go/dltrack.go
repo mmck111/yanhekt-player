@@ -25,7 +25,8 @@ type dlTrackItem struct {
 	TotalSegs  int    `json:"totalSegs"`
 	Bytes      int64  `json:"bytes"`
 	TotalBytes int64  `json:"totalBytes"`
-	Status     string `json:"status"` // "running" | "done" | "interrupted" | "cancelled" | "error"
+	SpeedBps   int64  `json:"speedBps,omitempty"`
+	Status     string `json:"status"` // "queued" | "running" | "done" | "interrupted" | "cancelled" | "error"
 	Error      string `json:"error,omitempty"`
 	StartedAt  int64  `json:"startedAt"`
 	UpdatedAt  int64  `json:"updatedAt"`
@@ -33,6 +34,8 @@ type dlTrackItem struct {
 	cancel    func()
 	cancelled bool
 	lastSave  int64
+	winAt     int64
+	winBytes  int64
 }
 
 var (
@@ -104,8 +107,9 @@ func dlTrackLoadNow() {
 		if it == nil || it.ID == "" {
 			continue
 		}
-		if it.Status == "running" {
+		if it.Status == "running" || it.Status == "queued" {
 			it.Status = "interrupted"
+			it.SpeedBps = 0
 			it.Error = "上次窗口关闭时未完成"
 			changed = true
 		}
@@ -172,6 +176,7 @@ func cleanDLReqPath(raw string) string {
 	}
 	q := u.Query()
 	q.Del("resumeId")
+	q.Del("queueId")
 	q.Del("startSeg")
 	q.Del("startBytes")
 	q.Del("probe")
@@ -180,6 +185,62 @@ func cleanDLReqPath(raw string) string {
 		out += "?" + enc
 	}
 	return out
+}
+
+func dlTrackEnqueue(platform, title, reqPath string) *dlTrackItem {
+	dlTrackInit()
+	id := fmt.Sprintf("dl-%d-%d", time.Now().UnixMilli(), atomic.AddUint64(&dlTrackSeq, 1))
+	now := time.Now().UnixMilli()
+	it := &dlTrackItem{
+		ID:        id,
+		Platform:  platform,
+		Title:     title,
+		ReqPath:   cleanDLReqPath(reqPath),
+		Status:    "queued",
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	dlTrackMu.Lock()
+	dlTrackItems = append([]*dlTrackItem{it}, dlTrackItems...)
+	if len(dlTrackItems) > 120 {
+		dlTrackItems = dlTrackItems[:120]
+	}
+	dlTrackMu.Unlock()
+	dlTrackSaveLocked(false)
+	return it
+}
+
+func dlTrackBindOrStart(queueID, platform, title string, totalSegs int, totalBytes int64) *dlTrackItem {
+	dlTrackInit()
+	queueID = strings.TrimSpace(queueID)
+	if queueID != "" {
+		dlTrackMu.Lock()
+		for _, it := range dlTrackItems {
+			if it.ID == queueID {
+				now := time.Now().UnixMilli()
+				if title != "" {
+					it.Title = title
+				}
+				if totalSegs > 0 {
+					it.TotalSegs = totalSegs
+				}
+				if totalBytes > 0 {
+					it.TotalBytes = totalBytes
+				}
+				it.Status = "running"
+				it.Error = ""
+				it.SpeedBps = 0
+				it.winAt = now
+				it.winBytes = it.Bytes
+				it.UpdatedAt = now
+				dlTrackMu.Unlock()
+				dlTrackSaveLocked(false)
+				return it
+			}
+		}
+		dlTrackMu.Unlock()
+	}
+	return dlTrackStart(platform, title, totalSegs, totalBytes)
 }
 
 func dlTrackStart(platform, title string, totalSegs int, totalBytes int64) *dlTrackItem {
@@ -195,11 +256,12 @@ func dlTrackStart(platform, title string, totalSegs int, totalBytes int64) *dlTr
 		Status:     "running",
 		StartedAt:  now,
 		UpdatedAt:  now,
+		winAt:      now,
 	}
 	dlTrackMu.Lock()
 	dlTrackItems = append([]*dlTrackItem{it}, dlTrackItems...)
-	if len(dlTrackItems) > 30 {
-		dlTrackItems = dlTrackItems[:30]
+	if len(dlTrackItems) > 120 {
+		dlTrackItems = dlTrackItems[:120]
 	}
 	dlTrackMu.Unlock()
 	dlTrackSaveLocked(false)
@@ -295,7 +357,7 @@ func dlTrackRunningCount() int {
 	defer dlTrackMu.Unlock()
 	n := 0
 	for _, it := range dlTrackItems {
-		if it.Status == "running" {
+		if it.Status == "running" || it.Status == "queued" {
 			n++
 		}
 	}
@@ -308,8 +370,9 @@ func dlTrackMarkAllInterrupted() {
 	var cancels []func()
 	now := time.Now().UnixMilli()
 	for _, it := range dlTrackItems {
-		if it.Status == "running" {
+		if it.Status == "running" || it.Status == "queued" {
 			it.Status = "interrupted"
+			it.SpeedBps = 0
 			it.Error = "窗口已关闭，下载暂停"
 			it.UpdatedAt = now
 			if it.cancel != nil {
@@ -336,6 +399,9 @@ func dlTrackSetStatus(id, status, errMsg string) {
 	for _, it := range dlTrackItems {
 		if it.ID == id {
 			it.Status = status
+			if status != "running" {
+				it.SpeedBps = 0
+			}
 			it.Error = errMsg
 			it.UpdatedAt = time.Now().UnixMilli()
 			break
@@ -345,14 +411,38 @@ func dlTrackSetStatus(id, status, errMsg string) {
 	dlTrackSaveLocked(false)
 }
 
+func (it *dlTrackItem) updateSpeedLocked(now int64) {
+	if it.winAt == 0 {
+		it.winAt = now
+		it.winBytes = it.Bytes
+		return
+	}
+	dt := now - it.winAt
+	if dt >= 750 {
+		delta := it.Bytes - it.winBytes
+		if delta >= 0 {
+			bps := delta * 1000 / dt
+			if it.SpeedBps > 0 {
+				it.SpeedBps = (it.SpeedBps*2 + bps) / 3
+			} else {
+				it.SpeedBps = bps
+			}
+		}
+		it.winAt = now
+		it.winBytes = it.Bytes
+	}
+}
+
 func (it *dlTrackItem) update(doneSegs int, bytes int64) {
 	if it == nil {
 		return
 	}
+	now := time.Now().UnixMilli()
 	dlTrackMu.Lock()
 	it.DoneSegs = doneSegs
 	it.Bytes = bytes
-	it.UpdatedAt = time.Now().UnixMilli()
+	it.UpdatedAt = now
+	it.updateSpeedLocked(now)
 	dlTrackMu.Unlock()
 	dlTrackSaveLocked(true)
 }
@@ -361,9 +451,11 @@ func (it *dlTrackItem) addBytes(n int64) {
 	if it == nil || n <= 0 {
 		return
 	}
+	now := time.Now().UnixMilli()
 	dlTrackMu.Lock()
 	it.Bytes += n
-	it.UpdatedAt = time.Now().UnixMilli()
+	it.UpdatedAt = now
+	it.updateSpeedLocked(now)
 	dlTrackMu.Unlock()
 	dlTrackSaveLocked(true)
 }
@@ -377,6 +469,7 @@ func (it *dlTrackItem) finish(status, errMsg string) {
 		status = "interrupted"
 	}
 	it.Status = status
+	it.SpeedBps = 0
 	it.Error = errMsg
 	it.UpdatedAt = time.Now().UnixMilli()
 	dlTrackMu.Unlock()
@@ -390,6 +483,7 @@ func (it *dlTrackItem) markDone() {
 	dlTrackMu.Lock()
 	it.DoneSegs = it.TotalSegs
 	it.Status = "done"
+	it.SpeedBps = 0
 	it.Error = ""
 	it.UpdatedAt = time.Now().UnixMilli()
 	dlTrackMu.Unlock()
@@ -430,9 +524,10 @@ func dlTrackCancel(id string) bool {
 	for _, it := range dlTrackItems {
 		if it.ID == id {
 			found = true
-			if it.Status == "running" {
+			if it.Status == "running" || it.Status == "queued" {
 				it.cancelled = true
 				it.Status = "cancelled"
+				it.SpeedBps = 0
 				it.Error = "用户已取消"
 				it.UpdatedAt = time.Now().UnixMilli()
 				fn = it.cancel
@@ -501,7 +596,7 @@ func handleDownloadsRemove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": false})
 		return
 	}
-	if it.Status == "running" {
+	if it.Status == "running" || it.Status == "queued" {
 		dlTrackCancel(id)
 	}
 	if delFile && it.Status != "done" && it.SavePath != "" {

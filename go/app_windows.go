@@ -289,6 +289,16 @@ type desktopApp struct {
 
 	saveMu      sync.Mutex
 	lastSaveDir string
+	dlSem       chan struct{}
+}
+
+var desktopDLClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+	},
 }
 
 func (a *desktopApp) dispatch(fn func()) {
@@ -632,6 +642,7 @@ func runDesktopApp(p int) bool {
 		localBase:  fmt.Sprintf("http://127.0.0.1:%d", p),
 		port:       p,
 		tried:      map[string]bool{},
+		dlSem:      make(chan struct{}, 2),
 	}
 
 	winCtxMu.Lock()
@@ -1194,6 +1205,311 @@ func persistSavedDownloadDir(dir string) {
 	_ = os.WriteFile(filepath.Join(desktopAppBaseDir(), "save_dir.txt"), []byte(strings.TrimSpace(dir)), 0644)
 }
 
+type batchDLItem struct {
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+func appendQueryParam(rawURL, key, val string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		sep := "?"
+		if strings.Contains(rawURL, "?") {
+			sep = "&"
+		}
+		return rawURL + sep + url.QueryEscape(key) + "=" + url.QueryEscape(val)
+	}
+	q := u.Query()
+	q.Set(key, val)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func (a *desktopApp) withLocalCookies(fn func(cookieHdr string)) {
+	cm := a.host.getCookieManager()
+	if cm == nil {
+		fn("")
+		return
+	}
+	ok := cm.getCookiesAsync(a.localBase, func(cookies [][2]string) {
+		var parts []string
+		for _, kv := range cookies {
+			parts = append(parts, kv[0]+"="+kv[1])
+		}
+		fn(strings.Join(parts, "; "))
+	})
+	if !ok {
+		fn("")
+	}
+}
+
+func (a *desktopApp) runDesktopDownloadTask(fullURL, queueID, overrideDir, cookieHdr string, quietBatch bool) {
+	if queueID != "" && dlTrackIsCancelled(queueID) {
+		return
+	}
+	a.dlSem <- struct{}{}
+	defer func() { <-a.dlSem }()
+	if queueID != "" && dlTrackIsCancelled(queueID) {
+		return
+	}
+
+	curQueueID := queueID
+	curURL := fullURL
+	for autoAttempt := 0; autoAttempt < 3; autoAttempt++ {
+		parsedURL, _ := url.Parse(curURL)
+		var resumeID string
+		var oldItem dlTrackItem
+		var hasOld bool
+		reqURL := curURL
+		if parsedURL != nil {
+			q := parsedURL.Query()
+			resumeID = strings.TrimSpace(q.Get("resumeId"))
+			if resumeID != "" {
+				if old, ok := dlTrackGet(resumeID); ok && old.SavePath != "" {
+					oldItem = old
+					hasOld = true
+					if fi, err := os.Stat(old.SavePath); err == nil && fi.Size() > 0 {
+						if old.TotalSegs > 1 && old.DoneSegs > 0 && old.DoneSegs < old.TotalSegs && fi.Size() == old.Bytes {
+							q.Set("startSeg", fmt.Sprintf("%d", old.DoneSegs))
+							q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
+						} else if old.TotalSegs <= 1 {
+							q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
+						}
+					}
+				}
+				q.Del("resumeId")
+				parsedURL.RawQuery = q.Encode()
+				reqURL = parsedURL.String()
+			}
+		}
+		if curQueueID != "" {
+			reqURL = appendQueryParam(reqURL, "queueId", curQueueID)
+		}
+		cleanReq := cleanDLReqPath(reqURL)
+
+		req, err := http.NewRequest("GET", reqURL, nil)
+		if err != nil {
+			if curQueueID != "" {
+				dlTrackSetStatus(curQueueID, "error", err.Error())
+			}
+			a.uiToast("下载请求失败：" + err.Error())
+			return
+		}
+		if cookieHdr != "" {
+			req.Header.Set("Cookie", cookieHdr)
+		}
+		resp, err := desktopDLClient.Do(req)
+		if err != nil {
+			desktopLog("desktop download HTTP failed: %v", err)
+			if curQueueID != "" {
+				dlTrackSetStatus(curQueueID, "interrupted", "请求失败，可在下载管理中重试")
+			}
+			a.uiToast("下载失败：" + err.Error())
+			return
+		}
+		if resp.StatusCode != 200 {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+			_ = resp.Body.Close()
+			msg := strings.TrimSpace(string(b))
+			if msg == "" {
+				msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+			}
+			if curQueueID != "" {
+				dlTrackSetStatus(curQueueID, "error", msg)
+			}
+			a.uiToast("下载失败：" + msg)
+			return
+		}
+
+		dlID := resp.Header.Get("X-YHKT-DL-ID")
+		resumedOK := resp.Header.Get("X-YHKT-Resume-Seg") != "" || resp.Header.Get("X-YHKT-Resume-Offset") != ""
+		fname := parseDownloadFilename(resp.Header.Get("Content-Disposition"), curURL)
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fname)), ".")
+		if ext == "" {
+			ext = "mp4"
+		}
+
+		curSet := loadAppSettings()
+		if curSet.DownloadDir == "" {
+			a.saveMu.Lock()
+			if a.lastSaveDir == "" {
+				a.lastSaveDir = loadSavedDownloadDir()
+			}
+			curSet.DownloadDir = a.lastSaveDir
+			a.saveMu.Unlock()
+		}
+
+		var outFile *os.File
+		var savePath string
+
+		if hasOld && oldItem.SavePath != "" {
+			if resumedOK {
+				if f, err := os.OpenFile(oldItem.SavePath, os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+					outFile = f
+					savePath = oldItem.SavePath
+					desktopLog("download resume path=%s", savePath)
+				}
+			} else if probeWritableDir(filepath.Dir(oldItem.SavePath)) {
+				if f, err := os.Create(oldItem.SavePath); err == nil {
+					outFile = f
+					savePath = oldItem.SavePath
+					desktopLog("download restart path=%s", savePath)
+				}
+			}
+		}
+
+		if outFile == nil && overrideDir != "" && probeWritableDir(overrideDir) {
+			a.saveMu.Lock()
+			cand := uniqueDestPath(overrideDir, fname)
+			f, err := os.Create(cand)
+			a.saveMu.Unlock()
+			if err == nil {
+				outFile = f
+				savePath = cand
+				desktopLog("download batch path=%s", savePath)
+			}
+		}
+
+		if outFile == nil && !curSet.AskSavePath {
+			defDir := effectiveDownloadDirOf(curSet)
+			if defDir != "" && probeWritableDir(defDir) {
+				a.saveMu.Lock()
+				cand := uniqueDestPath(defDir, fname)
+				f, err := os.Create(cand)
+				a.saveMu.Unlock()
+				if err == nil {
+					outFile = f
+					savePath = cand
+					desktopLog("download direct path=%s", savePath)
+				} else {
+					desktopLog("download direct os.Create(%s) failed: %v", cand, err)
+				}
+			}
+		}
+
+		if outFile == nil {
+			type saveChoice struct {
+				path string
+				ok   bool
+			}
+			pickOnce := func(fallbackInit bool) saveChoice {
+				ch := make(chan saveChoice, 1)
+				a.dispatch(func() {
+					a.saveMu.Lock()
+					if a.lastSaveDir == "" {
+						a.lastSaveDir = curSet.DownloadDir
+						if a.lastSaveDir == "" {
+							a.lastSaveDir = loadSavedDownloadDir()
+						}
+					}
+					lastDir := a.lastSaveDir
+					a.saveMu.Unlock()
+					if fallbackInit {
+						lastDir = ""
+					}
+					initDir := pickWritableSaveDir(lastDir)
+					desktopLog("download dialog fname=%s initDir=%s", fname, initDir)
+					p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
+					desktopLog("download dialog result ok=%v path=%s", ok, p)
+					ch <- saveChoice{p, ok}
+				})
+				return <-ch
+			}
+
+			for attempt := 0; attempt < 3; attempt++ {
+				choice := pickOnce(attempt > 0)
+				if !choice.ok || choice.path == "" {
+					dlTrackCancel(dlID)
+					if resumeID == "" && curQueueID == "" {
+						dlTrackDeleteEntry(dlID)
+					}
+					_ = resp.Body.Close()
+					a.uiToast("已取消下载")
+					return
+				}
+				f, err := os.Create(choice.path)
+				if err == nil {
+					outFile = f
+					savePath = choice.path
+					dir := filepath.Dir(choice.path)
+					a.saveMu.Lock()
+					a.lastSaveDir = dir
+					a.saveMu.Unlock()
+					persistSavedDownloadDir(dir)
+					break
+				}
+				desktopLog("download os.Create(%s) failed: %v", choice.path, err)
+				a.dispatch(func() {
+					showDesktopError("无法保存到该位置：\n" + choice.path + "\n\n" + err.Error() + "\n\n请重新选择一个有写入权限的文件夹。")
+				})
+			}
+		}
+		if outFile == nil {
+			dlTrackCancel(dlID)
+			_ = resp.Body.Close()
+			return
+		}
+
+		if resumeID != "" && resumeID != dlID {
+			dlTrackDeleteEntry(resumeID)
+		}
+		dlTrackAttachFile(dlID, cleanReq, savePath)
+
+		if !quietBatch || autoAttempt > 0 {
+			toastPrefix := "正在保存到 "
+			if resumedOK {
+				toastPrefix = "继续下载到 "
+			}
+			a.uiToast(toastPrefix + savePath + "（可在「下载管理」查看进度或取消）")
+		}
+
+		written, copyErr := io.CopyBuffer(outFile, resp.Body, make([]byte, 64*1024))
+		closeErr := outFile.Close()
+		_ = resp.Body.Close()
+
+		if dlTrackIsCancelled(dlID) {
+			_ = os.Remove(savePath)
+			desktopLog("download cancelled path=%s partialBytes=%d", savePath, written)
+			a.uiToast("已取消下载：" + filepath.Base(savePath))
+			return
+		}
+		it, _ := dlTrackGet(dlID)
+		if copyErr != nil || closeErr != nil || it.Status == "interrupted" || it.Status == "error" {
+			e := copyErr
+			if e == nil {
+				e = closeErr
+			}
+			if e == nil && it.Error != "" {
+				e = fmt.Errorf("%s", it.Error)
+			}
+			if autoAttempt < 2 && written > 0 && it.Status != "cancelled" {
+				desktopLog("download transient break path=%s bytes=%d, auto-resuming attempt=%d", savePath, written, autoAttempt+1)
+				dlTrackSetStatus(dlID, "running", "网络波动，自动断点续传中…")
+				time.Sleep(1500 * time.Millisecond)
+				if dlTrackIsCancelled(dlID) {
+					return
+				}
+				curQueueID = dlID
+				curURL = appendQueryParam(a.localBase+cleanReq, "resumeId", dlID)
+				continue
+			}
+			dlTrackSetStatus(dlID, "interrupted", "传输中断，可在下载管理中继续")
+			desktopLog("download interrupted path=%s bytes=%d err=%v", savePath, written, e)
+			msg := "连接断开"
+			if e != nil {
+				msg = e.Error()
+			}
+			a.uiToast("下载中断（可在「下载管理」继续）：" + msg)
+			return
+		}
+		desktopLog("download saved path=%s bytes=%d", savePath, written)
+		if !quietBatch {
+			a.uiToast("✓ 已保存：" + filepath.Base(savePath))
+		}
+		return
+	}
+}
+
 func (a *desktopApp) startDesktopDownload(rawURL string) {
 	fullURL := strings.TrimSpace(rawURL)
 	if strings.HasPrefix(fullURL, "/") {
@@ -1202,236 +1518,103 @@ func (a *desktopApp) startDesktopDownload(rawURL string) {
 	if !strings.HasPrefix(fullURL, a.localBase+"/dl") && !strings.HasPrefix(fullURL, a.localBase+"/y2dl") {
 		return
 	}
-	runWithCookie := func(cookieHdr string) {
-		go func() {
-			parsedURL, _ := url.Parse(fullURL)
-			var resumeID string
-			var oldItem dlTrackItem
-			var hasOld bool
-			reqURL := fullURL
-			if parsedURL != nil {
-				q := parsedURL.Query()
-				resumeID = strings.TrimSpace(q.Get("resumeId"))
-				if resumeID != "" {
-					if old, ok := dlTrackGet(resumeID); ok && old.SavePath != "" {
-						oldItem = old
-						hasOld = true
-						if fi, err := os.Stat(old.SavePath); err == nil && fi.Size() > 0 {
-							if old.TotalSegs > 1 && old.DoneSegs > 0 && old.DoneSegs < old.TotalSegs && fi.Size() == old.Bytes {
-								q.Set("startSeg", fmt.Sprintf("%d", old.DoneSegs))
-								q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
-							} else if old.TotalSegs <= 1 {
-								q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
-							}
-						}
-					}
-					q.Del("resumeId")
-					parsedURL.RawQuery = q.Encode()
-					reqURL = parsedURL.String()
-				}
-			}
-			cleanReq := cleanDLReqPath(reqURL)
-
-			req, err := http.NewRequest("GET", reqURL, nil)
-			if err != nil {
-				a.uiToast("下载请求失败：" + err.Error())
-				return
-			}
-			if cookieHdr != "" {
-				req.Header.Set("Cookie", cookieHdr)
-			}
-			resp, err := (&http.Client{}).Do(req)
-			if err != nil {
-				desktopLog("desktop download HTTP failed: %v", err)
-				a.uiToast("下载失败：" + err.Error())
-				return
-			}
-			if resp.StatusCode != 200 {
-				b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-				_ = resp.Body.Close()
-				msg := strings.TrimSpace(string(b))
-				if msg == "" {
-					msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
-				}
-				a.uiToast("下载失败：" + msg)
-				return
-			}
-
-			dlID := resp.Header.Get("X-YHKT-DL-ID")
-			resumedOK := resp.Header.Get("X-YHKT-Resume-Seg") != "" || resp.Header.Get("X-YHKT-Resume-Offset") != ""
-			fname := parseDownloadFilename(resp.Header.Get("Content-Disposition"), fullURL)
-			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(fname)), ".")
-			if ext == "" {
-				ext = "mp4"
-			}
-
-			curSet := loadAppSettings()
-			if curSet.DownloadDir == "" {
-				a.saveMu.Lock()
-				if a.lastSaveDir == "" {
-					a.lastSaveDir = loadSavedDownloadDir()
-				}
-				curSet.DownloadDir = a.lastSaveDir
-				a.saveMu.Unlock()
-			}
-
-			var outFile *os.File
-			var savePath string
-
-			if hasOld && oldItem.SavePath != "" {
-				if resumedOK {
-					if f, err := os.OpenFile(oldItem.SavePath, os.O_WRONLY|os.O_APPEND, 0644); err == nil {
-						outFile = f
-						savePath = oldItem.SavePath
-						desktopLog("download resume path=%s", savePath)
-					}
-				} else if probeWritableDir(filepath.Dir(oldItem.SavePath)) {
-					if f, err := os.Create(oldItem.SavePath); err == nil {
-						outFile = f
-						savePath = oldItem.SavePath
-						desktopLog("download restart path=%s", savePath)
-					}
-				}
-			}
-
-			if outFile == nil && !curSet.AskSavePath {
-				defDir := effectiveDownloadDirOf(curSet)
-				if defDir != "" && probeWritableDir(defDir) {
-					cand := uniqueDestPath(defDir, fname)
-					if f, err := os.Create(cand); err == nil {
-						outFile = f
-						savePath = cand
-						desktopLog("download direct path=%s", savePath)
-					} else {
-						desktopLog("download direct os.Create(%s) failed: %v", cand, err)
-					}
-				}
-			}
-
-			if outFile == nil {
-				type saveChoice struct {
-					path string
-					ok   bool
-				}
-				pickOnce := func(fallbackInit bool) saveChoice {
-					ch := make(chan saveChoice, 1)
-					a.dispatch(func() {
-						a.saveMu.Lock()
-						if a.lastSaveDir == "" {
-							a.lastSaveDir = curSet.DownloadDir
-							if a.lastSaveDir == "" {
-								a.lastSaveDir = loadSavedDownloadDir()
-							}
-						}
-						lastDir := a.lastSaveDir
-						a.saveMu.Unlock()
-						if fallbackInit {
-							lastDir = ""
-						}
-						initDir := pickWritableSaveDir(lastDir)
-						desktopLog("download dialog fname=%s initDir=%s", fname, initDir)
-						p, ok := pickSaveFileDialog(a.hwnd, initDir, fname, ext)
-						desktopLog("download dialog result ok=%v path=%s", ok, p)
-						ch <- saveChoice{p, ok}
-					})
-					return <-ch
-				}
-
-				for attempt := 0; attempt < 3; attempt++ {
-					choice := pickOnce(attempt > 0)
-					if !choice.ok || choice.path == "" {
-						dlTrackCancel(dlID)
-						if resumeID == "" {
-							dlTrackDeleteEntry(dlID)
-						}
-						_ = resp.Body.Close()
-						a.uiToast("已取消下载")
-						return
-					}
-					f, err := os.Create(choice.path)
-					if err == nil {
-						outFile = f
-						savePath = choice.path
-						dir := filepath.Dir(choice.path)
-						a.saveMu.Lock()
-						a.lastSaveDir = dir
-						a.saveMu.Unlock()
-						persistSavedDownloadDir(dir)
-						break
-					}
-					desktopLog("download os.Create(%s) failed: %v", choice.path, err)
-					a.dispatch(func() {
-						showDesktopError("无法保存到该位置：\n" + choice.path + "\n\n" + err.Error() + "\n\n请重新选择一个有写入权限的文件夹。")
-					})
-				}
-			}
-			if outFile == nil {
-				dlTrackCancel(dlID)
-				_ = resp.Body.Close()
-				return
-			}
-
-			if resumeID != "" {
-				dlTrackDeleteEntry(resumeID)
-			}
-			dlTrackAttachFile(dlID, cleanReq, savePath)
-
-			toastPrefix := "正在保存到 "
-			if resumedOK {
-				toastPrefix = "继续下载到 "
-			}
-			a.uiToast(toastPrefix + savePath + "（可在「下载管理」查看进度或取消）")
-			written, copyErr := io.Copy(outFile, resp.Body)
-			closeErr := outFile.Close()
-			_ = resp.Body.Close()
-			if dlTrackIsCancelled(dlID) {
-				_ = os.Remove(savePath)
-				desktopLog("download cancelled path=%s partialBytes=%d", savePath, written)
-				a.uiToast("已取消下载：" + filepath.Base(savePath))
-				return
-			}
-			if copyErr != nil || closeErr != nil {
-				e := copyErr
-				if e == nil {
-					e = closeErr
-				}
-				dlTrackSetStatus(dlID, "interrupted", "传输中断，可在下载管理中继续")
-				desktopLog("download interrupted path=%s bytes=%d err=%v", savePath, written, e)
-				a.uiToast("下载中断（可在「下载管理」继续）：" + e.Error())
-				return
-			}
-			desktopLog("download saved path=%s bytes=%d", savePath, written)
-			a.uiToast("✓ 已保存：" + filepath.Base(savePath))
-		}()
+	parsedURL, _ := url.Parse(fullURL)
+	queueID := ""
+	if parsedURL != nil && strings.TrimSpace(parsedURL.Query().Get("resumeId")) == "" {
+		fname := parseDownloadFilename("", fullURL)
+		plat := "old"
+		if strings.HasPrefix(parsedURL.Path, "/y2dl") {
+			plat = "y2"
+		}
+		queueID = dlTrackEnqueue(plat, fname, parsedURL.RequestURI()).ID
 	}
+	a.withLocalCookies(func(cookieHdr string) {
+		go a.runDesktopDownloadTask(fullURL, queueID, "", cookieHdr, false)
+	})
+}
 
-	cm := a.host.getCookieManager()
-	if cm == nil {
-		runWithCookie("")
+func (a *desktopApp) startDesktopBatchDownload(items []batchDLItem) {
+	if len(items) == 0 {
 		return
 	}
-	ok := cm.getCookiesAsync(a.localBase, func(cookies [][2]string) {
-		var parts []string
-		for _, kv := range cookies {
-			parts = append(parts, kv[0]+"="+kv[1])
-		}
-		runWithCookie(strings.Join(parts, "; "))
-	})
-	if !ok {
-		runWithCookie("")
+	type prep struct {
+		fullURL string
+		queueID string
 	}
+	var preps []prep
+	for _, it := range items {
+		fullURL := strings.TrimSpace(it.URL)
+		if strings.HasPrefix(fullURL, "/") {
+			fullURL = a.localBase + fullURL
+		}
+		if !strings.HasPrefix(fullURL, a.localBase+"/dl") && !strings.HasPrefix(fullURL, a.localBase+"/y2dl") {
+			continue
+		}
+		parsedURL, _ := url.Parse(fullURL)
+		plat := "old"
+		if parsedURL != nil && strings.HasPrefix(parsedURL.Path, "/y2dl") {
+			plat = "y2"
+		}
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			title = parseDownloadFilename("", fullURL)
+		}
+		reqURI := fullURL
+		if parsedURL != nil {
+			reqURI = parsedURL.RequestURI()
+		}
+		qi := dlTrackEnqueue(plat, title, reqURI)
+		preps = append(preps, prep{fullURL: fullURL, queueID: qi.ID})
+	}
+	if len(preps) == 0 {
+		return
+	}
+
+	launchBatch := func(overrideDir string) {
+		a.withLocalCookies(func(cookieHdr string) {
+			a.uiToast(fmt.Sprintf("已将 %d 个任务加入下载队列（自动双路并发，断线自动续传）", len(preps)))
+			for _, p := range preps {
+				pp := p
+				go a.runDesktopDownloadTask(pp.fullURL, pp.queueID, overrideDir, cookieHdr, len(preps) > 1)
+			}
+		})
+	}
+
+	curSet := loadAppSettings()
+	if curSet.AskSavePath && len(preps) > 1 {
+		a.dispatch(func() {
+			defDir := pickWritableSaveDir(effectiveDownloadDirOf(curSet))
+			dir, ok := pickFolderDialog(a.hwnd, defDir)
+			if !ok || dir == "" || !probeWritableDir(dir) {
+				for _, p := range preps {
+					dlTrackCancel(p.queueID)
+					dlTrackDeleteEntry(p.queueID)
+				}
+				a.uiToast("已取消批量下载")
+				return
+			}
+			a.saveMu.Lock()
+			a.lastSaveDir = dir
+			a.saveMu.Unlock()
+			persistSavedDownloadDir(dir)
+			launchBatch(dir)
+		})
+		return
+	}
+	launchBatch("")
 }
 
 // ---------------- 登录截取与跳回流程 ----------------
 
 type webMsgPayload struct {
-	Type   string `json:"type"`
-	Which  string `json:"which"`
-	Host   string `json:"host"`
-	Token  string `json:"token"`
-	Cookie string `json:"cookie"`
-	URL    string `json:"url"`
-	Dir    string `json:"dir"`
+	Type   string        `json:"type"`
+	Which  string        `json:"which"`
+	Host   string        `json:"host"`
+	Token  string        `json:"token"`
+	Cookie string        `json:"cookie"`
+	URL    string        `json:"url"`
+	Dir    string        `json:"dir"`
+	Items  []batchDLItem `json:"items"`
 }
 
 func (a *desktopApp) onWebMessage(raw, source string) {
@@ -1450,6 +1633,8 @@ func (a *desktopApp) onWebMessage(raw, source string) {
 		a.clearWebCookies(msg.Which)
 	case "download":
 		a.startDesktopDownload(msg.URL)
+	case "downloadBatch":
+		a.startDesktopBatchDownload(msg.Items)
 	case "pickDownloadDir":
 		// Defer modal IFileOpenDialog out of WebMessageReceived so WebView2 never deadlocks on COM re-entrancy.
 		a.dispatch(func() {
@@ -1844,6 +2029,7 @@ func desktopInitScript(localBase string) string {
       clearAuth(which) { post({ type: 'clearAuth', which: String(which || 'all') }); },
       pickDownloadDir() { post({ type: 'pickDownloadDir' }); },
       openDownloadDir(dir) { post({ type: 'openDir', dir: String(dir || '') }); },
+      downloadBatch(items) { post({ type: 'downloadBatch', items: Array.isArray(items) ? items : [] }); },
     };
     const origOpen = window.open;
     window.open = function(u, n, f) {

@@ -35,7 +35,7 @@ $env:TMP = "$buildDir\tmp"; $env:TEMP = "$buildDir\tmp"
 $env:GOCACHE = "$buildDir\gocache"; $env:GOPATH = "$buildDir\gopath"
 if (Test-Path $web) { Remove-Item $web -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $web | Out-Null
-foreach ($f in 'index.html', 'y2.html', 'settings.js', 'icon.png', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
+foreach ($f in 'index.html', 'y2.html', 'settings.js', 'batch.js', 'icon.png', 'hls.min.js', 'catalog.json.gz', 'y2-catalog.json.gz') {
   $src = Join-Path $root "public\$f"
   if (Test-Path $src) { Copy-Item $src (Join-Path $web $f) }
 }

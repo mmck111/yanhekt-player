@@ -179,6 +179,7 @@ func buildExpiredCourse(id, token string) *courseData {
 		if len(startedAt) >= 10 {
 			date = startedAt[:10]
 		}
+		roomCam, audios := extractOldExtraStreams(s, v)
 		sessions = append(sessions, sessionRow{
 			ID:        s["id"],
 			Title:     orStr(jstr(s["section_group_title"]), jstr(s["title"])),
@@ -189,6 +190,8 @@ func buildExpiredCourse(id, token string) *courseData {
 			Duration:  duration,
 			Main:      main,
 			VGA:       vga,
+			RoomCam:   roomCam,
+			Audios:    audios,
 		})
 	}
 

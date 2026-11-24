@@ -228,6 +228,7 @@ func registerPages(mux *http.ServeMux, web fs.FS) {
 	mux.HandleFunc("/y2.html", serve("y2.html", "text/html; charset=utf-8", "no-store"))
 	mux.HandleFunc("/hls.min.js", serve("hls.min.js", "application/javascript; charset=utf-8", "public, max-age=86400"))
 	mux.HandleFunc("/settings.js", serve("settings.js", "application/javascript; charset=utf-8", "no-store"))
+	mux.HandleFunc("/batch.js", serve("batch.js", "application/javascript; charset=utf-8", "no-store"))
 	mux.HandleFunc("/icon.png", serve("icon.png", "image/png", "public, max-age=86400"))
 }
 

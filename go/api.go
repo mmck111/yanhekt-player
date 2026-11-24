@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,10 +36,12 @@ var apiClient = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig:       insecureTLS,
 		ForceAttemptHTTP2:     false,
-		MaxIdleConnsPerHost:   4,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		DisableCompression:    true,
 	},
 }

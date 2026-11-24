@@ -71,8 +71,11 @@
   .dlentry:hover{background:rgba(41,66,112,.94);border-color:rgba(91,156,255,.65);color:#fff}
   .dlentry.busy{border-color:rgba(52,211,153,.55);color:var(--ok);background:rgba(18,44,32,.85)}
   .dlentry.warn{border-color:rgba(251,191,36,.5);color:#fde68a;background:rgba(56,42,16,.75)}
+  .batchentry{grid-column:1 / -1;border:1px solid rgba(52,211,153,.38);background:rgba(16,44,34,.75);color:#9bf2cd}
+  .batchentry:hover{background:rgba(22,60,46,.92);border-color:rgba(52,211,153,.65);color:#fff}
   .setentry{border:1px solid rgba(255,255,255,.18);background:var(--panel2);color:var(--fg)}
   .setentry:hover{border-color:rgba(91,156,255,.5);background:var(--panel3);color:#fff}
+  .audsel{max-width:165px;text-overflow:ellipsis}
 
   .list{overflow:auto;padding:8px 9px 14px;flex:1}
   .dbmeta{font-size:11px;color:var(--dim);padding:4px 5px 8px;line-height:1.55}
@@ -357,6 +360,7 @@
     <div class="sb-tools">
       <a href="#" id="btnDl2" class="toolbtn dlentry" title="查看下载任务与断点续传">⤓ 下载管理</a>
       <a href="#" id="btnSet" class="toolbtn setentry" title="默认下载目录与播放器设置">⚙ 设置</a>
+      <a href="#" id="btnBatchDl" class="toolbtn batchentry" title="搜索并勾选课程任意讲次或全选整门课批量下载">📦 批量搜课下载专区</a>
     </div>
     <div class="list" id="list"></div>
   </aside>
@@ -395,8 +399,9 @@
       <div class="stagewrap" id="stagewrap">
         <div class="splash" id="splash"><div class="big">正在检查登录状态…</div></div>
         <div class="stage single" id="stage" style="display:none">
-          <div class="pane" id="paneMain"><video id="vMain" playsinline preload="metadata"></video><span class="tag">全景（讲台 / 投影）</span></div>
-          <div class="pane hide" id="paneVga"><video id="vVga" playsinline preload="metadata" muted></video><span class="tag">课件（屏幕）</span></div>
+          <div class="pane" id="paneMain"><video id="vMain" playsinline preload="metadata"></video><span class="tag" id="tagMain">全景（讲台 / 投影）</span></div>
+          <div class="pane hide" id="paneVga"><video id="vVga" playsinline preload="metadata" muted></video><span class="tag" id="tagVga">课件（屏幕）</span></div>
+          <video id="vAudioAux" playsinline preload="auto" style="display:none"></video>
         </div>
         <div class="spin" id="spin"><i></i><span>缓冲中…</span></div>
       </div>
@@ -427,6 +432,7 @@
             <button id="btnMute" title="静音 (M)">🔊</button>
             <input id="vol" type="range" min="0" max="1" step="0.05" value="1" title="音量">
           </div>
+          <select id="audioSrc" class="audsel" title="为当前视角选择声音来源" style="display:none"></select>
           <select id="rate" title="播放倍速">
             <option value="0.75">0.75×</option><option value="1" selected>1×</option>
             <option value="1.25">1.25×</option><option value="1.5">1.5×</option>
@@ -441,7 +447,7 @@
 
     <div class="hint">
       <span><kbd>空格</kbd> 播放/暂停 · <kbd>←</kbd><kbd>→</kbd> 退/进 15s · <kbd>F</kbd> 全屏 · <kbd>M</kbd> 静音 · <kbd>1</kbd>-<kbd>3</kbd> 切机位 · 自动记忆播放进度</span>
-      <span><a id="selfcheck" title="把当前这门课的情况打成 JSON 排查">自检</a> · <span id="build" style="color:var(--muted)"></span></span>
+      <span><span id="build" style="color:var(--muted)"></span></span>
     </div>
   </main>
 </div>
@@ -499,10 +505,12 @@
 
 <script src="/hls.min.js"></script>
 <script src="/settings.js"></script>
+<script src="/batch.js"></script>
 <script>
 const $ = s => document.querySelector(s);
-const vids = { main: $('#vMain'), vga: $('#vVga') };
-const players = { main: null, vga: null };
+const vids = { main: $('#vMain'), vga: $('#vVga'), aux: $('#vAudioAux') };
+const players = { main: null, vga: null, aux: null };
+const attachedUrls = { main: '', vga: '', aux: '' };
 let mode = 'main', dualPip = false, dualSwapped = false, audioFrom = 'main';
 let curCourse = null, cur = null, me = null;
 let autoNext = false, pendingResumeSec = 0, lastSaveAt = 0;
@@ -512,6 +520,7 @@ const LS_RATE = 'yhkt_rate_v1';
 const LS_PROG = 'yhkt_prog_v1';
 const LS_HIST = 'yhkt_hist_v1';
 const LS_AUTONEXT = 'yhkt_autonext_v1';
+const LS_AUDIOPREF = 'yhkt_audiopref_v1';
 
 const b64 = s => btoa(String.fromCharCode(...new TextEncoder().encode(s)))
   .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
@@ -540,6 +549,10 @@ function applyRate(r){
   $('#rate').value = String(rate);
   vids.main.defaultPlaybackRate = rate;
   vids.vga.defaultPlaybackRate = rate;
+  if (vids.aux) {
+    vids.aux.defaultPlaybackRate = rate;
+    vids.aux.playbackRate = rate;
+  }
   vids.main.playbackRate = rate;
   vids.vga.playbackRate = rate;
   try { localStorage.setItem(LS_RATE, String(rate)); } catch(e){}
@@ -646,17 +659,24 @@ function renderHist(){
   list.appendChild(box);
 }
 
-/* ---------- 播放器 ---------- */
+/* ---------- 播放器与多音源 ---------- */
 function destroy(k){
+  attachedUrls[k] = '';
   if (players[k]) { try { players[k].destroy(); } catch(e){} players[k] = null; }
-  vids[k].removeAttribute('src'); try { vids[k].load(); } catch(e){}
+  if (vids[k]) {
+    vids[k].removeAttribute('src');
+    try { vids[k].load(); } catch(e){}
+  }
+  clearErr(k);
 }
 function clearErr(key){
+  if (key === 'aux') return;
   const pane = key === 'main' ? $('#paneMain') : $('#paneVga');
   const el = pane && pane.querySelector('.perr');
   if (el) el.remove();
 }
 function showErr(key, title, detail, retryFn){
+  if (key === 'aux') return;
   const pane = key === 'main' ? $('#paneMain') : $('#paneVga');
   if (!pane) return;
   clearErr(key);
@@ -674,16 +694,23 @@ function showErr(key, title, detail, retryFn){
 
 const toLocal = s => (s ? '/p?u=' + b64(s) : null);
 
-function attach(k, url, seekTo){
+function attach(k, url, seekTo, opts){
+  const isLive = !!(opts && opts.live) || srcMode === 'live';
+  const force = !!(opts && opts.force);
+  if (!url) { destroy(k); return; }
+  if (!force && attachedUrls[k] === url && (players[k] || vids[k].getAttribute('src'))) {
+    clearErr(k);
+    return;
+  }
   destroy(k);
+  attachedUrls[k] = url;
   const v = vids[k];
-  if (!url) return;
   clearErr(k);
   const rate = getSavedRate();
   v.defaultPlaybackRate = rate;
   v.playbackRate = rate;
 
-  let needSeek = (seekTo && seekTo > 1) ? Number(seekTo) : 0;
+  let needSeek = (!isLive && seekTo && seekTo > 1) ? Number(seekTo) : 0;
   const tryApplySeek = () => {
     v.playbackRate = getSavedRate();
     if (!needSeek) {
@@ -725,27 +752,41 @@ function attach(k, url, seekTo){
     if (k === 'main' || mode === 'vga') suppressProgressSave = false;
   }
 
+  const autoPlay = !opts || opts.autoPlay !== false;
   const onReady = () => {
     tryApplySeek();
+    if (autoPlay && k !== 'aux') v.play().catch(()=>{});
   };
 
-  if (window.Hls && Hls.isSupported()) {
-    const h = new Hls({
-      maxBufferLength: 40,
-      maxMaxBufferLength: 90,
-      fragLoadingMaxRetry: 4,
-      fragLoadingRetryDelay: 400,
-      manifestLoadingMaxRetry: 3,
-      levelLoadingMaxRetry: 3,
+  const isHLSUrl = /\.m3u8(\?|$)/i.test(url) || url.indexOf('/p?u=') === 0 || url.indexOf('/lp?u=') === 0;
+  if (isHLSUrl && window.Hls && Hls.isSupported()) {
+    const hCfg = {
+      maxBufferLength: isLive ? 18 : 36,
+      maxMaxBufferLength: isLive ? 36 : 90,
+      fragLoadingTimeOut: 15000,
+      manifestLoadingTimeOut: 10000,
+      levelLoadingTimeOut: 10000,
+      fragLoadingMaxRetry: 6,
+      fragLoadingRetryDelay: 300,
+      manifestLoadingMaxRetry: 4,
+      levelLoadingMaxRetry: 4,
+      startFragPrefetch: true,
       startLevel: -1,
       startPosition: needSeek ? needSeek : -1,
       abortLoadingOnSeek: true,
-    });
-    h.on(Hls.Events.MANIFEST_PARSED, () => { clearErr(k); onReady(); });
+    };
+    if (isLive) {
+      hCfg.liveSyncDurationCount = 3;
+      hCfg.liveMaxLatencyDurationCount = 10;
+      hCfg.backBufferLength = 25;
+    }
+    const h = new Hls(hCfg);
+    h.on(Hls.Events.MANIFEST_PARSED, () => { clearErr(k); onReady(); populateAudioSelect(); });
+    h.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => { populateAudioSelect(); });
     h.on(Hls.Events.ERROR, (_, d) => {
       if (!d.fatal) return;
       const code = d.response && d.response.code;
-      const retry = () => attach(k, url, v.currentTime || seekTo || 0);
+      const retry = () => attach(k, url, v.currentTime || seekTo || 0, { live: isLive, force: true, autoPlay: true });
       if (d.type === Hls.ErrorTypes.NETWORK_ERROR) {
         showErr(k, '取不到视频流' + (code ? `（HTTP ${code}）` : ''),
           '本地代理未能从学校视频服务器拿到数据（可能 CDN 限流、校园网波动或登录已过期）。', retry);
@@ -754,25 +795,160 @@ function attach(k, url, seekTo){
       }
     });
     h.loadSource(url); h.attachMedia(v); players[k] = h;
-  } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+  } else if (!isHLSUrl || v.canPlayType('application/vnd.apple.mpegurl')) {
     v.src = url;
     onReady();
-    v.onerror = () => showErr(k, '取不到视频流', '浏览器无法加载该流，请稍后重试。', () => attach(k, url, v.currentTime || 0));
+    v.onerror = () => showErr(k, '取不到视频流', '浏览器无法加载该流，请稍后重试。', () => attach(k, url, v.currentTime || 0, { live: isLive, force: true, autoPlay: true }));
   } else {
     showErr(k, '浏览器不支持 HLS 播放', '请使用较新的 Chrome 或 Edge。');
   }
 }
 
+let audioPrefByView = {};
+try { audioPrefByView = JSON.parse(localStorage.getItem(LS_AUDIOPREF) || '{}') || {}; } catch(e){}
+let activeAudioKey = 'stream:main';
+let auxAudioActive = false;
+
+function getAvailableAudioSources(){
+  const srcs = [];
+  if (srcMode === 'live' && liveCur) {
+    if (liveCur.main) srcs.push({ key: 'stream:main', kind: 'main', label: '全景声音', url: liveUrl(liveCur.main) });
+    if (liveCur.vga) srcs.push({ key: 'stream:vga', kind: 'vga', label: '课件声音', url: liveUrl(liveCur.vga) });
+    if (liveCur.roomCam) srcs.push({ key: 'stream:room', kind: 'room', label: '教室声音', url: liveUrl(liveCur.roomCam) });
+    if (liveCur.audio) srcs.push({ key: 'ext:0', kind: 'ext', label: '独立音频', url: liveUrl(liveCur.audio) });
+  } else if (srcMode === 'record' && cur) {
+    if (cur.main) srcs.push({ key: 'stream:main', kind: 'main', label: '全景声音', url: toLocal(cur.main) });
+    if (cur.vga) srcs.push({ key: 'stream:vga', kind: 'vga', label: '课件声音', url: toLocal(cur.vga) });
+    if (cur.roomCam) srcs.push({ key: 'stream:room', kind: 'room', label: '教室声音', url: toLocal(cur.roomCam) });
+    if (Array.isArray(cur.audios)) {
+      cur.audios.forEach((a, i) => {
+        if (a && a.url) srcs.push({ key: 'ext:' + i, kind: 'ext', label: a.label || ('独立音频 ' + (i + 1)), url: toLocal(a.url) });
+      });
+    }
+  }
+  const activePl = players[mode === 'vga' ? 'vga' : 'main'];
+  if (activePl && Array.isArray(activePl.audioTracks) && activePl.audioTracks.length > 1) {
+    activePl.audioTracks.forEach((tr, idx) => {
+      const nm = (tr && (tr.name || tr.lang)) || ('音轨 ' + (idx + 1));
+      srcs.push({ key: 'hlstrack:' + idx, kind: 'hlstrack', label: '内嵌·' + nm, trackId: idx });
+    });
+  }
+  return srcs;
+}
+
+function defaultAudioKeyForView(srcs){
+  const pref = audioPrefByView[mode];
+  if (pref && srcs.some(s => s.key === pref)) return pref;
+  const viewKey = 'stream:' + (mode === 'dual' ? 'main' : mode);
+  if (srcs.some(s => s.key === viewKey)) return viewKey;
+  return (srcs[0] && srcs[0].key) || 'stream:main';
+}
+
+function populateAudioSelect(){
+  const sel = $('#audioSrc');
+  if (!sel) return;
+  const srcs = getAvailableAudioSources();
+  if (!srcs.length) {
+    sel.style.display = 'none';
+    return;
+  }
+  if (!srcs.some(s => s.key === activeAudioKey)) {
+    activeAudioKey = defaultAudioKeyForView(srcs);
+  }
+  sel.innerHTML = '';
+  for (const s of srcs) {
+    const o = document.createElement('option');
+    o.value = s.key;
+    o.textContent = '🔊 ' + s.label;
+    sel.appendChild(o);
+  }
+  sel.value = activeAudioKey;
+  sel.style.display = '';
+  applyAudioSelection();
+}
+
+function setAudioSourceKey(key){
+  activeAudioKey = key;
+  audioPrefByView[mode] = key;
+  try { localStorage.setItem(LS_AUDIOPREF, JSON.stringify(audioPrefByView)); } catch(e){}
+  if (key === 'stream:vga') audioFrom = 'vga';
+  else if (key === 'stream:main') audioFrom = 'main';
+  const sel = $('#audioSrc');
+  if (sel && sel.value !== key) sel.value = key;
+  $('#btnAudioSrc').textContent = '声音：' + (audioFrom === 'vga' ? '课件' : '全景');
+  applyAudioSelection();
+}
+
+function applyAudioSelection(){
+  const srcs = getAvailableAudioSources();
+  const chosen = srcs.find(s => s.key === activeAudioKey) || srcs[0];
+  if (!chosen) {
+    auxAudioActive = false;
+    destroy('aux');
+    updateAudioMute();
+    return;
+  }
+  const activeKey = activeVideo() === vids.vga ? 'vga' : 'main';
+  const mainMatches = (mode === 'dual' || mode === 'main') && chosen.key === 'stream:main';
+  const vgaMatches = (mode === 'dual' || mode === 'vga') && chosen.key === 'stream:vga';
+  const roomMatches = mode === 'room' && chosen.key === 'stream:room';
+
+  if (chosen.kind === 'hlstrack') {
+    auxAudioActive = false;
+    destroy('aux');
+    const pl = players[activeKey];
+    if (pl && pl.audioTrack !== chosen.trackId) {
+      try { pl.audioTrack = chosen.trackId; } catch(e){}
+    }
+    vids.main.muted = isMuted || activeKey !== 'main';
+    vids.vga.muted = isMuted || activeKey !== 'vga';
+  } else if (mainMatches || vgaMatches || roomMatches) {
+    auxAudioActive = false;
+    destroy('aux');
+    const useVga = vgaMatches;
+    vids.main.muted = isMuted || useVga;
+    vids.vga.muted = isMuted || !useVga;
+  } else if (chosen.url) {
+    vids.main.muted = true;
+    vids.vga.muted = true;
+    auxAudioActive = true;
+    const mv = activeVideo();
+    const t = mv && isFinite(mv.currentTime) ? mv.currentTime : 0;
+    const isLive = srcMode === 'live';
+    const vol = Number($('#vol') && $('#vol').value || 1);
+    vids.aux.volume = vol;
+    vids.aux.muted = isMuted;
+    attach('aux', chosen.url, isLive ? 0 : t, { live: isLive, autoPlay: mv ? !mv.paused : true });
+    if (!isLive && mv && isFinite(mv.currentTime) && Math.abs((vids.aux.currentTime || 0) - mv.currentTime) > 0.6) {
+      try { vids.aux.currentTime = mv.currentTime; } catch(e){}
+    }
+    if (mv && !mv.paused) vids.aux.play().catch(()=>{});
+  }
+  if (chosen.key === 'stream:vga') audioFrom = 'vga';
+  else if (chosen.key === 'stream:main') audioFrom = 'main';
+  $('#btnAudioSrc').textContent = '声音：' + (chosen.label || '全景');
+  syncTickState();
+}
+
 function updateAudioMute(){
+  const srcs = getAvailableAudioSources();
+  const chosen = srcs.find(s => s.key === activeAudioKey);
+  if (auxAudioActive && vids.aux) {
+    vids.main.muted = true;
+    vids.vga.muted = true;
+    vids.aux.muted = isMuted;
+    return;
+  }
   if (mode === 'dual') {
-    vids.main.muted = isMuted || audioFrom === 'vga';
-    vids.vga.muted  = isMuted || audioFrom === 'main';
+    const useVga = chosen ? chosen.key === 'stream:vga' : audioFrom === 'vga';
+    vids.main.muted = isMuted || useVga;
+    vids.vga.muted = isMuted || !useVga;
   } else if (mode === 'vga') {
     vids.main.muted = true;
-    vids.vga.muted  = isMuted;
+    vids.vga.muted = isMuted;
   } else {
     vids.main.muted = isMuted;
-    vids.vga.muted  = true;
+    vids.vga.muted = true;
   }
 }
 
@@ -797,22 +973,32 @@ function renderStage(){
   $('#btnLayout').textContent = dualPip ? '画中画' : '并排双屏';
   $('#btnLayout').classList.toggle('on', true);
   $('#btnSwap').style.display = dualPip ? '' : 'none';
-  $('#btnAudioSrc').textContent = '声音：' + (audioFrom === 'vga' ? '课件' : '全景');
 
-  updateAudioMute();
+  const srcs = getAvailableAudioSources();
+  if (srcs.length) {
+    const pref = audioPrefByView[mode];
+    if (pref && srcs.some(s => s.key === pref)) activeAudioKey = pref;
+    else {
+      const defK = defaultAudioKeyForView(srcs);
+      if (!srcs.some(s => s.key === activeAudioKey)) activeAudioKey = defK;
+      else if (mode !== 'dual') activeAudioKey = defK;
+    }
+    populateAudioSelect();
+  } else {
+    updateAudioMute();
+  }
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
   syncTickState();
 }
 
 function ensureStreamsForMode(){
   if (srcMode !== 'record' || !cur) return;
-  const master = mode === 'vga' ? vids.vga : vids.main;
   const wantTime = (vids.main.currentTime || vids.vga.currentTime || pendingResumeSec || 0);
   if (mode !== 'vga' && cur.main && !players.main && !vids.main.getAttribute('src')) {
-    attach('main', toLocal(cur.main), wantTime);
+    attach('main', toLocal(cur.main), wantTime, { autoPlay: true });
   }
   if ((mode === 'vga' || mode === 'dual') && cur.vga && !players.vga && !vids.vga.getAttribute('src')) {
-    attach('vga', toLocal(cur.vga), wantTime);
+    attach('vga', toLocal(cur.vga), wantTime, { autoPlay: true });
   }
   if (mode === 'vga' && !vids.vga.paused) return;
   if (mode === 'main' && !vids.main.paused) return;
@@ -834,11 +1020,10 @@ function ensureStreamsForMode(){
       vids.main.play().catch(()=>{});
     }
   }
-  void master;
 }
 
 function activeVideo(){
-  return (srcMode === 'record' && mode === 'vga' && cur && cur.vga) ? vids.vga : vids.main;
+  return (mode === 'vga' && ((srcMode === 'record' && cur && cur.vga) || (srcMode === 'live' && liveCur))) ? vids.vga : vids.main;
 }
 
 function loadSession(s, { noResume = false } = {}){
@@ -847,6 +1032,8 @@ function loadSession(s, { noResume = false } = {}){
   cur = s;
   $('#splash').style.display = 'none';
   $('#stage').style.display = '';
+  $('#tagMain').textContent = '全景（讲台 / 投影）';
+  $('#tagVga').textContent = '课件（屏幕）';
   document.querySelectorAll('.item').forEach(el => el.classList.toggle('on', String(el.dataset.id) === String(s.id)));
 
   const cid = curCourse && curCourse.course ? curCourse.course.id : '';
@@ -863,37 +1050,45 @@ function loadSession(s, { noResume = false } = {}){
   if (mode !== 'main' && !hasVga) mode = 'main';
 
   // 先清理旧流（此时 suppressProgressSave=true，不会用 0 秒覆盖新节次进度）
-  destroy('main'); destroy('vga');
+  destroy('main'); destroy('vga'); destroy('aux');
+  auxAudioActive = false;
   if (mode === 'vga' && s.vga) {
-    attach('vga', toLocal(s.vga), resumeAt);
+    attach('vga', toLocal(s.vga), resumeAt, { autoPlay: true });
   } else {
-    if (s.main) attach('main', toLocal(s.main), resumeAt);
-    if (mode === 'dual' && s.vga) attach('vga', toLocal(s.vga), resumeAt);
+    if (s.main) attach('main', toLocal(s.main), resumeAt, { autoPlay: true });
+    if (mode === 'dual' && s.vga) attach('vga', toLocal(s.vga), resumeAt, { autoPlay: true });
   }
   renderStage();
   updateNavButtons();
   $('#fsTitle').textContent = ($('#cname').textContent || '') + (s.title ? ' · ' + s.title : '');
   markLoad('起播');
   if (resumeAt > 0) toast('已从 ' + fmt(resumeAt) + ' 续播', 2600);
-  setTimeout(() => activeVideo().play().catch(()=>{}), 220);
-  if (mode === 'dual' && s.vga) setTimeout(() => vids.vga.play().catch(()=>{}), 260);
 }
 
 let tickId = 0;
 function syncTickState(){
-  const need = (mode === 'dual' && $('#stage').style.display !== 'none');
+  const need = ((mode === 'dual' || auxAudioActive) && $('#stage').style.display !== 'none');
   if (need && !tickId) { tickId = requestAnimationFrame(tick); }
   if (!need && tickId) { cancelAnimationFrame(tickId); tickId = 0; }
 }
 function tick(){
   tickId = 0;
-  if (mode !== 'dual' || $('#stage').style.display === 'none') return;
-  if (vids.vga.readyState >= 2 && vids.main.readyState >= 2) {
-    if (Math.abs(vids.main.currentTime - vids.vga.currentTime) > 0.65) {
+  if ((mode !== 'dual' && !auxAudioActive) || $('#stage').style.display === 'none') return;
+  const master = activeVideo();
+  if (mode === 'dual' && vids.vga.readyState >= 2 && vids.main.readyState >= 2) {
+    if (srcMode === 'record' && Math.abs(vids.main.currentTime - vids.vga.currentTime) > 0.65) {
       try { vids.vga.currentTime = vids.main.currentTime; } catch(e){}
     }
     if (vids.main.paused !== vids.vga.paused) {
       vids.main.paused ? vids.vga.pause() : vids.vga.play().catch(()=>{});
+    }
+  }
+  if (auxAudioActive && vids.aux && vids.aux.readyState >= 2 && master && master.readyState >= 2) {
+    if (srcMode === 'record' && Math.abs((master.currentTime || 0) - (vids.aux.currentTime || 0)) > 0.4) {
+      try { vids.aux.currentTime = master.currentTime; } catch(e){}
+    }
+    if (master.paused !== vids.aux.paused) {
+      master.paused ? vids.aux.pause() : vids.aux.play().catch(()=>{});
     }
   }
   tickId = requestAnimationFrame(tick);
@@ -959,6 +1154,9 @@ function seekToFraction(frac){
     vids.main.currentTime = target;
     try { vids.vga.currentTime = target; } catch(e){}
   }
+  if (auxAudioActive && vids.aux) {
+    try { vids.aux.currentTime = target; } catch(e){}
+  }
   updateProgressUI();
 }
 (() => {
@@ -1005,8 +1203,15 @@ function seekToFraction(frac){
 
 ['main', 'vga'].forEach(k => {
   const v = vids[k];
-  v.addEventListener('play', updatePlayUI);
-  v.addEventListener('pause', () => { updatePlayUI(); saveCourseProgress(true); });
+  v.addEventListener('play', () => {
+    updatePlayUI();
+    if (v === activeVideo() && auxAudioActive && vids.aux) vids.aux.play().catch(()=>{});
+  });
+  v.addEventListener('pause', () => {
+    updatePlayUI();
+    saveCourseProgress(true);
+    if (v === activeVideo() && auxAudioActive && vids.aux) vids.aux.pause();
+  });
   v.addEventListener('timeupdate', () => {
     if (v === activeVideo()) {
       updateProgressUI();
@@ -1368,8 +1573,24 @@ function backToCourseList({ fromPop = false } = {}){
 function rowBack(title){
   const el = document.createElement('div');
   el.className = 'backrow';
-  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (title ? '<b>' + esc(title) + '</b>' : '');
+  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (title ? '<b>' + esc(title) + '</b>' : '')
+    + '<button class="dlcancel" id="rowBatchBtn" type="button" style="flex:none;margin-left:6px;background:rgba(52,211,153,.16);color:#9bf2cd;border-color:rgba(52,211,153,.4)">📦 批量下载</button>';
   el.onclick = () => { backToCourseList(); };
+  const bb = el.querySelector('#rowBatchBtn');
+  if (bb) bb.onclick = e => {
+    e.stopPropagation();
+    closeDrawer();
+    if (window.yhktBatch && curCourse && curCourse.course) {
+      const c = curCourse.course;
+      window.yhktBatch.open({
+        platform: 'old',
+        id: String(c.id),
+        title: c.name || ('课程 ' + c.id),
+        teacher: (c.professors || []).join('、'),
+        term: c.year ? (c.year + ' 第' + c.semester + '学期') : '',
+      });
+    }
+  };
   return el;
 }
 
@@ -1522,7 +1743,8 @@ function setSrcMode(m){
 
 function stopLive(){
   clearInterval(liveTimer); liveTimer = null;
-  destroy('main'); destroy('vga');
+  auxAudioActive = false;
+  destroy('main'); destroy('vga'); destroy('aux');
 }
 
 async function loadLive(){
@@ -1544,30 +1766,6 @@ async function loadLive(){
   }
 }
 
-async function showLiveDiag(){
-  let box = document.getElementById('liveDiagBox');
-  if (!box) {
-    box = document.createElement('div');
-    box.id = 'liveDiagBox';
-    box.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:60;padding:14px;display:flex;flex-direction:column;gap:8px';
-    box.innerHTML = '<div style="display:flex;gap:8px;align-items:center">'
-      + '<b style="color:#eef2f7;font-size:13px">直播接口自检</b><span style="flex:1"></span>'
-      + '<button id="liveDiagClose" style="font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid #2a2f3a;background:#171a21;color:#eef2f7">关闭</button>'
-      + '</div><pre id="liveDiagPre" style="flex:1;overflow:auto;margin:0;background:#12161f;border:1px solid #2a2f3a;border-radius:8px;padding:10px;color:#c9d6e6;font:11.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all"></pre>';
-    document.body.appendChild(box);
-    box.querySelector('#liveDiagClose').onclick = () => { box.style.display = 'none'; };
-    box.onclick = e => { if (e.target === box) box.style.display = 'none'; };
-  }
-  box.style.display = 'flex';
-  const pre = box.querySelector('#liveDiagPre');
-  pre.textContent = '读取中…';
-  try {
-    const r = await fetch('/api/live?refresh=1');
-    const txt = await r.text();
-    pre.textContent = 'HTTP ' + r.status + '\n' + (txt.length > 4000 ? txt.slice(0, 4000) + '…' : txt);
-  } catch (e) { pre.textContent = '请求失败：' + e.message; }
-}
-
 function renderLive(){
   const list = $('#list');
   list.innerHTML = '';
@@ -1578,10 +1776,8 @@ function renderLive(){
   head.className = 'listnote';
   head.innerHTML = esc((q ? `筛出 ${view.length} 场（共 ${liveItems.length} 场）` : `直播 ${liveItems.length} 场`)
     + ` · 正在直播 ${onair} 场 · 每分钟自动刷新`)
-    + `<div style="margin-top:2px;color:var(--muted);font-size:10.5px">引擎 ${esc(liveTz || '?')} · 更新 ${esc(liveAtTxt || '刚刚')} · <a id="liveDiag">自检</a></div>`;
+    + `<div style="margin-top:2px;color:var(--muted);font-size:10.5px">引擎 ${esc(liveTz || '?')} · 更新 ${esc(liveAtTxt || '刚刚')}</div>`;
   list.appendChild(head);
-  const dg = head.querySelector('#liveDiag');
-  if (dg) dg.onclick = showLiveDiag;
 
   if (liveErr) {
     const errLine = document.createElement('div');
@@ -1608,7 +1804,7 @@ function renderLive(){
       ? '<span class="livebadge">直播中</span>'
       : '<span class="livebadge up">' + (it.phase === 'upcoming' ? '未开始' : '已结束') + '</span>';
     el.innerHTML = `<div class="d">${badge}<span class="t" style="color:var(--fg);font-weight:600">${esc(it.title)}</span></div>
-      <div class="m">${it.teacher ? '<span>' + esc(it.teacher) + '</span>' : ''}${it.room ? '<span>' + esc(it.room) + '</span>' : ''}<span>${esc(String(it.startedAt).slice(11, 16))}–${esc(String(it.endedAt).slice(11, 16))}</span></div>`;
+      <div class="m">${it.teacher ? '<span>' + esc(it.teacher) + '</span>' : ''}${it.room ? '<span>' + esc(it.room) + '</span>' : ''}${it.vga ? '<span class="pill ok">含课件画面</span>' : ''}<span>${esc(String(it.startedAt).slice(11, 16))}–${esc(String(it.endedAt).slice(11, 16))}</span></div>`;
     el.onclick = () => { closeDrawer(); playLive(it); };
     list.appendChild(el);
   }
@@ -1630,10 +1826,14 @@ function playLive(it){
   document.querySelectorAll('.item').forEach(el => el.classList.toggle('on', String(el.dataset.id) === String(it.id)));
   const hasVga = !!it.vga;
   document.querySelectorAll('.tab[data-mode="vga"], .tab[data-mode="dual"]').forEach(b => { b.disabled = !hasVga; });
-  document.querySelectorAll('.tab[data-mode="main"]').forEach(b => { b.disabled = false; });
+  document.querySelectorAll('.tab[data-mode="main"]').forEach(b => { b.disabled = !it.main; });
   document.querySelectorAll('.liveonly').forEach(b => { b.disabled = !it.roomCam; });
-  if ((mode === 'vga' || mode === 'dual') && !hasVga) mode = 'main';
-  if (mode === 'room' && !it.roomCam) mode = 'main';
+  if (mode === 'dual' && !hasVga) mode = it.main ? 'main' : 'vga';
+  if (mode === 'vga' && !hasVga) mode = 'main';
+  if (mode === 'room' && !it.roomCam) mode = it.main ? 'main' : 'vga';
+  if (mode === 'main' && !it.main && hasVga) mode = 'vga';
+  destroy('main'); destroy('vga'); destroy('aux');
+  auxAudioActive = false;
   applyLive();
 }
 
@@ -1641,15 +1841,25 @@ function applyLive(){
   const it = liveCur;
   if (!it) return;
   if (mode === 'dual') {
-    attach('main', liveUrl(it.main));
-    attach('vga', liveUrl(it.vga));
+    $('#tagMain').textContent = '全景（讲台 / 投影）';
+    $('#tagVga').textContent = '课件（屏幕）';
+    attach('main', liveUrl(it.main), 0, { live: true, autoPlay: true });
+    attach('vga', liveUrl(it.vga), 0, { live: true, autoPlay: true });
+    vids.main.play().catch(()=>{});
+    vids.vga.play().catch(()=>{});
+  } else if (mode === 'vga') {
+    $('#tagVga').textContent = '课件（屏幕）';
+    destroy('main');
+    attach('vga', liveUrl(it.vga || it.main), 0, { live: true, autoPlay: true });
+    vids.vga.play().catch(()=>{});
   } else {
-    const u = mode === 'vga' ? (it.vga || it.main) : mode === 'room' ? (it.roomCam || it.main) : it.main;
-    attach('main', liveUrl(u));
+    $('#tagMain').textContent = mode === 'room' ? '教室视角' : '全景（讲台 / 投影）';
     destroy('vga');
+    const u = mode === 'room' ? (it.roomCam || it.main) : (it.main || it.vga);
+    attach('main', liveUrl(u), 0, { live: true, autoPlay: true });
+    vids.main.play().catch(()=>{});
   }
   renderStage();
-  setTimeout(() => vids.main.play().catch(() => {}), 200);
 }
 
 /* ---------- 交互耗时提示 ---------- */
@@ -1800,31 +2010,35 @@ async function refreshWebDownloads(){
     const j = await (await fetch('/api/downloads')).json();
     const items = (j && j.items) || [];
     const running = items.filter(x => x.status === 'running').length;
+    const queued = items.filter(x => x.status === 'queued').length;
+    const activeCnt = running + queued;
     const interrupted = items.filter(x => x.status === 'interrupted').length;
     const dlEntry = $('#btnDl2');
     if (dlEntry && !NATIVE_DL) {
       let badge = '';
-      if (running > 0) badge = '（' + running + ' 下载中）';
+      if (activeCnt > 0) badge = '（' + activeCnt + ' 进行中）';
       else if (interrupted > 0) badge = '（' + interrupted + ' 未完成）';
       dlEntry.textContent = '⤓ 下载管理' + badge;
-      dlEntry.classList.toggle('busy', running > 0);
-      dlEntry.classList.toggle('warn', running === 0 && interrupted > 0);
+      dlEntry.classList.toggle('busy', activeCnt > 0);
+      dlEntry.classList.toggle('warn', activeCnt === 0 && interrupted > 0);
     }
     if ($('#dlModal').style.display === 'flex') {
       const body = $('#dlBody');
       if (!items.length) {
-        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」即可将当前画面拼成完整视频下载。</div>';
+        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」或打开「📦 批量搜课下载专区」即可批量稳定下载。</div>';
       } else {
         body.innerHTML = items.map(it => {
           const pct = it.totalSegs > 1 ? Math.round(it.doneSegs / it.totalSegs * 100)
             : (it.totalBytes > 0 ? Math.round(it.bytes / it.totalBytes * 100) : (it.status === 'done' ? 100 : 0));
+          const speedTxt = (it.status === 'running' && it.speedBps > 0) ? (fmtMB(it.speedBps) + '/s · ') : '';
           const stText = it.status === 'running' ? '下载中'
+            : it.status === 'queued' ? '排队中'
             : it.status === 'done' ? '已完成'
             : it.status === 'interrupted' ? '已中断（可继续）'
             : it.status === 'cancelled' ? '已取消' : ('失败 ' + (it.error || ''));
           const segText = it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '';
           let act = '';
-          if (it.status === 'running') {
+          if (it.status === 'running' || it.status === 'queued') {
             act = `<button class="dlcancel" type="button" onclick="cancelWebDownload('${esc(it.id)}')">取消</button>`;
           } else if (it.status === 'interrupted' || it.status === 'error' || it.status === 'cancelled') {
             const btnTxt = it.status === 'interrupted' ? '继续下载' : '重下';
@@ -1838,13 +2052,13 @@ async function refreshWebDownloads(){
           }
           const pathHint = it.savePath ? `<div style="font-size:10.5px;color:var(--muted);margin-top:3px;word-break:break-all">${esc(it.savePath)}</div>` : '';
           return `<div class="dlrow"><div class="dt">${esc(it.title)}</div>`
-            + `<div class="dm"><span>${esc(stText)}</span><span style="display:flex;align-items:center;gap:6px">${segText}${fmtMB(it.bytes)}${act}</span></div>`
+            + `<div class="dm"><span>${esc(stText)}</span><span style="display:flex;align-items:center;gap:6px">${speedTxt}${segText}${fmtMB(it.bytes)}${act}</span></div>`
             + pathHint
             + `<div class="dlbar"><i style="width:${Math.min(100,pct)}%"></i></div></div>`;
         }).join('');
       }
     }
-    if (running > 0 || $('#dlModal').style.display === 'flex') {
+    if (activeCnt > 0 || $('#dlModal').style.display === 'flex') {
       dlPoll = setTimeout(refreshWebDownloads, 900);
     }
   } catch (e) {}
@@ -1895,12 +2109,6 @@ $('#dq').addEventListener('input', syncClearBtn);
 $('#dq').addEventListener('keydown', e => { if (e.key === 'Enter') dbSearch(); });
 $('#dterm').onchange = () => { if (srcMode === 'record' && ($('#dq').value.trim() || $('#dterm').value)) dbSearch(); };
 $('#btnSetup').onclick = () => showLogin('', true);
-$('#selfcheck').onclick = () => {
-  const p = new URLSearchParams();
-  const c = curCourse && curCourse.course;
-  if (c) p.set('id', c.id);
-  window.open('/api/selftest?' + p.toString(), '_blank');
-};
 $('#btnRefresh').onclick = () => { if (curCourse) openCourse(curCourse.course.id, { force: true }); };
 
 function downloadCurrent(){
@@ -1911,8 +2119,10 @@ function downloadCurrent(){
   if (!cur[kind]) { toast('这一讲没有' + label + '画面', 3000); return; }
   const cid = curCourse && curCourse.course && curCourse.course.id;
   if (!cid) { toast('还没有课程信息', 2600); return; }
+  const cname = (curCourse.course && curCourse.course.name) || '课程';
+  const title = cname + '_' + (cur.date || '') + '_' + label;
   const url = '/dl?course=' + encodeURIComponent(cid)
-    + '&session=' + encodeURIComponent(cur.id) + '&kind=' + kind;
+    + '&session=' + encodeURIComponent(cur.id) + '&kind=' + kind + '&title=' + encodeURIComponent(title);
   window.open(url, '_blank');
   toast('开始下载' + label + '画面，可在「下载管理」看进度', 4200);
   if (!NATIVE_DL) setTimeout(refreshWebDownloads, 600);
@@ -1923,7 +2133,7 @@ $('#btnLogout').onclick = async () => {
   await fetch('/api/logout', { method: 'POST' });
   try { if (window.yhktApp && window.yhktApp.clearAuth) window.yhktApp.clearAuth('old'); } catch(e){}
   if (APP && window.__yhktRefresh) window.__yhktRefresh();
-  destroy('main'); destroy('vga');
+  destroy('main'); destroy('vga'); destroy('aux');
   showLogin('已退出登录');
 };
 
@@ -1932,9 +2142,11 @@ $('#btnPlay').onclick = () => {
   if (v.paused) {
     v.play().catch(()=>{});
     if (mode === 'dual') vids.vga.play().catch(()=>{});
+    if (auxAudioActive && vids.aux) vids.aux.play().catch(()=>{});
   } else {
     v.pause();
     if (mode === 'dual') vids.vga.pause();
+    if (auxAudioActive && vids.aux) vids.aux.pause();
   }
   wakeHud();
 };
@@ -1954,12 +2166,20 @@ $('#btnMute').onclick = () => {
 $('#vol').oninput = e => {
   const val = Number(e.target.value);
   vids.main.volume = val; vids.vga.volume = val;
+  if (vids.aux) vids.aux.volume = val;
   if (val > 0 && isMuted) { isMuted = false; $('#btnMute').textContent = '🔊'; updateAudioMute(); }
 };
+$('#audioSrc').onchange = e => setAudioSourceKey(e.target.value);
 
 $('#btnLayout').onclick = () => { dualPip = !dualPip; renderStage(); };
 $('#btnSwap').onclick = () => { dualSwapped = !dualSwapped; renderStage(); };
-$('#btnAudioSrc').onclick = () => { audioFrom = (audioFrom === 'main') ? 'vga' : 'main'; renderStage(); };
+$('#btnAudioSrc').onclick = () => {
+  const srcs = getAvailableAudioSources();
+  if (!srcs.length) return;
+  const idx = srcs.findIndex(s => s.key === activeAudioKey);
+  const next = srcs[(idx + 1) % srcs.length];
+  if (next) setAudioSourceKey(next.key);
+};
 
 const wrapEl = $('#wrap');
 const closeDrawer = () => { if (wrapEl) wrapEl.classList.remove('drawer'); };
@@ -1996,6 +2216,7 @@ document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
   const next = Math.max(0, (v.currentTime || 0) + delta);
   v.currentTime = next;
   if (mode === 'dual') { vids.main.currentTime = next; try { vids.vga.currentTime = next; } catch(e){} }
+  if (auxAudioActive && vids.aux) { try { vids.aux.currentTime = next; } catch(e){} }
   wakeHud();
 });
 $('#rate').onchange = e => applyRate(e.target.value);
@@ -2043,12 +2264,13 @@ document.addEventListener('keydown', e => {
   else if (e.key === '1') switchTab('main');
   else if (e.key === '2' && !document.querySelector('.tab[data-mode="vga"]').disabled) switchTab('vga');
   else if (e.key === '3' && !document.querySelector('.tab[data-mode="dual"]').disabled) switchTab('dual');
-  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktSettings) window.yhktSettings.close(); }
+  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktBatch) window.yhktBatch.close(); if (window.yhktSettings) window.yhktSettings.close(); }
 });
 
 /* 给 Android App 返回键用的优先关闭钩子 */
 window.__yhktBack = () => {
   if (window.yhktSettings && window.yhktSettings.isOpen()) { window.yhktSettings.close(); return 'handled'; }
+  if (window.yhktBatch && window.yhktBatch.isOpen()) { window.yhktBatch.close(); return 'handled'; }
   if ($('#dlModal').style.display === 'flex') { closeWebDownloads(); return 'handled'; }
   if ($('#lgmodal').style.display === 'flex') { hideLoginModal(); return 'handled'; }
   if ($('#wrap').classList.contains('drawer')) { closeDrawer(); return 'handled'; }
@@ -2084,6 +2306,33 @@ function applyAppSettings(s){
   applyRate(getSavedRate());
   if (window.yhktSettings) {
     await window.yhktSettings.init({ toast, onBeforeOpen: closeDrawer, onApply: applyAppSettings });
+  }
+  if (window.yhktBatch) {
+    window.yhktBatch.init({
+      toast,
+      defaultPlatform: 'all',
+      onBeforeOpen: closeDrawer,
+      openDownloads: () => {
+        if (window.yhktApp && window.yhktApp.openDownloads) window.yhktApp.openDownloads();
+        else openWebDownloads();
+      },
+      promptLogin: w => {
+        if (w === 'y2' && APP) { showAppLogin('', true); }
+        else showLogin('', true);
+      },
+      defaultQuery: () => $('#dq').value.trim(),
+      getCurrentCourse: () => {
+        if (!curCourse || !curCourse.course) return null;
+        const c = curCourse.course;
+        return {
+          platform: 'old',
+          id: String(c.id),
+          title: c.name || ('课程 ' + c.id),
+          teacher: (c.professors || []).join('、'),
+          term: c.year ? (c.year + ' 第' + c.semester + '学期') : '',
+        };
+      },
+    });
   }
   refreshWebDownloads();
   window.addEventListener('pagehide', () => saveCourseProgress(true));

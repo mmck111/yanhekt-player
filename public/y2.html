@@ -67,8 +67,11 @@
   .dlentry:hover{background:rgba(41,66,112,.94);border-color:rgba(91,156,255,.65);color:#fff}
   .dlentry.busy{border-color:rgba(52,211,153,.55);color:var(--ok);background:rgba(18,44,32,.85)}
   .dlentry.warn{border-color:rgba(251,191,36,.5);color:#fde68a;background:rgba(56,42,16,.75)}
+  .batchentry{grid-column:1 / -1;border:1px solid rgba(52,211,153,.38);background:rgba(16,44,34,.75);color:#9bf2cd}
+  .batchentry:hover{background:rgba(22,60,46,.92);border-color:rgba(52,211,153,.65);color:#fff}
   .setentry{border:1px solid rgba(255,255,255,.18);background:var(--panel2);color:var(--fg)}
   .setentry:hover{border-color:rgba(91,156,255,.5);background:var(--panel3);color:#fff}
+  .audsel{max-width:165px;text-overflow:ellipsis}
 
   .fmeta{font-size:11px;color:var(--dim);padding:4px 5px 7px;line-height:1.55}
   .list{overflow:auto;padding:8px 9px 14px;flex:1}
@@ -334,6 +337,7 @@
     <div class="sb-tools">
       <a href="#" id="dlnk" class="toolbtn dlentry" title="查看下载任务与断点续传">⤓ 下载管理</a>
       <a href="#" id="btnSet" class="toolbtn setentry" title="默认下载目录与播放器设置">⚙ 设置</a>
+      <a href="#" id="btnBatchDl" class="toolbtn batchentry" title="搜索并勾选课程任意讲次或全选整门课批量下载">📦 批量搜课下载专区</a>
     </div>
     <div class="fmeta" id="fmeta" style="padding:6px 12px 0"></div>
     <div class="list" id="list"></div>
@@ -378,6 +382,7 @@
         <div class="stage single" id="stage" style="display:none">
           <div class="pane" id="paneMain"><video id="v" playsinline preload="metadata"></video><span class="tag" id="tagMain">教师画面</span></div>
           <div class="pane hide" id="paneSub"><video id="vSub" playsinline preload="metadata" muted></video><span class="tag">课件画面</span></div>
+          <video id="vAudioAux" playsinline preload="auto" style="display:none"></video>
         </div>
         <div class="spin" id="spin"><i></i><span>缓冲中…</span></div>
       </div>
@@ -408,6 +413,7 @@
             <button id="btnMute" title="静音 (M)">🔊</button>
             <input id="vol" type="range" min="0" max="1" step="0.05" value="1" title="音量">
           </div>
+          <select id="audioSrc" class="audsel" title="为当前视角选择声音来源" style="display:none"></select>
           <select id="rate" title="播放倍速">
             <option value="0.75">0.75×</option><option value="1" selected>1×</option>
             <option value="1.25">1.25×</option><option value="1.5">1.5×</option>
@@ -422,7 +428,7 @@
 
     <div class="hint">
       <span><kbd>空格</kbd> 播放/暂停 · <kbd>←</kbd><kbd>→</kbd> 退/进 15s · <kbd>F</kbd> 全屏 · <kbd>M</kbd> 静音 · <kbd>1</kbd>-<kbd>4</kbd> 切机位 · 切机位保持进度</span>
-      <span><a href="/diag" target="_blank">接口自检</a> · <span id="build" style="color:var(--muted)"></span></span>
+      <span><span id="build" style="color:var(--muted)"></span></span>
     </div>
   </main>
 </div>
@@ -438,10 +444,11 @@
 
 <script src="/hls.min.js"></script>
 <script src="/settings.js"></script>
+<script src="/batch.js"></script>
 <script>
 const $ = s => document.querySelector(s);
-const v = $('#v'), vSub = $('#vSub');
-let hls = null, hlsSub = null, info = null, kind = 'camera', curCourse = null, curSub = null, curQuery = '';
+const v = $('#v'), vSub = $('#vSub'), vAux = $('#vAudioAux');
+let hls = null, hlsSub = null, hlsAux = null, info = null, infoAudios = [], kind = 'camera', curCourse = null, curSub = null, curQuery = '';
 let dualPip = false, dualSwapped = false, audioFrom = 'camera';
 let autoNext = false, lastSaveAt = 0;
 let searchSeq = 0, searchAbort = null, listScrollBackup = 0, curSearchLimit = 20;
@@ -451,6 +458,7 @@ const LS_RATE = 'yhkt_y2_rate_v1';
 const LS_PROG = 'yhkt_y2_prog_v1';
 const LS_HIST = 'yhkt_y2_hist_v1';
 const LS_AUTONEXT = 'yhkt_y2_autonext_v1';
+const LS_AUDIOPREF = 'yhkt_y2_audiopref_v1';
 
 const fmt = t => { if(!isFinite(t)||t<0) t=0; const h=Math.floor(t/3600),m=Math.floor(t%3600/60),s=Math.floor(t%60);
   return (h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); };
@@ -474,6 +482,7 @@ function applyRate(r){
   const rate = Number(r) || 1;
   $('#rate').value = String(rate);
   v.defaultPlaybackRate = rate; vSub.defaultPlaybackRate = rate;
+  if (vAux) { vAux.defaultPlaybackRate = rate; vAux.playbackRate = rate; }
   v.playbackRate = rate; vSub.playbackRate = rate;
   try { localStorage.setItem(LS_RATE, String(rate)); } catch(e){}
 }
@@ -881,7 +890,7 @@ async function loadTerms(){
 
 const curTerm = () => $('#term').value;
 const termName = id => { const o=[...$('#term').options].find(x=>x.value===id); return o?o.textContent:''; };
-const diagHint = notes => (notes && notes.length) ? ' · <a href="/diag" target="_blank" style="color:var(--accent)">接口自检</a>' : '';
+const diagHint = () => '';
 
 function remember(course, query){
   try { localStorage.setItem('y2_last', JSON.stringify({ course, query, term:curTerm() })); } catch(e) {}
@@ -1160,9 +1169,33 @@ window.addEventListener('popstate', () => {
 function rowBack(c){
   const el = document.createElement('div');
   el.className = 'backrow';
-  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (c && c.title ? '<b>' + esc(c.title) + '</b>' : '');
+  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (c && c.title ? '<b>' + esc(c.title) + '</b>' : '')
+    + '<button class="dlcancel" id="rowBatchBtn" type="button" style="flex:none;margin-left:6px;background:rgba(52,211,153,.16);color:#9bf2cd;border-color:rgba(52,211,153,.4)">📦 批量下载</button>';
   el.onclick = () => { backToCourseList(); };
+  const bb = el.querySelector('#rowBatchBtn');
+  if (bb) bb.onclick = e => {
+    e.stopPropagation();
+    closeDrawer();
+    if (window.yhktBatch && curCourse) {
+      window.yhktBatch.open({
+        platform: 'y2',
+        id: String(curCourse.courseId),
+        title: curCourse.title || ('课程 ' + curCourse.courseId),
+        teacher: curCourse.teacher || '',
+        term: curCourse.termName || '',
+      });
+    }
+  };
   return el;
+}
+
+const subPrefetchSet = new Set();
+function prefetchY2Sub(cid, subId){
+  if (!cid || !subId) return;
+  const k = cid + ':' + subId;
+  if (subPrefetchSet.has(k)) return;
+  subPrefetchSet.add(k);
+  fetch(`/api/y2/sub?courseId=${encodeURIComponent(cid)}&subId=${encodeURIComponent(subId)}`).catch(()=>{});
 }
 
 async function loadSessions(c, el, opts){
@@ -1229,6 +1262,7 @@ async function loadSessions(c, el, opts){
         + (tn ? '<span>' + esc(tn) + '</span>' : '')
         + '</div>'
         + (pct > 0 ? `<div class="progbar"><i style="width:${pct}%"></i></div>` : '');
+      el2.onmouseenter = ()=>{ prefetchY2Sub(c.courseId, s.subId); };
       el2.onclick = ()=>{ closeDrawer(); play(s, el2); };
       if (!firstPlayable) firstPlayable = { s, el2 };
       if (progCourse.lastSid && String(progCourse.lastSid) === String(s.subId)) resumeNode = { s, el2 };
@@ -1243,9 +1277,7 @@ async function loadSessions(c, el, opts){
       }
     } else {
       const warm = resumeNode || firstPlayable;
-      if (warm) {
-        fetch(`/api/y2/sub?courseId=${encodeURIComponent(c.courseId)}&subId=${encodeURIComponent(warm.s.subId)}`).catch(()=>{});
-      }
+      if (warm) prefetchY2Sub(c.courseId, warm.s.subId);
     }
   }catch(e){
     if (e.message === 'need login') return;
@@ -1270,10 +1302,13 @@ async function play(s, el, { noResume = false } = {}){
     const j = await jget(`/api/y2/sub?courseId=${encodeURIComponent(curCourse.courseId)}&subId=${encodeURIComponent(s.subId)}`);
     if(!j.ok){ suppressProgressSave = false; pendingSeekGuard = 0; toast('读取失败：'+(j.error||''), 4000); return; }
     info = j.info;
+    infoAudios = Array.isArray(j.audios) ? j.audios : (info && info.audio ? [{ label: '独立音频', url: info.audio, format: 'aac' }] : []);
     updateTabs();
     updateNavButtons();
     if (resumeAt > 0) toast('已从 ' + fmt(resumeAt) + ' 续播', 2600);
     pick(t0, { seekTo: resumeAt, autoPlay: true });
+    const nextS = adjacentSession(1);
+    if (nextS) prefetchY2Sub(curCourse.courseId, nextS.subId);
   }catch(e){ suppressProgressSave = false; pendingSeekGuard = 0; if (e.message !== 'need login') toast('出错：'+e.message, 4000); }
 }
 
@@ -1324,15 +1359,18 @@ function detachOne(which){
     if (hlsSub) { try { hlsSub.destroy(); } catch(e){} hlsSub = null; }
     vSub.removeAttribute('src'); try { vSub.load(); } catch(e){}
     clearErr('#paneSub');
+  } else if (which === 'aux') {
+    if (hlsAux) { try { hlsAux.destroy(); } catch(e){} hlsAux = null; }
+    if (vAux) { vAux.removeAttribute('src'); try { vAux.load(); } catch(e){} }
   } else {
     if (hls) { try { hls.destroy(); } catch(e){} hls = null; }
     v.removeAttribute('src'); try { v.load(); } catch(e){}
     clearErr('#paneMain');
   }
 }
-function detach(){ detachOne('main'); detachOne('sub'); }
+function detach(){ detachOne('main'); detachOne('sub'); detachOne('aux'); auxAudioActive = false; }
 
-function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = false } = {}){
+function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = false, isAux = false } = {}){
   const url = '/y2play?u=' + b64(st.url);
   const rate = getSavedRate();
   vid.defaultPlaybackRate = rate;
@@ -1342,17 +1380,17 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
   const doSeek = () => {
     vid.playbackRate = getSavedRate();
     if (!needSeek) {
-      if (!isSub) suppressProgressSave = false;
+      if (!isSub && !isAux) suppressProgressSave = false;
       return;
     }
     if (isFinite(vid.duration) && vid.duration > 0 && needSeek >= vid.duration - 2) {
       needSeek = 0;
-      if (!isSub) { pendingSeekGuard = 0; suppressProgressSave = false; }
+      if (!isSub && !isAux) { pendingSeekGuard = 0; suppressProgressSave = false; }
       return;
     }
     if (Math.abs((vid.currentTime || 0) - needSeek) <= 2.5) {
       needSeek = 0;
-      if (!isSub) { pendingSeekGuard = 0; suppressProgressSave = false; }
+      if (!isSub && !isAux) { pendingSeekGuard = 0; suppressProgressSave = false; }
       return;
     }
     try { vid.currentTime = needSeek; } catch(e){}
@@ -1365,12 +1403,12 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
     const onSeeked = () => {
       if (needSeek && Math.abs((vid.currentTime || 0) - needSeek) <= 3) {
         needSeek = 0;
-        if (!isSub) { pendingSeekGuard = 0; suppressProgressSave = false; }
+        if (!isSub && !isAux) { pendingSeekGuard = 0; suppressProgressSave = false; }
         vid.removeEventListener('seeked', onSeeked);
       }
     };
     vid.addEventListener('seeked', onSeeked);
-    if (!isSub) {
+    if (!isSub && !isAux) {
       setTimeout(() => {
         needSeek = 0;
         pendingSeekGuard = 0;
@@ -1378,7 +1416,7 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
       }, 3500);
     }
   } else {
-    if (!isSub) suppressProgressSave = false;
+    if (!isSub && !isAux) suppressProgressSave = false;
   }
 
   const applySeekAndRate = () => {
@@ -1386,35 +1424,179 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
     if (autoPlay) vid.play().catch(()=>{});
   };
 
-  const retry = () => attachStream(vid, paneSel, st, { seekTo: vid.currentTime || seekTo || 0, autoPlay: true, isSub });
+  const retry = () => attachStream(vid, paneSel, st, { seekTo: vid.currentTime || seekTo || 0, autoPlay: true, isSub, isAux });
 
   if (st.format === 'hls' && window.Hls && Hls.isSupported()) {
     const h = new Hls({
-      maxBufferLength: 25,
+      maxBufferLength: 36,
+      maxMaxBufferLength: 90,
+      fragLoadingTimeOut: 15000,
+      manifestLoadingTimeOut: 10000,
+      levelLoadingTimeOut: 10000,
+      fragLoadingMaxRetry: 6,
+      fragLoadingRetryDelay: 300,
+      manifestLoadingMaxRetry: 4,
+      startFragPrefetch: true,
       liveDurationInfinity: !!(info && info.kind === 'live'),
       startPosition: needSeek ? needSeek : -1,
       abortLoadingOnSeek: true,
     });
-    h.on(Hls.Events.MANIFEST_PARSED, () => { clearErr(paneSel); applySeekAndRate(); });
+    h.on(Hls.Events.MANIFEST_PARSED, () => { if (paneSel) clearErr(paneSel); applySeekAndRate(); if (!isAux) populateAudioSelect(); });
+    h.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => { if (!isAux) populateAudioSelect(); });
     h.on(Hls.Events.ERROR, (_, d) => {
-      if (!d.fatal) return;
+      if (!d.fatal || isAux) return;
       const code = d.response && d.response.code;
       showErr(paneSel, '取不到视频流' + (code ? `（HTTP ${code}）` : ''), '本地转发未能拿到视频数据（可能登录过期或 CDN 限流）。', retry);
     });
     h.loadSource(url); h.attachMedia(vid);
-    if (isSub) hlsSub = h; else hls = h;
+    if (isAux) hlsAux = h; else if (isSub) hlsSub = h; else hls = h;
   } else {
     vid.src = url;
-    vid.onerror = () => showErr(paneSel, '视频加载失败', '直连流未能播放，可能登录已过期或网络中断。', retry);
+    if (!isAux) vid.onerror = () => showErr(paneSel, '视频加载失败', '直连流未能播放，可能登录已过期或网络中断。', retry);
     applySeekAndRate();
   }
 }
 
 let isMuted = false, dragging = false;
+let audioPrefByView = {};
+try { audioPrefByView = JSON.parse(localStorage.getItem(LS_AUDIOPREF) || '{}') || {}; } catch(e){}
+let activeAudioKey = 'stream:camera';
+let auxAudioActive = false;
+
+function getAvailableAudioSources(){
+  if (!info) return [];
+  const srcs = [];
+  const labelMap = { camera: '教师声音', screen: '课件声音', room: '教室声音' };
+  for (const st of (info.streams || [])) {
+    srcs.push({
+      key: 'stream:' + st.type,
+      kind: st.type,
+      label: labelMap[st.type] || (st.type + ' 声音'),
+      stream: st,
+    });
+  }
+  const extra = (infoAudios && infoAudios.length) ? infoAudios : (info.audio ? [{ label: '独立音频', url: info.audio, format: 'aac' }] : []);
+  extra.forEach((a, idx) => {
+    if (a && a.url) {
+      srcs.push({
+        key: 'ext:' + idx,
+        kind: 'ext',
+        label: a.label || ('独立音频 ' + (idx + 1)),
+        stream: { url: a.url, format: a.format === 'hls' ? 'hls' : 'mp4' },
+      });
+    }
+  });
+  if (hls && Array.isArray(hls.audioTracks) && hls.audioTracks.length > 1) {
+    hls.audioTracks.forEach((tr, idx) => {
+      const nm = (tr && (tr.name || tr.lang)) || ('音轨 ' + (idx + 1));
+      srcs.push({ key: 'hlstrack:' + idx, kind: 'hlstrack', label: '内嵌·' + nm, trackId: idx });
+    });
+  }
+  return srcs;
+}
+
+function defaultAudioKeyForView(srcs){
+  const pref = audioPrefByView[kind];
+  if (pref && srcs.some(s => s.key === pref)) return pref;
+  const viewKey = 'stream:' + (kind === 'dual' ? 'camera' : kind);
+  if (srcs.some(s => s.key === viewKey)) return viewKey;
+  return (srcs[0] && srcs[0].key) || 'stream:camera';
+}
+
+function populateAudioSelect(){
+  const sel = $('#audioSrc');
+  if (!sel) return;
+  const srcs = getAvailableAudioSources();
+  if (!srcs.length) {
+    sel.style.display = 'none';
+    return;
+  }
+  if (!srcs.some(s => s.key === activeAudioKey)) {
+    activeAudioKey = defaultAudioKeyForView(srcs);
+  }
+  sel.innerHTML = '';
+  for (const s of srcs) {
+    const o = document.createElement('option');
+    o.value = s.key;
+    o.textContent = '🔊 ' + s.label;
+    sel.appendChild(o);
+  }
+  sel.value = activeAudioKey;
+  sel.style.display = '';
+  applyAudioSelection();
+}
+
+function setAudioSourceKey(key){
+  activeAudioKey = key;
+  audioPrefByView[kind] = key;
+  try { localStorage.setItem(LS_AUDIOPREF, JSON.stringify(audioPrefByView)); } catch(e){}
+  if (key === 'stream:screen') audioFrom = 'screen';
+  else if (key === 'stream:camera') audioFrom = 'camera';
+  const sel = $('#audioSrc');
+  if (sel && sel.value !== key) sel.value = key;
+  applyAudioSelection();
+}
+
+function applyAudioSelection(){
+  const srcs = getAvailableAudioSources();
+  const chosen = srcs.find(s => s.key === activeAudioKey) || srcs[0];
+  if (!chosen) {
+    auxAudioActive = false;
+    detachOne('aux');
+    updateAudioMute();
+    return;
+  }
+  const mainKey = kind === 'dual' ? 'stream:camera' : ('stream:' + kind);
+  const subMatches = kind === 'dual' && chosen.key === 'stream:screen';
+  const mainMatches = chosen.key === mainKey;
+
+  if (chosen.kind === 'hlstrack') {
+    auxAudioActive = false;
+    detachOne('aux');
+    if (hls && hls.audioTrack !== chosen.trackId) {
+      try { hls.audioTrack = chosen.trackId; } catch(e){}
+    }
+    v.muted = isMuted;
+    vSub.muted = true;
+  } else if (mainMatches || subMatches) {
+    auxAudioActive = false;
+    detachOne('aux');
+    if (kind === 'dual') {
+      v.muted = isMuted || subMatches;
+      vSub.muted = isMuted || !subMatches;
+    } else {
+      v.muted = isMuted;
+      vSub.muted = true;
+    }
+  } else if (chosen.stream && vAux) {
+    v.muted = true;
+    vSub.muted = true;
+    auxAudioActive = true;
+    const t = isFinite(v.currentTime) ? v.currentTime : 0;
+    const vol = Number($('#vol') && $('#vol').value || 1);
+    vAux.volume = vol;
+    vAux.muted = isMuted;
+    detachOne('aux');
+    attachStream(vAux, '', chosen.stream, { seekTo: t, autoPlay: !v.paused, isAux: true });
+    if (!v.paused) vAux.play().catch(()=>{});
+  }
+  if (chosen.key === 'stream:screen') audioFrom = 'screen';
+  else if (chosen.key === 'stream:camera') audioFrom = 'camera';
+  $('#btnAudioSrc').textContent = '声音：' + (chosen.label || '教师');
+  syncTickState();
+}
+
 function updateAudioMute(){
+  if (auxAudioActive && vAux) {
+    v.muted = true;
+    vSub.muted = true;
+    vAux.muted = isMuted;
+    return;
+  }
   if (kind === 'dual') {
-    v.muted = isMuted || audioFrom === 'screen';
-    vSub.muted = isMuted || audioFrom === 'camera';
+    const useScreen = activeAudioKey === 'stream:screen' || audioFrom === 'screen';
+    v.muted = isMuted || useScreen;
+    vSub.muted = isMuted || !useScreen;
   } else {
     v.muted = isMuted;
     vSub.muted = true;
@@ -1441,8 +1623,19 @@ function renderStage(){
   $('#btnLayout').textContent = dualPip ? '画中画' : '并排双屏';
   $('#btnLayout').classList.toggle('on', true);
   $('#btnSwap').style.display = dualPip ? '' : 'none';
-  $('#btnAudioSrc').textContent = '声音：' + (audioFrom === 'screen' ? '课件' : '教师');
-  updateAudioMute();
+  const srcs = getAvailableAudioSources();
+  if (srcs.length) {
+    const pref = audioPrefByView[kind];
+    if (pref && srcs.some(s => s.key === pref)) activeAudioKey = pref;
+    else {
+      const defK = defaultAudioKeyForView(srcs);
+      if (!srcs.some(s => s.key === activeAudioKey) || kind !== 'dual') activeAudioKey = defK;
+    }
+    populateAudioSelect();
+  } else {
+    $('#btnAudioSrc').textContent = '声音：' + (audioFrom === 'screen' ? '课件' : '教师');
+    updateAudioMute();
+  }
   syncTickState();
 }
 
@@ -1498,19 +1691,27 @@ function pick(t0, { seekTo = 0, autoPlay = true } = {}){
 
 let tickId = 0;
 function syncTickState(){
-  const need = (kind === 'dual' && $('#stage').style.display !== 'none');
+  const need = ((kind === 'dual' || auxAudioActive) && $('#stage').style.display !== 'none');
   if (need && !tickId) tickId = requestAnimationFrame(tick);
   if (!need && tickId) { cancelAnimationFrame(tickId); tickId = 0; }
 }
 function tick(){
   tickId = 0;
-  if (kind !== 'dual' || $('#stage').style.display === 'none') return;
-  if (vSub.readyState >= 2 && v.readyState >= 2) {
+  if ((kind !== 'dual' && !auxAudioActive) || $('#stage').style.display === 'none') return;
+  if (kind === 'dual' && vSub.readyState >= 2 && v.readyState >= 2) {
     if (Math.abs(v.currentTime - vSub.currentTime) > 0.65) {
       try { vSub.currentTime = v.currentTime; } catch(e){}
     }
     if (v.paused !== vSub.paused) {
       v.paused ? vSub.pause() : vSub.play().catch(()=>{});
+    }
+  }
+  if (auxAudioActive && vAux && vAux.readyState >= 2 && v.readyState >= 2) {
+    if (Math.abs((v.currentTime || 0) - (vAux.currentTime || 0)) > 0.4) {
+      try { vAux.currentTime = v.currentTime; } catch(e){}
+    }
+    if (v.paused !== vAux.paused) {
+      v.paused ? vAux.pause() : vAux.play().catch(()=>{});
     }
   }
   tickId = requestAnimationFrame(tick);
@@ -1542,6 +1743,7 @@ function seekToFraction(frac){
   const target = Math.max(0, Math.min(v.duration, frac * v.duration));
   v.currentTime = target;
   if (kind === 'dual') { try { vSub.currentTime = target; } catch(e){} }
+  if (auxAudioActive && vAux) { try { vAux.currentTime = target; } catch(e){} }
   updateProgressUI();
 }
 (() => {
@@ -1575,8 +1777,15 @@ function seekToFraction(frac){
   sc.addEventListener('pointerleave', () => { if (!dragging) tip.classList.remove('show'); });
 })();
 
-v.addEventListener('play', updatePlayUI);
-v.addEventListener('pause', () => { updatePlayUI(); saveCourseProgress(true); });
+v.addEventListener('play', () => {
+  updatePlayUI();
+  if (auxAudioActive && vAux) vAux.play().catch(()=>{});
+});
+v.addEventListener('pause', () => {
+  updatePlayUI();
+  saveCourseProgress(true);
+  if (auxAudioActive && vAux) vAux.pause();
+});
 v.addEventListener('timeupdate', () => { updateProgressUI(); saveCourseProgress(false); });
 v.addEventListener('progress', updateProgressUI);
 v.addEventListener('loadedmetadata', () => { v.playbackRate = getSavedRate(); updateProgressUI(); });
@@ -1679,31 +1888,35 @@ async function refreshWebDownloads(){
     const j = await (await fetch('/api/downloads')).json();
     const items = (j && j.items) || [];
     const running = items.filter(x => x.status === 'running').length;
+    const queued = items.filter(x => x.status === 'queued').length;
+    const activeCnt = running + queued;
     const interrupted = items.filter(x => x.status === 'interrupted').length;
     const dlEntry = $('#dlnk');
     if (dlEntry && !NATIVE_DL) {
       let badge = '';
-      if (running > 0) badge = '（' + running + ' 下载中）';
+      if (activeCnt > 0) badge = '（' + activeCnt + ' 进行中）';
       else if (interrupted > 0) badge = '（' + interrupted + ' 未完成）';
       dlEntry.textContent = '⤓ 下载管理' + badge;
-      dlEntry.classList.toggle('busy', running > 0);
-      dlEntry.classList.toggle('warn', running === 0 && interrupted > 0);
+      dlEntry.classList.toggle('busy', activeCnt > 0);
+      dlEntry.classList.toggle('warn', activeCnt === 0 && interrupted > 0);
     }
     if ($('#dlModal').style.display === 'flex') {
       const body = $('#dlBody');
       if (!items.length) {
-        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」即可将当前画面下载到本地。</div>';
+        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」或打开「📦 批量搜课下载专区」即可批量稳定下载。</div>';
       } else {
         body.innerHTML = items.map(it => {
           const pct = it.totalSegs > 1 ? Math.round(it.doneSegs / it.totalSegs * 100)
             : (it.totalBytes > 0 ? Math.round(it.bytes / it.totalBytes * 100) : (it.status === 'done' ? 100 : 0));
+          const speedTxt = (it.status === 'running' && it.speedBps > 0) ? (fmtMB(it.speedBps) + '/s · ') : '';
           const stText = it.status === 'running' ? '下载中'
+            : it.status === 'queued' ? '排队中'
             : it.status === 'done' ? '已完成'
             : it.status === 'interrupted' ? '已中断（可继续）'
             : it.status === 'cancelled' ? '已取消' : ('失败 ' + (it.error || ''));
           const segText = it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '';
           let act = '';
-          if (it.status === 'running') {
+          if (it.status === 'running' || it.status === 'queued') {
             act = `<button class="dlcancel" type="button" onclick="cancelWebDownload('${esc(it.id)}')">取消</button>`;
           } else if (it.status === 'interrupted' || it.status === 'error' || it.status === 'cancelled') {
             const btnTxt = it.status === 'interrupted' ? '继续下载' : '重下';
@@ -1717,13 +1930,13 @@ async function refreshWebDownloads(){
           }
           const pathHint = it.savePath ? `<div style="font-size:10.5px;color:var(--muted);margin-top:3px;word-break:break-all">${esc(it.savePath)}</div>` : '';
           return `<div class="dlrow"><div class="dt">${esc(it.title)}</div>`
-            + `<div class="dm"><span>${esc(stText)}</span><span style="display:flex;align-items:center;gap:6px">${segText}${fmtMB(it.bytes)}${act}</span></div>`
+            + `<div class="dm"><span>${esc(stText)}</span><span style="display:flex;align-items:center;gap:6px">${speedTxt}${segText}${fmtMB(it.bytes)}${act}</span></div>`
             + pathHint
             + `<div class="dlbar"><i style="width:${Math.min(100,pct)}%"></i></div></div>`;
         }).join('');
       }
     }
-    if (running > 0 || $('#dlModal').style.display === 'flex') dlPoll = setTimeout(refreshWebDownloads, 900);
+    if (activeCnt > 0 || $('#dlModal').style.display === 'flex') dlPoll = setTimeout(refreshWebDownloads, 900);
   } catch(e){}
 }
 
@@ -1839,8 +2052,15 @@ $('#btnLogout').onclick = async () => {
 };
 $('#btnRefresh').onclick = () => { if (curCourse) loadSessions(curCourse, null, { autoLatest: true, refresh: true }); };
 $('#pp').onclick = () => {
-  if (v.paused) { v.play().catch(()=>{}); if (kind === 'dual') vSub.play().catch(()=>{}); }
-  else { v.pause(); if (kind === 'dual') vSub.pause(); }
+  if (v.paused) {
+    v.play().catch(()=>{});
+    if (kind === 'dual') vSub.play().catch(()=>{});
+    if (auxAudioActive && vAux) vAux.play().catch(()=>{});
+  } else {
+    v.pause();
+    if (kind === 'dual') vSub.pause();
+    if (auxAudioActive && vAux) vAux.pause();
+  }
   wakeHud();
 };
 $('#btnPrev').onclick = () => {
@@ -1871,17 +2091,26 @@ $('#btnMute').onclick = () => {
 $('#vol').oninput = e => {
   const val = Number(e.target.value);
   v.volume = val; vSub.volume = val;
+  if (vAux) vAux.volume = val;
   if (val > 0 && isMuted) { isMuted = false; $('#btnMute').textContent = '🔊'; updateAudioMute(); }
 };
+$('#audioSrc').onchange = e => setAudioSourceKey(e.target.value);
 $('#btnLayout').onclick = () => { dualPip = !dualPip; renderStage(); };
 $('#btnSwap').onclick = () => { dualSwapped = !dualSwapped; renderStage(); };
-$('#btnAudioSrc').onclick = () => { audioFrom = (audioFrom === 'camera') ? 'screen' : 'camera'; renderStage(); };
+$('#btnAudioSrc').onclick = () => {
+  const srcs = getAvailableAudioSources();
+  if (!srcs.length) return;
+  const idx = srcs.findIndex(s => s.key === activeAudioKey);
+  const next = srcs[(idx + 1) % srcs.length];
+  if (next) setAudioSourceKey(next.key);
+};
 
 document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
   pendingSeekGuard = 0; suppressProgressSave = false;
   const target = Math.max(0, (v.currentTime || 0) + Number(b.dataset.jump));
   v.currentTime = target;
   if (kind === 'dual') { try { vSub.currentTime = target; } catch(e){} }
+  if (auxAudioActive && vAux) { try { vAux.currentTime = target; } catch(e){} }
   wakeHud();
 });
 $('#rate').onchange = e => applyRate(e.target.value);
@@ -1912,11 +2141,12 @@ document.addEventListener('keydown', e => {
   else if (e.key === '2' && !document.querySelector('.tab[data-k="screen"]').disabled) switchTab('screen');
   else if (e.key === '3' && !document.querySelector('.tab[data-k="room"]').disabled) switchTab('room');
   else if (e.key === '4' && !document.querySelector('.tab[data-k="dual"]').disabled) switchTab('dual');
-  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktSettings) window.yhktSettings.close(); }
+  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktBatch) window.yhktBatch.close(); if (window.yhktSettings) window.yhktSettings.close(); }
 });
 
 window.__yhktBack = () => {
   if (window.yhktSettings && window.yhktSettings.isOpen()) { window.yhktSettings.close(); return 'handled'; }
+  if (window.yhktBatch && window.yhktBatch.isOpen()) { window.yhktBatch.close(); return 'handled'; }
   if ($('#dlModal').style.display === 'flex') { closeWebDownloads(); return 'handled'; }
   if ($('#lgmodal').style.display === 'flex') { hideLoginModal(); return 'handled'; }
   if ($('#wrap').classList.contains('drawer')) { closeDrawer(); return 'handled'; }
@@ -1951,6 +2181,36 @@ function applyAppSettings(s){
   applyRate(getSavedRate());
   if (window.yhktSettings) {
     await window.yhktSettings.init({ toast, onBeforeOpen: closeDrawer, onApply: applyAppSettings });
+  }
+  if (window.yhktBatch) {
+    window.yhktBatch.init({
+      toast,
+      defaultPlatform: 'all',
+      onBeforeOpen: closeDrawer,
+      openDownloads: () => {
+        if (window.yhktApp && window.yhktApp.openDownloads) window.yhktApp.openDownloads();
+        else openWebDownloads();
+      },
+      promptLogin: w => {
+        if (w === 'old') {
+          if (APP) try { yhktApp.login('old'); } catch(e){}
+          else location.href = '/';
+        } else {
+          showLogin('请先登录后再加载课程列表');
+        }
+      },
+      defaultQuery: () => $('#q').value.trim(),
+      getCurrentCourse: () => {
+        if (!curCourse) return null;
+        return {
+          platform: 'y2',
+          id: String(curCourse.courseId),
+          title: curCourse.title || ('课程 ' + curCourse.courseId),
+          teacher: curCourse.teacher || '',
+          term: curCourse.termName || '',
+        };
+      },
+    });
   }
   refreshWebDownloads();
   window.addEventListener('pagehide', () => saveCourseProgress(true));

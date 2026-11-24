@@ -27,6 +27,7 @@ type liveItem struct {
 	Main      string `json:"main"`
 	VGA       string `json:"vga"`
 	RoomCam   string `json:"roomCam"`
+	Audio     string `json:"audio,omitempty"`
 	Views     int    `json:"views"`
 }
 
@@ -93,7 +94,20 @@ func liveRow(l map[string]any) liveItem {
 
 	// 真实开播时间（不是课表时间）—— 有的课提前开播，只看课表会误判"未开始"
 	aStart := parseLocalTime(orStr(jstr(l["started_at"]), jstr(sess["started_at"])))
-	hasStream := unescapeUrl(jstr(l["target"])) != "" || unescapeUrl(jstr(l["target_vga"])) != ""
+	mainStr := unescapeUrl(orStr(jstr(l["target"]), orStr(jstr(l["main"]), jstr(sess["target"]))))
+	vgaStr := unescapeUrl(orStr(jstr(l["target_vga"]), orStr(jstr(l["vga"]), orStr(jstr(l["target_screen"]), orStr(jstr(sess["target_vga"]), jstr(sess["vga"]))))))
+	roomStr := unescapeUrl(orStr(jstr(l["target_room"]), orStr(jstr(l["room_url"]), jstr(sess["target_room"]))))
+	audioStr := unescapeUrl(orStr(jstr(l["target_audio"]), orStr(jstr(l["audio"]), jstr(sess["target_audio"]))))
+	if vgaStr == "" || mainStr == "" {
+		if vids := jarr(l["videos"]); len(vids) > 0 {
+			if vo := jobj(vids[0]); vo != nil {
+				mainStr = orStr(mainStr, unescapeUrl(jstr(vo["main"])))
+				vgaStr = orStr(vgaStr, unescapeUrl(jstr(vo["vga"])))
+				roomStr = orStr(roomStr, unescapeUrl(jstr(vo["room"])))
+			}
+		}
+	}
+	hasStream := mainStr != "" || vgaStr != ""
 	s := parseLocalTime(startedAt)
 	e := parseLocalTime(endedAt)
 	now := nowMillis()
@@ -131,9 +145,10 @@ func liveRow(l map[string]any) liveItem {
 		StartedAt: startedAt,
 		EndedAt:   endedAt,
 		Phase:     phase,
-		Main:      unescapeUrl(jstr(l["target"])),
-		VGA:       unescapeUrl(jstr(l["target_vga"])),
-		RoomCam:   unescapeUrl(jstr(l["target_room"])),
+		Main:      mainStr,
+		VGA:       vgaStr,
+		RoomCam:   roomStr,
+		Audio:     audioStr,
 		Views:     views,
 	}
 }
@@ -180,13 +195,14 @@ func liveListOld() ([]liveItem, int64, string) {
 		}
 		liveSrcCount++
 		row := liveRow(l)
-		if row.ID == "" || row.Main == "" {
+		if row.ID == "" || (row.Main == "" && row.VGA == "") {
 			return
 		}
 		if prev, ok := merged[row.ID]; ok {
 			row.Main = orStr(row.Main, prev.Main)
 			row.VGA = orStr(row.VGA, prev.VGA)
 			row.RoomCam = orStr(row.RoomCam, prev.RoomCam)
+			row.Audio = orStr(row.Audio, prev.Audio)
 		} else {
 			order = append(order, row.ID)
 		}
@@ -275,22 +291,25 @@ func stableSortLive(items []liveItem, less func(a, b liveItem) bool) {
 
 // ---------------------------------------------------------------- 直播流代理
 
-// 直播用独立的连接池（4 并发），不和录播那条单连接混用
+// 直播用独立的连接池（12 并发，支持双画面+多音轨同时快速拉流）
 var liveClient = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig:       insecureTLS,
 		ForceAttemptHTTP2:     false,
-		MaxConnsPerHost:       4,
-		MaxIdleConnsPerHost:   2,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
+		MaxIdleConns:          64,
+		MaxConnsPerHost:       12,
+		MaxIdleConnsPerHost:   12,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
 		ResponseHeaderTimeout: 20 * time.Second,
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ReadBufferSize:        64 << 10,
+		WriteBufferSize:       64 << 10,
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		DisableCompression:    true,
 	},
 }
 
-// proxyLive /lp：m3u8 里的分片改成本地地址，分片直接转发；不缓存（直播要实时）
+// proxyLive /lp：m3u8 里的分片与内嵌 URI 改成本地地址，分片直接转发；不缓存（直播要实时）
 func proxyLive(w http.ResponseWriter, r *http.Request, rawURL string) {
 	req, err := http.NewRequestWithContext(r.Context(), "GET", rawURL, nil)
 	if err != nil {
@@ -312,10 +331,15 @@ func proxyLive(w http.ResponseWriter, r *http.Request, rawURL string) {
 	}
 	defer up.Body.Close()
 
+	baseURL := rawURL
+	if up.Request != nil && up.Request.URL != nil {
+		baseURL = up.Request.URL.String()
+	}
+
 	ct := up.Header.Get("content-type")
 	isPlaylist := strings.Contains(strings.ToLower(ct), "mpegurl") ||
 		strings.Contains(strings.ToLower(ct), "m3u8") ||
-		strings.HasSuffix(strings.Split(rawURL, "?")[0], ".m3u8")
+		strings.HasSuffix(strings.ToLower(strings.Split(rawURL, "?")[0]), ".m3u8")
 
 	if isPlaylist {
 		body, err := io.ReadAll(up.Body)
@@ -328,10 +352,19 @@ func proxyLive(w http.ResponseWriter, r *http.Request, rawURL string) {
 		out.Grow(len(text) + 256)
 		for i, line := range lines {
 			t := strings.TrimSpace(line)
-			if t == "" || strings.HasPrefix(t, "#") {
+			switch {
+			case t == "":
 				out.WriteString(line)
-			} else {
-				out.WriteString("/lp?u=" + enc(resolveRef(t, rawURL)))
+			case strings.HasPrefix(t, "#"):
+				out.WriteString(reURIAttr.ReplaceAllStringFunc(line, func(m string) string {
+					sub := reURIAttr.FindStringSubmatch(m)
+					if len(sub) < 2 {
+						return m
+					}
+					return `URI="/lp?u=` + enc(resolveRef(sub[1], baseURL)) + `"`
+				}))
+			default:
+				out.WriteString("/lp?u=" + enc(resolveRef(t, baseURL)))
 			}
 			if i < len(lines)-1 {
 				out.WriteString("\n")
@@ -359,7 +392,7 @@ func proxyLive(w http.ResponseWriter, r *http.Request, rawURL string) {
 		code = 200
 	}
 	w.WriteHeader(code)
-	_, _ = io.Copy(w, up.Body)
+	_, _ = io.CopyBuffer(w, up.Body, make([]byte, 64*1024))
 }
 
 // resolveRef 把播放列表里的相对地址按原始 URL 解析成绝对地址

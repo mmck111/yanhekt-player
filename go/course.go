@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,16 +24,71 @@ type courseInfo struct {
 	Professors []string `json:"professors"`
 }
 
+type oldAudio struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
 type sessionRow struct {
-	ID        any    `json:"id"`
-	Title     string `json:"title"`
-	Week      any    `json:"week"`
-	Date      string `json:"date"`
-	StartedAt any    `json:"started_at"`
-	Location  string `json:"location"`
-	Duration  any    `json:"duration"`
-	Main      any    `json:"main"`
-	VGA       any    `json:"vga"`
+	ID        any        `json:"id"`
+	Title     string     `json:"title"`
+	Week      any        `json:"week"`
+	Date      string     `json:"date"`
+	StartedAt any        `json:"started_at"`
+	Location  string     `json:"location"`
+	Duration  any        `json:"duration"`
+	Main      any        `json:"main"`
+	VGA       any        `json:"vga"`
+	RoomCam   string     `json:"roomCam,omitempty"`
+	Audios    []oldAudio `json:"audios,omitempty"`
+}
+
+func extractOldExtraStreams(s, v map[string]any) (string, []oldAudio) {
+	var roomCam string
+	var audios []oldAudio
+	seenAudio := map[string]bool{}
+	addAudio := func(label, u string) {
+		u = strings.TrimSpace(u)
+		if u == "" || seenAudio[u] {
+			return
+		}
+		seenAudio[u] = true
+		if label == "" {
+			label = fmt.Sprintf("独立音频 %d", len(audios)+1)
+		}
+		audios = append(audios, oldAudio{Label: label, URL: u})
+	}
+	checkObj := func(obj map[string]any) {
+		if obj == nil {
+			return
+		}
+		if roomCam == "" {
+			roomCam = orStr(jstr(obj["room"]), orStr(jstr(obj["room_cam"]), jstr(obj["target_room"])))
+		}
+		if u := jstr(obj["audio"]); u != "" {
+			addAudio(jstr(obj["audio_name"]), u)
+		}
+		if u := jstr(obj["voice"]); u != "" {
+			addAudio("教室伴音", u)
+		}
+		for _, k := range []string{"audios", "audio_list"} {
+			for _, it := range jarr(obj[k]) {
+				if ao := jobj(it); ao != nil {
+					addAudio(orStr(jstr(ao["label"]), orStr(jstr(ao["name"]), jstr(ao["title"]))), orStr(jstr(ao["url"]), jstr(ao["src"])))
+				} else if u := jstr(it); u != "" {
+					addAudio("", u)
+				}
+			}
+		}
+	}
+	checkObj(v)
+	checkObj(s)
+	if s != nil {
+		for _, it := range jarr(s["videos"]) {
+			checkObj(jobj(it))
+		}
+	}
+	return roomCam, audios
 }
 
 type statsInfo struct {
@@ -220,88 +276,101 @@ func buildCourse(id, token string) *courseData {
 		return &courseData{ok: false, fail: true, errMsg: pageErr.Error()}
 	}
 
-	sessions := []sessionRow{}
+	sessions := make([]sessionRow, len(raw))
+	unresolvedFlags := make([]int, len(raw))
+	sem := make(chan struct{}, 8)
+	var sessWG sync.WaitGroup
+	courseIDStr := jstr(c["id"])
+
+	for idx, s := range raw {
+		sessWG.Add(1)
+		go func(i int, s map[string]any) {
+			defer sessWG.Done()
+			var v map[string]any
+			if a := jarr(s["videos"]); len(a) > 0 {
+				v = jobj(a[0])
+			}
+			ids := videoIDs(s)
+
+			if v == nil || (!truthy(v["main"]) && !truthy(v["vga"])) {
+				if len(ids) > 0 {
+					sem <- struct{}{}
+					try := ids
+					if len(try) > 3 {
+						try = try[:3]
+					}
+					for _, vid := range try {
+						r, err := apiCall(fmt.Sprintf("/v1/video?id=%s&course_id=%s", jstr(vid), courseIDStr), token)
+						if err != nil || !codeIsZeroStrict(r) {
+							continue
+						}
+						cand := jobj(r["data"])
+						if cand == nil {
+							continue
+						}
+						if truthy(cand["main"]) || truthy(cand["vga"]) {
+							v = cand
+							break
+						}
+						if v == nil {
+							v = cand
+						}
+					}
+					<-sem
+				}
+			}
+
+			if (v == nil || (!truthy(v["main"]) && !truthy(v["vga"]))) && len(ids) > 0 {
+				unresolvedFlags[i] = 1
+			}
+
+			var duration any
+			if v != nil && truthy(v["duration"]) {
+				duration = jnum(v["duration"])
+			}
+			var main, vga any
+			if v != nil {
+				if truthy(v["main"]) {
+					main = jstr(v["main"])
+				}
+				if truthy(v["vga"]) {
+					vga = jstr(v["vga"])
+				}
+			}
+			roomCam, audios := extractOldExtraStreams(s, v)
+			startedAt := jstr(s["started_at"])
+			var startedAny any
+			if startedAt != "" {
+				startedAny = startedAt
+			}
+			var week any
+			if truthy(s["week_number"]) {
+				week = s["week_number"]
+			}
+			date := ""
+			if len(startedAt) >= 10 {
+				date = startedAt[:10]
+			}
+			sessions[i] = sessionRow{
+				ID:        s["id"],
+				Title:     orStr(jstr(s["section_group_title"]), jstr(s["title"])),
+				Week:      week,
+				Date:      date,
+				StartedAt: startedAny,
+				Location:  jstr(s["location"]),
+				Duration:  duration,
+				Main:      main,
+				VGA:       vga,
+				RoomCam:   roomCam,
+				Audios:    audios,
+			}
+		}(idx, s)
+	}
+	sessWG.Wait()
+
 	unresolved := 0
-	for _, s := range raw {
-		var v map[string]any
-		if a := jarr(s["videos"]); len(a) > 0 {
-			v = jobj(a[0])
-		}
-		ids := videoIDs(s)
-
-		if v == nil || (!truthy(v["main"]) && !truthy(v["vga"])) {
-			if len(ids) > 0 {
-				// 一次课可能有多个视频记录（全景 / 课件 / 教室），一个不行就试下一个，
-				// 以前只看 video_ids[0]，正好碰到没有 main 的那条就会误判成"没有录像"
-				try := ids
-				if len(try) > 3 {
-					try = try[:3]
-				}
-				for _, vid := range try {
-					r, err := apiCall(fmt.Sprintf("/v1/video?id=%s&course_id=%s", jstr(vid), jstr(c["id"])), token)
-					if err != nil {
-						continue
-					}
-					if !codeIsZeroStrict(r) {
-						continue
-					}
-					cand := jobj(r["data"])
-					if cand == nil {
-						continue
-					}
-					if truthy(cand["main"]) || truthy(cand["vga"]) {
-						v = cand
-						break
-					}
-					if v == nil {
-						v = cand
-					}
-				}
-			}
-		}
-
-		if (v == nil || (!truthy(v["main"]) && !truthy(v["vga"]))) && len(ids) > 0 {
-			unresolved++
-		}
-
-		var duration any
-		if v != nil && truthy(v["duration"]) {
-			duration = jnum(v["duration"])
-		}
-		var main, vga any
-		if v != nil {
-			if truthy(v["main"]) {
-				main = jstr(v["main"])
-			}
-			if truthy(v["vga"]) {
-				vga = jstr(v["vga"])
-			}
-		}
-		startedAt := jstr(s["started_at"])
-		var startedAny any
-		if startedAt != "" {
-			startedAny = startedAt
-		}
-		var week any
-		if truthy(s["week_number"]) {
-			week = s["week_number"]
-		}
-
-		date := ""
-		if len(startedAt) >= 10 {
-			date = startedAt[:10]
-		}
-		sessions = append(sessions, sessionRow{
-			ID:        s["id"],
-			Title:     orStr(jstr(s["section_group_title"]), jstr(s["title"])),
-			Week:      week,
-			Date:      date,
-			StartedAt: startedAny,
-			Location:  jstr(s["location"]),
-			Duration:  duration,
-			Main:      main,
-			VGA:       vga,
-		})
+	for _, f := range unresolvedFlags {
+		unresolved += f
 	}
 
 	sort.SliceStable(sessions, func(i, j int) bool {

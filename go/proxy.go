@@ -6,6 +6,7 @@ package main
 
 import (
 	"container/list"
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -22,8 +23,7 @@ import (
 // ---------------------------------------------------------------- 录播拉流客户端
 
 // 实测：CDN 只容忍极少量并发，多了会长时间挂起后 403。
-// Node 版是 eachHost 的 agent maxSockets=1：**每个 CDN 域名**串行，域名之间互不影响。
-// 所以这里按 host 各给一条通道，本地排队；单连接就能跑满 4.5MB/s。
+// 每个 CDN 域名限制 2 路并发，既能让双画面主屏/课件并行加载、提速起播，又不触发 CDN 限流。
 var (
 	cdnSemMu sync.Mutex
 	cdnSems  = map[string]chan struct{}{}
@@ -38,7 +38,7 @@ func cdnSemFor(host string) chan struct{} {
 	if len(cdnSems) > 64 {
 		cdnSems = map[string]chan struct{}{}
 	}
-	s := make(chan struct{}, 1)
+	s := make(chan struct{}, 2)
 	cdnSems[host] = s
 	return s
 }
@@ -47,12 +47,15 @@ var cdnClient = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig:       insecureTLS,
 		ForceAttemptHTTP2:     false,
-		MaxConnsPerHost:       1,
-		MaxIdleConnsPerHost:   1,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 20 * time.Second,
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		MaxIdleConns:          64,
+		MaxConnsPerHost:       2,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		ReadBufferSize:        64 << 10,
+		WriteBufferSize:       64 << 10,
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		DisableCompression:    true,
 	},
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -101,14 +104,25 @@ func (b *releaseBody) Close() error {
 
 // upstreamOnce 发一次上游请求（自动排队，拿到响应后锁一直持有到 body 读完）
 func upstreamOnce(rawURL string) (*upstreamResp, error) {
+	return upstreamOnceCtx(context.Background(), rawURL)
+}
+
+func upstreamOnceCtx(ctx context.Context, rawURL string) (*upstreamResp, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	host := ""
 	if u, err := url.Parse(rawURL); err == nil {
 		host = u.Host
 	}
 	sem := cdnSemFor(host)
-	sem <- struct{}{}
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	release := func() { <-sem }
-	req, err := http.NewRequest("GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		release()
 		return nil, err
@@ -129,29 +143,53 @@ func upstreamOnce(rawURL string) (*upstreamResp, error) {
 // upstreamGet 非 200 就重试，别让播放器卡在退避里。
 // 返回的响应可能 body 已关（非 200 时调用方只看状态码）。
 func upstreamGet(rawURL string, tries int) (*upstreamResp, error) {
+	return upstreamGetCtx(context.Background(), rawURL, tries)
+}
+
+func upstreamGetCtx(ctx context.Context, rawURL string, tries int) (*upstreamResp, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var last *upstreamResp
 	for i := 0; i < tries; i++ {
-		res, err := upstreamOnce(rawURL)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		res, err := upstreamOnceCtx(ctx, rawURL)
 		if err == nil && res.StatusCode == http.StatusOK {
 			return res, nil
 		}
 		if err != nil {
-			if i >= tries-1 {
+			if ctx.Err() != nil || i >= tries-1 {
 				return nil, err
 			}
-			sleepMs(300 * (i + 1))
+			sleepCtx(ctx, 250*(i+1))
 			continue
 		}
 		_ = res.Body.Close()
 		last = res
 		if i < tries-1 {
-			sleepMs(250 * (i + 1))
+			sleepCtx(ctx, 220*(i+1))
 		}
 	}
 	return last, nil
 }
 
 func sleepMs(ms int) { time.Sleep(time.Duration(ms) * time.Millisecond) }
+
+func sleepCtx(ctx context.Context, ms int) bool {
+	if ms <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
 
 // ---------------------------------------------------------------- 分片缓存
 
@@ -304,8 +342,11 @@ func proxyHls(w http.ResponseWriter, r *http.Request, rawURL string) {
 		return
 	}
 
-	up, err := upstreamGet(signerSign(rawURL, vid), 3)
+	up, err := upstreamGetCtx(r.Context(), signerSign(rawURL, vid), 3)
 	if err != nil {
+		if r.Context().Err() != nil {
+			return
+		}
 		w.Header().Set("content-type", "text/plain; charset=utf-8")
 		w.WriteHeader(504)
 		_, _ = w.Write([]byte("upstream error: " + err.Error()))
@@ -340,6 +381,7 @@ func proxyHls(w http.ResponseWriter, r *http.Request, rawURL string) {
 		lines := strings.Split(text, "\n")
 		var out strings.Builder
 		out.Grow(len(text) + 256)
+		var prefetchURLs []string
 		for i, line := range lines {
 			t := strings.TrimSpace(line)
 			switch {
@@ -351,10 +393,18 @@ func proxyHls(w http.ResponseWriter, r *http.Request, rawURL string) {
 					if len(sub) < 2 {
 						return m
 					}
-					return `URI="/p?u=` + enc(abs(sub[1], base)) + `"`
+					uAbs := abs(sub[1], base)
+					if strings.HasPrefix(strings.ToUpper(t), "#EXT-X-MAP") && len(prefetchURLs) < 2 {
+						prefetchURLs = append(prefetchURLs, uAbs)
+					}
+					return `URI="/p?u=` + enc(uAbs) + `"`
 				}))
 			default:
-				out.WriteString("/p?u=" + enc(abs(t, base)))
+				uAbs := abs(t, base)
+				if !strings.HasSuffix(strings.ToLower(strings.Split(uAbs, "?")[0]), ".m3u8") && len(prefetchURLs) < 2 {
+					prefetchURLs = append(prefetchURLs, uAbs)
+				}
+				out.WriteString("/p?u=" + enc(uAbs))
 			}
 			if i < len(lines)-1 {
 				out.WriteString("\n")
@@ -362,6 +412,9 @@ func proxyHls(w http.ResponseWriter, r *http.Request, rawURL string) {
 		}
 		outText := out.String()
 		playlistPut(rawURL, outText)
+		if len(prefetchURLs) > 0 {
+			go prefetchOldSegs(prefetchURLs, vid)
+		}
 		w.Header().Set("content-type", "application/vnd.apple.mpegurl")
 		w.Header().Set("cache-control", "no-store")
 		w.WriteHeader(200)
@@ -423,4 +476,42 @@ func joinBytes(chunks [][]byte) []byte {
 		out = append(out, c...)
 	}
 	return out
+}
+
+var (
+	prefetchMu       sync.Mutex
+	prefetchInFlight = map[string]bool{}
+)
+
+func prefetchOldSegs(urls []string, vid string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	for _, u := range urls {
+		if cacheGet(u) != nil {
+			continue
+		}
+		prefetchMu.Lock()
+		if prefetchInFlight[u] {
+			prefetchMu.Unlock()
+			continue
+		}
+		if len(prefetchInFlight) > 128 {
+			prefetchInFlight = map[string]bool{}
+		}
+		prefetchInFlight[u] = true
+		prefetchMu.Unlock()
+
+		up, err := upstreamOnceCtx(ctx, signerSign(u, vid))
+		if err == nil && up != nil {
+			if up.StatusCode == http.StatusOK {
+				if buf, rerr := io.ReadAll(io.LimitReader(up.Body, segCacheMax/4)); rerr == nil && len(buf) > 0 {
+					cachePut(u, buf)
+				}
+			}
+			_ = up.Body.Close()
+		}
+		prefetchMu.Lock()
+		delete(prefetchInFlight, u)
+		prefetchMu.Unlock()
+	}
 }

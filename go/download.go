@@ -4,14 +4,75 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
+
+// 专用于老平台 /dl 离线下载的连接池：与播放通道彻底隔离，增大缓冲并支持 2~3 路并发稳态拉片
+var dlOldClient = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig:       insecureTLS,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          32,
+		MaxConnsPerHost:       4,
+		MaxIdleConnsPerHost:   4,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ResponseHeaderTimeout: 18 * time.Second,
+		ReadBufferSize:        64 << 10,
+		WriteBufferSize:       64 << 10,
+		DialContext:           (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DisableCompression:    true,
+	},
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return errors.New("跳转太多")
+		}
+		setVideoHeaders(req)
+		return nil
+	},
+}
+
+// readBodyStallSafe 在带空闲超时的情况下读完分片响应体；卡死超过 idleTimeout 立刻中断以便重连
+func readBodyStallSafe(ctx context.Context, cancelSeg context.CancelFunc, rc io.ReadCloser, idleTimeout time.Duration, maxBytes int64) ([]byte, error) {
+	defer rc.Close()
+	var buf bytes.Buffer
+	tmp := make([]byte, 32*1024)
+	timer := time.AfterFunc(idleTimeout, cancelSeg)
+	defer timer.Stop()
+	var total int64
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		timer.Reset(idleTimeout)
+		n, err := rc.Read(tmp)
+		if n > 0 {
+			total += int64(n)
+			if maxBytes > 0 && total > maxBytes {
+				return nil, fmt.Errorf("分片体积超过上限")
+			}
+			buf.Write(tmp[:n])
+		}
+		if err != nil {
+			if err == io.EOF {
+				return buf.Bytes(), nil
+			}
+			return nil, err
+		}
+	}
+}
 
 // ---------------------------------------------------------------- 播放列表解析
 
@@ -115,40 +176,71 @@ func resolveMedia(src, vid string) (*mediaInfo, error) {
 	return m, nil
 }
 
-// fetchSegment 拉一个分片，失败重试；实在不行就放弃（返回 nil），
-// 不要因为一片就把整个下载中止。
-func fetchSegment(url, vid string, tries int) []byte {
-	if cached := cacheGet(url); cached != nil {
-		return cached
+// fetchSegmentCtx 拉一个分片：带单分片超时与空闲看门狗，遇 403/429 自动降速退避，遇 401/403 必要时刷新 token
+func fetchSegmentCtx(ctx context.Context, rawURL string, getVid func(force bool) string, onThrottle func(), tries int) ([]byte, int) {
+	if cached := cacheGet(rawURL); cached != nil {
+		return cached, http.StatusOK
 	}
+	vid := getVid(false)
+	lastCode := 0
 	for i := 0; i < tries; i++ {
-		up, err := upstreamGet(signerSign(url, vid), 1)
-		if err == nil && up != nil {
-			if up.StatusCode == http.StatusOK {
-				buf, rerr := readAll(up.Body)
-				_ = up.Body.Close()
-				if rerr == nil {
-					cachePut(url, buf)
-					return buf
-				}
-			} else if up.StatusCode == 404 {
-				// 404 重试没意义
-				_ = up.Body.Close()
-				return nil
-			} else if up.StatusCode == 403 || up.StatusCode == 429 {
-				// 多半是 CDN 嫌请求太密 → 退得久一点再试
-				_ = up.Body.Close()
-				sleepMs(1200 * (i + 1))
-				continue
-			} else {
-				_ = up.Body.Close()
-			}
+		if ctx.Err() != nil {
+			return nil, lastCode
 		}
-		if i < tries-1 {
-			sleepMs(300 * (i + 1))
+		segCtx, segCancel := context.WithTimeout(ctx, 55*time.Second)
+		signed := signerSign(rawURL, vid)
+		req, err := http.NewRequestWithContext(segCtx, "GET", signed, nil)
+		if err != nil {
+			segCancel()
+			return nil, lastCode
+		}
+		setVideoHeaders(req)
+		resp, err := dlOldClient.Do(req)
+		if err == nil && resp != nil {
+			lastCode = resp.StatusCode
+			if resp.StatusCode == http.StatusOK {
+				buf, rerr := readBodyStallSafe(segCtx, segCancel, resp.Body, 25*time.Second, 32<<20)
+				segCancel()
+				if rerr == nil && len(buf) > 0 {
+					cachePut(rawURL, buf)
+					return buf, http.StatusOK
+				}
+			} else {
+				_ = resp.Body.Close()
+				segCancel()
+				if resp.StatusCode == 404 {
+					return nil, 404
+				}
+				if resp.StatusCode == 401 || resp.StatusCode == 403 {
+					if newVid := getVid(true); newVid != "" {
+						vid = newVid
+					}
+					if onThrottle != nil {
+						onThrottle()
+					}
+					if !sleepCtx(ctx, 900*(i+1)) {
+						return nil, lastCode
+					}
+					continue
+				}
+				if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+					if onThrottle != nil {
+						onThrottle()
+					}
+					if !sleepCtx(ctx, 800*(i+1)) {
+						return nil, lastCode
+					}
+					continue
+				}
+			}
+		} else {
+			segCancel()
+		}
+		if i < tries-1 && !sleepCtx(ctx, 300*(i+1)) {
+			return nil, lastCode
 		}
 	}
-	return nil
+	return nil, lastCode
 }
 
 // ---------------------------------------------------------------- /dl
@@ -308,7 +400,8 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 		startBytes = 0
 	}
 
-	tracker := dlTrackStart("old", title+ext, len(order), 0)
+	queueID := strings.TrimSpace(r.URL.Query().Get("queueId"))
+	tracker := dlTrackBindOrStart(queueID, "old", title+ext, len(order), 0)
 	tracker.setReqPath(r.URL.RequestURI())
 	if startSeg > 0 {
 		tracker.setResumeInit(startSeg, startBytes)
@@ -324,44 +417,133 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	w.WriteHeader(200)
 	started = true
 
+	var vidMu sync.Mutex
+	curVid := vid
+	var lastVidRefresh time.Time
+	getVid := func(force bool) string {
+		vidMu.Lock()
+		defer vidMu.Unlock()
+		if force && time.Since(lastVidRefresh) > 15*time.Second {
+			vtMu.Lock()
+			delete(vtCache, token)
+			vtMu.Unlock()
+			if nv, err := videoToken(token, user.Badge); err == nil && nv != "" {
+				curVid = nv
+				lastVidRefresh = time.Now()
+			}
+		}
+		return curVid
+	}
+
+	// 自适应双路预取窗口：默认 2 并发加快提速；一旦检测到 403/429 自动降为单路并发防封限流
+	var throttled atomic.Bool
+	onThrottle := func() { throttled.Store(true) }
+
 	flusher, _ := w.(http.Flusher)
-	doneSegs, failedSegs := startSeg, 0
+	doneSegs, failedSegs, consecutiveFails := startSeg, 0, 0
 	doneBytes := startBytes
 	gone := false
-	for i := startSeg; i < len(order); i++ {
+	fatalHalf := false
+
+	type segResult struct {
+		idx  int
+		buf  []byte
+		code int
+	}
+	const winSize = 4
+	results := make(map[int][]byte, winSize+2)
+	var nextAssign = startSeg
+	inFlight := 0
+	resCh := make(chan segResult, winSize+2)
+
+	maxWorkers := func() int {
+		if throttled.Load() {
+			return 1
+		}
+		return 2
+	}
+	nextWrite := startSeg
+	dispatchNext := func() {
+		for nextAssign < len(order) && inFlight < maxWorkers() && nextAssign-nextWrite < winSize {
+			idx := nextAssign
+			nextAssign++
+			inFlight++
+			go func(segIdx int, segURL string) {
+				b, code := fetchSegmentCtx(dlCtx, segURL, getVid, onThrottle, 6)
+				resCh <- segResult{idx: segIdx, buf: b, code: code}
+			}(idx, order[idx])
+		}
+	}
+
+	for nextWrite < len(order) {
 		if gone || dlCtx.Err() != nil || tracker.isCancelled() {
 			gone = true
 			break
 		}
-		buf := fetchSegment(order[i], vid, 5)
-		if buf == nil {
-			failedSegs++
-			if i == startSeg {
-				break // 第一片就取不到：多半是地址/权限问题，别硬下
-			}
-			continue // 中间断一片：跳过，接着下
-		}
-		doneSegs++
-		if _, err := w.Write(buf); err != nil {
-			gone = true
+		dispatchNext()
+		if inFlight == 0 {
 			break
 		}
-		doneBytes += int64(len(buf))
-		tracker.update(i+1, doneBytes)
-		if flusher != nil {
-			flusher.Flush()
+		res := <-resCh
+		inFlight--
+		if res.buf == nil {
+			// 记录 nil 哨兵以便按序检查连续失败
+			results[res.idx] = []byte{}
+		} else {
+			results[res.idx] = res.buf
 		}
-		if (i+1)%100 == 0 {
-			fmt.Printf("  下载进度 %d/%d\n", i+1, len(order))
+
+		for nextWrite < len(order) {
+			buf, ready := results[nextWrite]
+			if !ready {
+				break
+			}
+			delete(results, nextWrite)
+			if len(buf) == 0 {
+				failedSegs++
+				consecutiveFails++
+				if nextWrite == startSeg {
+					fatalHalf = true
+					gone = true
+					break
+				}
+				if consecutiveFails >= 8 {
+					fatalHalf = true
+					gone = true
+					break
+				}
+				nextWrite++
+				continue
+			}
+			consecutiveFails = 0
+			doneSegs++
+			if _, err := w.Write(buf); err != nil {
+				gone = true
+				break
+			}
+			doneBytes += int64(len(buf))
+			nextWrite++
+			tracker.update(nextWrite, doneBytes)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if doneSegs%100 == 0 {
+				fmt.Printf("  下载进度 %d/%d\n", doneSegs, len(order))
+			}
 		}
-		if (i+1)%10 == 0 {
-			sleepMs(200) // 稍微放慢，别把 CDN 惹急
+		if gone {
+			break
 		}
 	}
+
 	if tracker.isCancelled() {
 		tracker.finish("cancelled", "用户已取消")
-	} else if gone || dlCtx.Err() != nil {
-		tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
+	} else if gone || fatalHalf || dlCtx.Err() != nil {
+		msg := "连接已断开，可在下载管理中继续"
+		if fatalHalf {
+			msg = "部分分片连续获取失败（已保留断点），请点击继续下载"
+		}
+		tracker.finish("interrupted", msg)
 	} else if doneSegs == 0 {
 		tracker.finish("error", "分片拉取失败")
 	} else {

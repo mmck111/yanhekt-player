@@ -8,6 +8,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -526,19 +527,27 @@ type y2Stream struct {
 	URL    string `json:"url"`
 }
 
+// y2AudioSource 一路独立音频源（来自 audio_list）
+type y2AudioSource struct {
+	Label  string `json:"label"`
+	URL    string `json:"url"`
+	Format string `json:"format,omitempty"`
+}
+
 // y2SubInfo 一讲的可播放信息（/api/y2/sub 直接把它塞进 info 字段）
 type y2SubInfo struct {
-	Status   string     `json:"status"`
-	Kind     string     `json:"kind"`
-	Title    string     `json:"title"`
-	SubTitle string     `json:"subTitle"`
-	Teacher  string     `json:"teacher"`
-	Room     string     `json:"room"`
-	StartAt  int64      `json:"startAt"`
-	EndAt    int64      `json:"endAt"`
-	Duration int        `json:"duration"`
-	Streams  []y2Stream `json:"streams"`
-	Audio    string     `json:"audio"`
+	Status   string          `json:"status"`
+	Kind     string          `json:"kind"`
+	Title    string          `json:"title"`
+	SubTitle string          `json:"subTitle"`
+	Teacher  string          `json:"teacher"`
+	Room     string          `json:"room"`
+	StartAt  int64           `json:"startAt"`
+	EndAt    int64           `json:"endAt"`
+	Duration int             `json:"duration"`
+	Streams  []y2Stream      `json:"streams"`
+	Audio    string          `json:"audio"`
+	Audios   []y2AudioSource `json:"-"`
 }
 
 type y2SubCacheEntry struct {
@@ -653,19 +662,41 @@ func y2ParseSubInfo(body any) (*y2SubInfo, error) {
 		return streamOrder[info.Streams[i].Type] < streamOrder[info.Streams[j].Type]
 	})
 
-	// 音频：只要 .aac
+	// 音频：info.Audio 兼容旧结构保留首个 .aac；同时采集全部可用独立音轨到 info.Audios
+	seenAud := map[string]bool{}
 	for _, it := range y2Arr(d["audio_list"]) {
 		item := jobj(it)
 		if item == nil {
 			continue
 		}
-		u := y2Text(item["url"])
-		if u == "" {
+		u := y2PickStr(item, "url", "preview_url", "src")
+		if u == "" || seenAud[u] {
 			continue
 		}
-		if strings.HasSuffix(strings.ToLower(strings.Split(u, "?")[0]), ".aac") {
+		seenAud[u] = true
+		low := strings.ToLower(strings.Split(u, "?")[0])
+		fmtName := ""
+		switch {
+		case strings.HasSuffix(low, ".aac"):
+			fmtName = "aac"
+		case strings.HasSuffix(low, ".m4a"):
+			fmtName = "m4a"
+		case strings.HasSuffix(low, ".mp3"):
+			fmtName = "mp3"
+		case strings.HasSuffix(low, ".m3u8"):
+			fmtName = "hls"
+		}
+		label := y2PickStr(item, "name", "title", "label", "audio_name")
+		if label == "" {
+			if fmtName != "" {
+				label = fmt.Sprintf("独立音频 %d (%s)", len(info.Audios)+1, strings.ToUpper(fmtName))
+			} else {
+				label = fmt.Sprintf("独立音频 %d", len(info.Audios)+1)
+			}
+		}
+		info.Audios = append(info.Audios, y2AudioSource{Label: label, URL: u, Format: fmtName})
+		if info.Audio == "" && fmtName == "aac" {
 			info.Audio = u
-			break
 		}
 	}
 	return info, nil
@@ -1000,6 +1031,11 @@ func y2ParseDetail(courseID string, body any) *y2Detail {
 	}
 }
 
+var (
+	y2DetailHintMu   sync.Mutex
+	y2DetailBestName string
+)
+
 // y2CourseDetail 讲次直读：get-course-detail 一次给全量 sub_list。
 //
 // 两个关键点：
@@ -1018,13 +1054,31 @@ func y2CourseDetail(jwt, courseID, account string) (*y2Detail, error) {
 		{name: "person/course-api", path: "/vlabpassportapi/person/course-api/get-course-detail", params: y2Params{
 			y2P("course_id", courseID)}},
 	}
-	got, _, err := y2Probe(jwt, tries, func(body any) (*y2Detail, bool) {
+	y2DetailHintMu.Lock()
+	bestName := y2DetailBestName
+	y2DetailHintMu.Unlock()
+	if bestName != "" {
+		for i := range tries {
+			if tries[i].name == bestName && i > 0 {
+				ordered := append([]y2Try{tries[i]}, append([]y2Try{}, tries[:i]...)...)
+				ordered = append(ordered, tries[i+1:]...)
+				tries = ordered
+				break
+			}
+		}
+	}
+	got, matched, err := y2Probe(jwt, tries, func(body any) (*y2Detail, bool) {
 		// 解析成功就算数，哪怕 0 条讲次（0 条 = 这门课没录像）
 		r := y2ParseDetail(courseID, body)
 		return r, r != nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if matched != nil && got != nil && len(got.sessions) > 0 {
+		y2DetailHintMu.Lock()
+		y2DetailBestName = matched.name
+		y2DetailHintMu.Unlock()
 	}
 	if got == nil {
 		return nil, errors.New("get-course-detail 没返回可用数据")
@@ -1090,7 +1144,7 @@ func y2CourseVideos(jwt, courseID, account string) (*y2CourseVideosResult, error
 	}
 	countExact := probeLimit == 0
 	if len(candidates) > 0 {
-		playable, failed, n := y2VerifySessions(jwt, courseID, candidates, probeLimit, 6)
+		playable, failed, n := y2VerifySessions(jwt, courseID, candidates, probeLimit, 8)
 		sessions = playable
 		// 全部请求都失败（网络/权限）→ 退回状态判断，但标记未验证
 		if len(sessions) == 0 && failed > 0 && failed == n {

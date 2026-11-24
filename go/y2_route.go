@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -736,7 +737,11 @@ func handleY2Sub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "这一讲没有录像文件（可能还没生成回放）"})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "info": info})
+	audios := info.Audios
+	if audios == nil {
+		audios = []y2AudioSource{}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "info": info, "audios": audios})
 }
 
 // ---------------------------------------------------------------- 播放 / 下载
@@ -798,8 +803,9 @@ func handleY2Download(w http.ResponseWriter, r *http.Request) {
 	if r := []rune(name); len(r) > 80 {
 		name = string(r[:80])
 	}
+	queueID := strings.TrimSpace(qv.Get("queueId"))
 	if strings.HasSuffix(strings.ToLower(strings.Split(st.URL, "?")[0]), ".m3u8") {
-		if err := y2DownloadHLS(w, r, st.URL, name); err != nil {
+		if err := y2DownloadHLS(w, r, st.URL, name, id, queueID); err != nil {
 			w.Header().Set("content-type", "text/plain; charset=utf-8")
 			w.WriteHeader(502)
 			_, _ = w.Write([]byte("下载出错：" + err.Error()))
@@ -807,7 +813,7 @@ func handleY2Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resumeOff, _ := strconv.ParseInt(strings.TrimSpace(qv.Get("startBytes")), 10, 64)
-	if err := y2ProxyPlay(w, r, st.URL, id, y2ProxyOpts{filename: name + ".mp4", ext: ".mp4", reqPath: r.URL.RequestURI(), resumeFrom: resumeOff}); err != nil {
+	if err := y2DownloadMP4(w, r, st.URL, id, y2ProxyOpts{filename: name + ".mp4", ext: ".mp4", reqPath: r.URL.RequestURI(), resumeFrom: resumeOff, queueID: queueID}); err != nil {
 		w.Header().Set("content-type", "text/plain; charset=utf-8")
 		w.WriteHeader(502)
 		_, _ = w.Write([]byte("下载出错：" + err.Error()))
@@ -819,79 +825,79 @@ var (
 	y2MapURIAttr = regexp.MustCompile(`URI="([^"]+)"`)
 )
 
-// y2DownloadHLS 新版录像基本是 HLS：把分片拼成一个 .ts。
-//
-// 全部请求都走本地 /y2play 代理（签名、地址改写、上游行为都和在线播放一致），
-// 这样不用在这里重复处理签名和跳转。
-func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name string) error {
-	hp := r.Host
-	if i := strings.LastIndex(hp, ":"); i >= 0 {
-		hp = hp[i+1:]
+// y2DownloadHLS 新版录像 HLS：直接直连上游签名拉片，4 路并发有序拼片 + 空闲卡顿看门狗 + 断线重试
+func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name string, id *y2Identity, queueID string) error {
+	fetchUpstream := func(ctx context.Context, rawURL string, maxBytes int64) (int, []byte, string, error) {
+		target, err := y2SignedURL(rawURL, id)
+		if err != nil {
+			return 0, nil, rawURL, err
+		}
+		segCtx, segCancel := context.WithTimeout(ctx, 55*time.Second)
+		defer segCancel()
+		req, err := http.NewRequestWithContext(segCtx, "GET", target, nil)
+		if err != nil {
+			return 0, nil, rawURL, err
+		}
+		req.Header.Set("User-Agent", y2UA)
+		req.Header.Set("Referer", y2Base+"/")
+		req.Header.Set("Accept", "*/*")
+		resp, err := y2StreamClient.Do(req)
+		if err != nil {
+			return 0, nil, rawURL, err
+		}
+		finalURL := rawURL
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalURL = resp.Request.URL.String()
+		}
+		if resp.StatusCode != 200 {
+			_ = resp.Body.Close()
+			return resp.StatusCode, nil, finalURL, nil
+		}
+		b, rerr := readBodyStallSafe(segCtx, segCancel, resp.Body, 25*time.Second, maxBytes)
+		return resp.StatusCode, b, finalURL, rerr
 	}
-	if hp == "" {
-		hp = strconv.Itoa(port)
-	}
-	base := "http://127.0.0.1:" + hp
-	cookie := r.Header.Get("Cookie")
 
-	client := &http.Client{Timeout: 90 * time.Second}
-	getCtx := func(ctx context.Context, url string) (int, []byte, error) {
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-		if err != nil {
-			return 0, nil, err
+	curURL := streamURL
+	text := ""
+	baseURL := ""
+	for hop := 0; hop < 4; hop++ {
+		var hopErr error
+		var st int
+		var b []byte
+		var finalU string
+		for try := 0; try < 3; try++ {
+			st, b, finalU, hopErr = fetchUpstream(r.Context(), curURL, y2SegMax)
+			if hopErr == nil && st == 200 {
+				break
+			}
+			sleepCtx(r.Context(), 300*(try+1))
 		}
-		if cookie != "" {
-			req.Header.Set("Cookie", cookie)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return 0, nil, err
-		}
-		defer resp.Body.Close()
-		b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-		return resp.StatusCode, b, err
-	}
-	get := func(url string) (int, []byte, error) { return getCtx(r.Context(), url) }
-	readPlaylist := func(url string) (string, error) {
-		st, b, err := get(url)
-		if err != nil {
-			return "", err
+		if hopErr != nil {
+			return hopErr
 		}
 		if st != 200 {
-			return "", fmt.Errorf("播放列表 HTTP %d", st)
+			return fmt.Errorf("播放列表 HTTP %d", st)
 		}
-		return string(b), nil
-	}
-	absLocal := func(u string) string {
-		if strings.HasPrefix(u, "http") {
-			return u
+		text = string(b)
+		baseURL = finalU
+		if i := strings.LastIndex(finalU, "/"); i >= 0 {
+			baseURL = finalU[:i+1]
 		}
-		return base + u
-	}
-
-	text, err := readPlaylist(base + "/y2play?u=" + enc(streamURL))
-	if err != nil {
-		return err
-	}
-
-	// 多码率总表：挑第一路子列表
-	if y2MasterRe.MatchString(text) {
+		if !y2MasterRe.MatchString(text) {
+			break
+		}
 		child := ""
 		for _, line := range strings.Split(text, "\n") {
 			t := strings.TrimSpace(line)
-			if t == "" || strings.HasPrefix(t, "#") {
-				continue
+			if t != "" && !strings.HasPrefix(t, "#") {
+				child = t
+				break
 			}
-			child = t
-			break
 		}
 		if child == "" {
 			return fmt.Errorf("主播放列表里没有子列表")
 		}
-		text, err = readPlaylist(absLocal(child))
-		if err != nil {
-			return err
-		}
+		curURL = abs(child, strings.TrimSuffix(baseURL, "/"))
 	}
 
 	if strings.Contains(text, "#EXT-X-KEY") && strings.Contains(text, "METHOD=AES-128") {
@@ -900,6 +906,7 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 
 	initURL := ""
 	segs := []string{}
+	baseTrim := strings.TrimSuffix(baseURL, "/")
 	for _, line := range strings.Split(text, "\n") {
 		t := strings.TrimSpace(line)
 		if t == "" {
@@ -907,14 +914,14 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		}
 		if strings.HasPrefix(t, "#EXT-X-MAP") {
 			if m := y2MapURIAttr.FindStringSubmatch(t); len(m) > 1 {
-				initURL = absLocal(m[1])
+				initURL = abs(m[1], baseTrim)
 			}
 			continue
 		}
 		if strings.HasPrefix(t, "#") {
 			continue
 		}
-		segs = append(segs, absLocal(t))
+		segs = append(segs, abs(t, baseTrim))
 	}
 	if len(segs) == 0 {
 		return fmt.Errorf("播放列表里没有分片")
@@ -932,18 +939,27 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		startBytes = 0
 	}
 
-	// 先取起始分片：取不到就直接报错，别给用户一个空文件或损毁断点
-	st, first, err := get(order[startSeg])
-	if err != nil {
-		return fmt.Errorf("第一片取不到：%v", err)
+	// 先取起始分片（带重试）：取不到才报错，避免给用户损坏文件
+	var first []byte
+	var firstSt int
+	var firstErr error
+	for try := 0; try < 4; try++ {
+		firstSt, first, _, firstErr = fetchUpstream(r.Context(), order[startSeg], 32<<20)
+		if firstErr == nil && firstSt == 200 && len(first) > 0 {
+			break
+		}
+		sleepCtx(r.Context(), 350*(try+1))
 	}
-	if st != 200 || len(first) == 0 {
-		return fmt.Errorf("第一片取不到（HTTP %d）", st)
+	if firstErr != nil {
+		return fmt.Errorf("第一片取不到：%v", firstErr)
+	}
+	if firstSt != 200 || len(first) == 0 {
+		return fmt.Errorf("第一片取不到（HTTP %d）", firstSt)
 	}
 
 	dlCtx, dlCancel := context.WithCancel(r.Context())
 	defer dlCancel()
-	tracker := dlTrackStart("y2", name+".ts", len(order), 0)
+	tracker := dlTrackBindOrStart(queueID, "y2", name+".ts", len(order), 0)
 	tracker.setReqPath(r.URL.RequestURI())
 	if startSeg > 0 {
 		tracker.setResumeInit(startSeg, startBytes)
@@ -961,53 +977,123 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 	if flusher != nil {
 		flusher.Flush()
 	}
-	done, failed := startSeg+1, 0
+	done := startSeg + 1
+	failed, consecutiveFails := 0, 0
 	doneBytes := startBytes + int64(len(first))
 	tracker.update(done, doneBytes)
 	gone := false
-	for i := startSeg + 1; i < len(order); i++ {
-		if dlCtx.Err() != nil || tracker.isCancelled() {
+	fatalHalf := false
+
+	var throttled atomic.Bool
+	getSegRetry := func(u string) []byte {
+		for n := 0; n < 6; n++ {
+			if dlCtx.Err() != nil || tracker.isCancelled() {
+				return nil
+			}
+			st, b, _, err := fetchUpstream(dlCtx, u, 32<<20)
+			if err == nil && st == 200 && len(b) > 0 {
+				return b
+			}
+			if st == 404 {
+				return nil
+			}
+			if st == 403 || st == 429 {
+				throttled.Store(true)
+				if !sleepCtx(dlCtx, 900*(n+1)) {
+					return nil
+				}
+				continue
+			}
+			if !sleepCtx(dlCtx, 300*(n+1)) {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	type y2SegRes struct {
+		idx int
+		buf []byte
+	}
+	const winSize = 8
+	results := make(map[int][]byte, winSize+2)
+	nextWrite := startSeg + 1
+	nextAssign := startSeg + 1
+	inFlight := 0
+	resCh := make(chan y2SegRes, winSize+2)
+
+	maxWorkers := func() int {
+		if throttled.Load() {
+			return 2
+		}
+		return 4
+	}
+
+	for nextWrite < len(order) {
+		if dlCtx.Err() != nil || tracker.isCancelled() || gone {
 			gone = true
 			break
 		}
-		var buf []byte
-		for n := 0; n < 4 && buf == nil; n++ {
-			if dlCtx.Err() != nil || tracker.isCancelled() {
+		for nextAssign < len(order) && inFlight < maxWorkers() && nextAssign-nextWrite < winSize {
+			idx := nextAssign
+			nextAssign++
+			inFlight++
+			go func(si int, su string) {
+				resCh <- y2SegRes{idx: si, buf: getSegRetry(su)}
+			}(idx, order[idx])
+		}
+		if inFlight == 0 {
+			break
+		}
+		res := <-resCh
+		inFlight--
+		if res.buf == nil {
+			results[res.idx] = []byte{}
+		} else {
+			results[res.idx] = res.buf
+		}
+		for nextWrite < len(order) {
+			buf, ready := results[nextWrite]
+			if !ready {
+				break
+			}
+			delete(results, nextWrite)
+			if len(buf) == 0 {
+				failed++
+				consecutiveFails++
+				if consecutiveFails >= 8 {
+					fatalHalf = true
+					gone = true
+					break
+				}
+				nextWrite++
+				continue
+			}
+			consecutiveFails = 0
+			done++
+			if _, e := w.Write(buf); e != nil {
 				gone = true
 				break
 			}
-			s, b, e := getCtx(dlCtx, order[i])
-			if e == nil && s == 200 && len(b) > 0 {
-				buf = b
-				break
+			doneBytes += int64(len(buf))
+			nextWrite++
+			tracker.update(nextWrite, doneBytes)
+			if flusher != nil {
+				flusher.Flush()
 			}
-			sleepMs(300 * (n + 1))
 		}
 		if gone {
 			break
 		}
-		if buf == nil {
-			failed++
-			continue
-		}
-		done++
-		if _, e := w.Write(buf); e != nil {
-			gone = true
-			break
-		}
-		doneBytes += int64(len(buf))
-		tracker.update(i+1, doneBytes)
-		if flusher != nil {
-			flusher.Flush()
-		}
-		if done%10 == 0 {
-			sleepMs(100)
-		}
 	}
 	if tracker.isCancelled() {
 		tracker.finish("cancelled", "用户已取消")
-	} else if gone || dlCtx.Err() != nil {
-		tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
+	} else if gone || fatalHalf || dlCtx.Err() != nil {
+		msg := "连接已断开，可在下载管理中继续"
+		if fatalHalf {
+			msg = "部分分片连续获取失败（已保留断点），请点击继续下载"
+		}
+		tracker.finish("interrupted", msg)
 	} else {
 		tracker.finish("done", "")
 	}
@@ -1067,29 +1153,357 @@ type y2ProxyOpts struct {
 	ext        string
 	reqPath    string
 	resumeFrom int64
+	queueID    string
 }
 
-// y2ProxyPlay /play/ 转发：透传 Range；m3u8 会把分片地址改回本代理（每片现签）
+func y2ParseContentRangeTotal(cr string) int64 {
+	// e.g. "bytes 0-4194303/123456789"
+	idx := strings.LastIndex(cr, "/")
+	if idx < 0 {
+		return 0
+	}
+	totStr := strings.TrimSpace(cr[idx+1:])
+	if totStr == "" || totStr == "*" {
+		return 0
+	}
+	v, _ := strconv.ParseInt(totStr, 10, 64)
+	return v
+}
+
+// y2DownloadMP4 分块 Range 下载器（4MB/块 · 3 路并发预取 · 每块独立重签名与重连恢复）
+// 彻底解决单条长连接传到一半因 CDN 断开或签名过期导致的「下载到一半就停了」。
+func y2DownloadMP4(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Identity, opts y2ProxyOpts) error {
+	const chunkSize int64 = 4 << 20
+	startOffset := opts.resumeFrom
+	if startOffset < 0 {
+		startOffset = 0
+	}
+
+	dlCtx, dlCancel := context.WithCancel(r.Context())
+	defer dlCancel()
+
+	openRange := func(start, end int64) (*http.Response, error) {
+		target, err := y2SignedURL(rawURL, id)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(dlCtx, "GET", target, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", y2UA)
+		req.Header.Set("Referer", y2Base+"/")
+		req.Header.Set("Accept", "*/*")
+		if end >= start && start >= 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+		} else if start > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
+		}
+		return y2StreamClient.Do(req)
+	}
+
+	var firstResp *http.Response
+	var firstErr error
+	for try := 0; try < 4; try++ {
+		firstResp, firstErr = openRange(startOffset, startOffset+chunkSize-1)
+		if firstErr == nil && firstResp != nil && (firstResp.StatusCode == 206 || firstResp.StatusCode == 200) {
+			break
+		}
+		if firstResp != nil {
+			_ = firstResp.Body.Close()
+		}
+		if !sleepCtx(dlCtx, 350*(try+1)) {
+			break
+		}
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	if firstResp == nil {
+		return fmt.Errorf("上游响应为空")
+	}
+	if firstResp.StatusCode != 206 && firstResp.StatusCode != 200 {
+		code := firstResp.StatusCode
+		_ = firstResp.Body.Close()
+		return fmt.Errorf("上游返回 HTTP %d", code)
+	}
+
+	ct := firstResp.Header.Get("content-type")
+	if ct == "" {
+		ct = "video/mp4"
+	}
+	setAttachHeaders := func(dlID string, resumed bool, resumedFrom int64) {
+		w.Header().Set("content-type", ct)
+		w.Header().Set("content-disposition",
+			`attachment; filename="lecture`+opts.ext+`"; filename*=UTF-8''`+encodeURIComponent(opts.filename))
+		w.Header().Set("cache-control", "no-store")
+		w.Header().Set("X-YHKT-DL-ID", dlID)
+		if resumed && resumedFrom > 0 {
+			w.Header().Set("X-YHKT-Resume-Offset", strconv.FormatInt(resumedFrom, 10))
+		}
+	}
+
+	totalSize := y2ParseContentRangeTotal(firstResp.Header.Get("content-range"))
+	isChunked206 := firstResp.StatusCode == 206 && totalSize > 0
+	if isChunked206 {
+		firstCtx, firstCancel := context.WithTimeout(dlCtx, 60*time.Second)
+		firstData, err := readBodyStallSafe(firstCtx, firstCancel, firstResp.Body, 30*time.Second, chunkSize+1<<20)
+		firstCancel()
+		if err != nil {
+			return fmt.Errorf("读取首块失败：%v", err)
+		}
+		if startOffset >= totalSize {
+			_ = dlTrackBindOrStart(opts.queueID, "y2", opts.filename, 1, totalSize)
+			return nil
+		}
+		remStart := startOffset + int64(len(firstData))
+		var chunkStarts []int64
+		var chunkEnds []int64
+		for off := remStart; off < totalSize; off += chunkSize {
+			end := off + chunkSize - 1
+			if end >= totalSize {
+				end = totalSize - 1
+			}
+			chunkStarts = append(chunkStarts, off)
+			chunkEnds = append(chunkEnds, end)
+		}
+		totalSegs := 1 + len(chunkStarts)
+		tracker := dlTrackBindOrStart(opts.queueID, "y2", opts.filename, totalSegs, totalSize)
+		if opts.reqPath != "" {
+			tracker.setReqPath(opts.reqPath)
+		} else {
+			tracker.setReqPath(r.URL.RequestURI())
+		}
+		resumed := startOffset > 0
+		if resumed {
+			tracker.setResumeInit(0, startOffset)
+		}
+		tracker.setCancel(dlCancel)
+		setAttachHeaders(tracker.ID, resumed, startOffset)
+		if totalSize > startOffset {
+			w.Header().Set("content-length", strconv.FormatInt(totalSize-startOffset, 10))
+		}
+		w.WriteHeader(200)
+
+		flusher, _ := w.(http.Flusher)
+		if _, werr := w.Write(firstData); werr != nil {
+			tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
+			return nil
+		}
+		writtenTotal := startOffset + int64(len(firstData))
+		tracker.update(1, writtenTotal)
+		if flusher != nil {
+			flusher.Flush()
+		}
+
+		fetchChunk := func(cs, ce int64) ([]byte, error) {
+			var lastErr error
+			for n := 0; n < 7; n++ {
+				if dlCtx.Err() != nil || tracker.isCancelled() {
+					return nil, context.Canceled
+				}
+				cCtx, cCancel := context.WithTimeout(dlCtx, 65*time.Second)
+				target, err := y2SignedURL(rawURL, id)
+				if err != nil {
+					cCancel()
+					return nil, err
+				}
+				req, err := http.NewRequestWithContext(cCtx, "GET", target, nil)
+				if err != nil {
+					cCancel()
+					return nil, err
+				}
+				req.Header.Set("User-Agent", y2UA)
+				req.Header.Set("Referer", y2Base+"/")
+				req.Header.Set("Accept", "*/*")
+				req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", cs, ce))
+				resp, err := y2StreamClient.Do(req)
+				if err == nil && resp != nil {
+					if resp.StatusCode == 206 || resp.StatusCode == 200 {
+						b, rerr := readBodyStallSafe(cCtx, cCancel, resp.Body, 25*time.Second, chunkSize+1<<20)
+						cCancel()
+						wantLen := int(ce - cs + 1)
+						if rerr == nil && len(b) == wantLen {
+							return b, nil
+						}
+						if rerr == nil {
+							rerr = fmt.Errorf("分块长度不匹配 %d/%d", len(b), wantLen)
+						}
+						lastErr = rerr
+					} else {
+						code := resp.StatusCode
+						_ = resp.Body.Close()
+						cCancel()
+						lastErr = fmt.Errorf("HTTP %d", code)
+						if code == 403 || code == 429 || code >= 500 {
+							if !sleepCtx(dlCtx, 800*(n+1)) {
+								return nil, context.Canceled
+							}
+							continue
+						}
+					}
+				} else {
+					cCancel()
+					lastErr = err
+				}
+				if !sleepCtx(dlCtx, 350*(n+1)) {
+					return nil, context.Canceled
+				}
+			}
+			if lastErr == nil {
+				lastErr = fmt.Errorf("分块获取失败")
+			}
+			return nil, lastErr
+		}
+
+		type chunkRes struct {
+			idx int
+			buf []byte
+			err error
+		}
+		const maxWorkers = 3
+		const winSize = 5
+		readyMap := make(map[int][]byte, winSize+2)
+		nextAssign, nextWrite, inFlight := 0, 0, 0
+		resCh := make(chan chunkRes, winSize+2)
+		gone := false
+		var fetchErr error
+
+		for nextWrite < len(chunkStarts) {
+			if dlCtx.Err() != nil || tracker.isCancelled() || gone {
+				gone = true
+				break
+			}
+			for nextAssign < len(chunkStarts) && inFlight < maxWorkers && nextAssign-nextWrite < winSize {
+				i := nextAssign
+				nextAssign++
+				inFlight++
+				go func(ci int, cs, ce int64) {
+					b, e := fetchChunk(cs, ce)
+					resCh <- chunkRes{idx: ci, buf: b, err: e}
+				}(i, chunkStarts[i], chunkEnds[i])
+			}
+			if inFlight == 0 {
+				break
+			}
+			cr := <-resCh
+			inFlight--
+			if cr.err != nil {
+				fetchErr = cr.err
+				gone = true
+				break
+			}
+			readyMap[cr.idx] = cr.buf
+			for nextWrite < len(chunkStarts) {
+				b, ok := readyMap[nextWrite]
+				if !ok {
+					break
+				}
+				delete(readyMap, nextWrite)
+				if _, werr := w.Write(b); werr != nil {
+					gone = true
+					break
+				}
+				writtenTotal += int64(len(b))
+				nextWrite++
+				tracker.update(1+nextWrite, writtenTotal)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if gone {
+				break
+			}
+		}
+		if tracker.isCancelled() {
+			tracker.finish("cancelled", "用户已取消")
+		} else if gone || fetchErr != nil || dlCtx.Err() != nil {
+			msg := "连接已断开，可在下载管理中继续"
+			if fetchErr != nil && !errors.Is(fetchErr, context.Canceled) {
+				msg = "分块中断（" + fetchErr.Error() + "），已保留断点"
+			}
+			tracker.finish("interrupted", msg)
+		} else {
+			tracker.markDone()
+		}
+		return nil
+	}
+
+	// 回落模式（上游不支持 206 分块，或未返回总长度）
+	defer firstResp.Body.Close()
+	totalBytes, _ := strconv.ParseInt(firstResp.Header.Get("content-length"), 10, 64)
+	resumed := startOffset > 0 && firstResp.StatusCode == 206
+	if resumed && totalBytes > 0 {
+		totalBytes += startOffset
+	}
+	tracker := dlTrackBindOrStart(opts.queueID, "y2", opts.filename, 1, totalBytes)
+	if opts.reqPath != "" {
+		tracker.setReqPath(opts.reqPath)
+	} else {
+		tracker.setReqPath(r.URL.RequestURI())
+	}
+	if resumed {
+		tracker.setResumeInit(0, startOffset)
+	}
+	tracker.setCancel(dlCancel)
+	setAttachHeaders(tracker.ID, resumed, startOffset)
+	if cl := firstResp.Header.Get("content-length"); cl != "" {
+		w.Header().Set("content-length", cl)
+	}
+	w.WriteHeader(200)
+	_, copyErr := io.CopyBuffer(&dlTrackWriter{w: w, tracker: tracker}, firstResp.Body, make([]byte, 64*1024))
+	if tracker.isCancelled() {
+		tracker.finish("cancelled", "用户已取消")
+	} else if copyErr != nil || dlCtx.Err() != nil {
+		tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
+	} else {
+		tracker.markDone()
+	}
+	return nil
+}
+
+// y2ProxyPlay /play/ 转发：透传 Range；m3u8 会把分片地址改回本代理（每片现签 + 缓存 + 预取首片）
 func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Identity, opts y2ProxyOpts) error {
+	if opts.filename != "" {
+		return y2DownloadMP4(w, r, rawURL, id, opts)
+	}
+
+	lowPath := strings.ToLower(strings.Split(rawURL, "?")[0])
+	isPlaylist := strings.HasSuffix(lowPath, ".m3u8")
+	rg := r.Header.Get("Range")
+
+	if isPlaylist {
+		if text, ok := playlistGet("y2:" + rawURL); ok {
+			w.Header().Set("content-type", "application/vnd.apple.mpegurl")
+			w.Header().Set("cache-control", "no-store")
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(text))
+			return nil
+		}
+	} else if rg == "" && !strings.HasSuffix(lowPath, ".mp4") {
+		if hit := cacheGet("y2:" + rawURL); hit != nil {
+			w.Header().Set("content-type", "video/mp2t")
+			w.Header().Set("content-length", strconv.Itoa(len(hit)))
+			w.Header().Set("cache-control", "public, max-age=3600")
+			w.WriteHeader(200)
+			_, _ = w.Write(hit)
+			return nil
+		}
+	}
+
 	target, err := y2SignedURL(rawURL, id)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("GET", target, nil)
+	req, err := http.NewRequestWithContext(r.Context(), "GET", target, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", y2UA)
 	req.Header.Set("Referer", y2Base+"/")
 	req.Header.Set("Accept", "*/*")
-	if opts.filename != "" {
-		if opts.resumeFrom > 0 {
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", opts.resumeFrom))
-		}
-	} else {
-		if rg := r.Header.Get("Range"); rg != "" {
-			req.Header.Set("Range", rg)
-		}
+	if rg != "" {
+		req.Header.Set("Range", rg)
 	}
 
 	up, err := y2StreamClient.Do(req)
@@ -1098,7 +1512,11 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	}
 	defer up.Body.Close()
 
-	isPlaylist := strings.HasSuffix(strings.ToLower(strings.Split(rawURL, "?")[0]), ".m3u8")
+	baseURL := rawURL
+	if up.Request != nil && up.Request.URL != nil {
+		baseURL = up.Request.URL.String()
+	}
+
 	if isPlaylist && up.StatusCode == 200 {
 		body, err := io.ReadAll(io.LimitReader(up.Body, y2SegMax))
 		if err != nil {
@@ -1106,12 +1524,14 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 		}
 		text := string(body)
 		base := ""
-		if i := strings.LastIndex(rawURL, "/"); i >= 0 {
-			base = rawURL[:i+1]
+		if i := strings.LastIndex(baseURL, "/"); i >= 0 {
+			base = baseURL[:i+1]
 		}
+		baseTrim := strings.TrimSuffix(base, "/")
 		lines := strings.Split(text, "\n")
 		var out strings.Builder
 		out.Grow(len(text) + 256)
+		var prefetchURLs []string
 		for i, line := range lines {
 			t := strings.TrimSpace(line)
 			switch {
@@ -1123,19 +1543,32 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 					if len(sub) < 2 {
 						return m
 					}
-					return `URI="/y2play?u=` + enc(abs(sub[1], base)) + `"`
+					uAbs := abs(sub[1], baseTrim)
+					if strings.HasPrefix(strings.ToUpper(t), "#EXT-X-MAP") && len(prefetchURLs) < 2 {
+						prefetchURLs = append(prefetchURLs, uAbs)
+					}
+					return `URI="/y2play?u=` + enc(uAbs) + `"`
 				}))
 			default:
-				out.WriteString("/y2play?u=" + enc(abs(t, base)))
+				uAbs := abs(t, baseTrim)
+				if !strings.HasSuffix(strings.ToLower(strings.Split(uAbs, "?")[0]), ".m3u8") && len(prefetchURLs) < 2 {
+					prefetchURLs = append(prefetchURLs, uAbs)
+				}
+				out.WriteString("/y2play?u=" + enc(uAbs))
 			}
 			if i < len(lines)-1 {
 				out.WriteString("\n")
 			}
 		}
+		outText := out.String()
+		playlistPut("y2:"+rawURL, outText)
+		if len(prefetchURLs) > 0 {
+			go y2PrefetchSegs(prefetchURLs, id)
+		}
 		w.Header().Set("content-type", "application/vnd.apple.mpegurl")
 		w.Header().Set("cache-control", "no-store")
 		w.WriteHeader(200)
-		_, _ = w.Write([]byte(out.String()))
+		_, _ = w.Write([]byte(outText))
 		return nil
 	}
 
@@ -1146,55 +1579,93 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 		}
 	}
 	w.Header().Set("cache-control", "public, max-age=3600")
-	if opts.filename != "" {
-		w.Header().Del("content-range")
-		w.Header().Del("accept-ranges")
-		ct := up.Header.Get("content-type")
-		if ct == "" {
-			ct = "video/mp4"
-		}
-		w.Header().Set("content-type", ct)
-		w.Header().Set("content-disposition",
-			`attachment; filename="lecture`+opts.ext+`"; filename*=UTF-8''`+encodeURIComponent(opts.filename))
-		w.Header().Set("cache-control", "no-store")
-	}
 
 	status := up.StatusCode
 	if status == 0 {
 		status = 200
 	}
-	if opts.filename != "" {
-		resumed := opts.resumeFrom > 0 && up.StatusCode == 206
-		totalBytes, _ := strconv.ParseInt(up.Header.Get("content-length"), 10, 64)
-		if resumed && totalBytes > 0 {
-			totalBytes += opts.resumeFrom
+	w.WriteHeader(status)
+
+	if rg == "" && status == 200 && !strings.HasSuffix(lowPath, ".mp4") {
+		buf := make([]byte, 64*1024)
+		var chunks [][]byte
+		var totalBytes int
+		clientGone := false
+		flusher, _ := w.(http.Flusher)
+		for {
+			n, rerr := up.Body.Read(buf)
+			if n > 0 {
+				if _, werr := w.Write(buf[:n]); werr != nil {
+					clientGone = true
+					break
+				}
+				if totalBytes+n <= segCacheMax/4 {
+					c := make([]byte, n)
+					copy(c, buf[:n])
+					chunks = append(chunks, c)
+					totalBytes += n
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if rerr != nil {
+				if rerr != io.EOF {
+					clientGone = true
+				}
+				break
+			}
+			if r.Context().Err() != nil {
+				clientGone = true
+				break
+			}
 		}
-		tracker := dlTrackStart("y2", opts.filename, 1, totalBytes)
-		if opts.reqPath != "" {
-			tracker.setReqPath(opts.reqPath)
-		} else {
-			tracker.setReqPath(r.URL.RequestURI())
-		}
-		if resumed {
-			tracker.setResumeInit(0, opts.resumeFrom)
-			w.Header().Set("X-YHKT-Resume-Offset", strconv.FormatInt(opts.resumeFrom, 10))
-		}
-		tracker.setCancel(func() { _ = up.Body.Close() })
-		w.Header().Set("X-YHKT-DL-ID", tracker.ID)
-		w.WriteHeader(200)
-		_, copyErr := io.Copy(&dlTrackWriter{w: w, tracker: tracker}, up.Body)
-		if tracker.isCancelled() {
-			tracker.finish("cancelled", "用户已取消")
-		} else if copyErr != nil || r.Context().Err() != nil {
-			tracker.finish("interrupted", "连接已断开，可在下载管理中继续")
-		} else {
-			tracker.markDone()
+		if !clientGone && len(chunks) > 0 && totalBytes <= segCacheMax/4 {
+			cachePut("y2:"+rawURL, joinBytes(chunks))
 		}
 		return nil
 	}
-	w.WriteHeader(status)
-	_, _ = io.Copy(w, up.Body)
+	_, _ = io.CopyBuffer(w, up.Body, make([]byte, 64*1024))
 	return nil
+}
+
+func y2PrefetchSegs(urls []string, id *y2Identity) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	for _, u := range urls {
+		ckey := "y2:" + u
+		if cacheGet(ckey) != nil {
+			continue
+		}
+		prefetchMu.Lock()
+		if prefetchInFlight[ckey] {
+			prefetchMu.Unlock()
+			continue
+		}
+		if len(prefetchInFlight) > 128 {
+			prefetchInFlight = map[string]bool{}
+		}
+		prefetchInFlight[ckey] = true
+		prefetchMu.Unlock()
+
+		if target, err := y2SignedURL(u, id); err == nil {
+			if req, err := http.NewRequestWithContext(ctx, "GET", target, nil); err == nil {
+				req.Header.Set("User-Agent", y2UA)
+				req.Header.Set("Referer", y2Base+"/")
+				if up, err := y2StreamClient.Do(req); err == nil && up != nil {
+					if up.StatusCode == http.StatusOK {
+						if b, rerr := io.ReadAll(io.LimitReader(up.Body, segCacheMax/4)); rerr == nil && len(b) > 0 {
+							cachePut(ckey, b)
+						}
+					}
+					_ = up.Body.Close()
+				}
+			}
+		}
+		prefetchMu.Lock()
+		delete(prefetchInFlight, ckey)
+		prefetchMu.Unlock()
+	}
 }
 
 type dlTrackWriter struct {
