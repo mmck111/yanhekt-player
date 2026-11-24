@@ -50,16 +50,18 @@
   .bdfoot .dirinfo a:hover{background:var(--accent-soft,#d3e3fd)}
   .bdempty{margin:auto;padding:26px 16px;text-align:center;color:var(--dim,#444746);font-size:13px;line-height:1.65}
   .bdstep{display:none}
-  @keyframes bdMobIn{from{opacity:0;transform:translate3d(0,12px,0)}to{opacity:1;transform:none}}
+  @keyframes bdMobIn{from{opacity:0;transform:translate3d(0,10px,0)}to{opacity:1;transform:none}}
   @media (max-width:900px){
     #bdGoQueue,#bdClose{display:none}
-    .bdbox{width:100%;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;padding:max(12px,env(safe-area-inset-top)) 14px 12px;animation:bdMobIn .24s cubic-bezier(.05,.7,.1,1)}
+    .bdbox{width:100%;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;background:var(--bg,#f8fafd);padding:max(12px,env(safe-area-inset-top)) 14px 12px;animation:none}
+    .bdhead,.bdstep,.bdgrid,.bdfoot{animation:bdMobIn .2s cubic-bezier(.22,1,.36,1)}
+    .bdbar input[type="search"]::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;display:none}
     .bdstep{display:grid;grid-template-columns:1fr 1fr;padding:3px;gap:3px;background:var(--panel,#f0f4f9);border:1px solid var(--line,rgba(68,71,70,.15));border-radius:999px;margin-top:10px;flex:none}
     .bdstep button{height:34px;border:none;border-radius:999px;background:transparent;color:var(--dim,#444746);font-size:12.5px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}
     .bdstep button.on{background:var(--sec-soft,#c2e7ff);color:var(--on-sec-soft,#001d35);box-shadow:var(--shadow-1,0 1px 2px rgba(0,0,0,.08))}
     .bdgrid{grid-template-columns:1fr;margin-top:10px;overflow:hidden}
     .bdcol{border-radius:18px;padding:12px}
-    .bdbox.mob-step-courses .bdcol-courses,.bdbox.mob-step-sessions .bdcol-sessions{animation:bdMobIn .2s cubic-bezier(.05,.7,.1,1)}
+    .bdbox.mob-step-courses .bdcol-courses,.bdbox.mob-step-sessions .bdcol-sessions{animation:bdMobIn .18s cubic-bezier(.22,1,.36,1)}
     .bdbox.mob-step-courses .bdcol-sessions{display:none}
     .bdbox.mob-step-sessions .bdcol-courses{display:none}
     .bdbar input,.bdbar select{height:40px;font-size:14px}
@@ -108,10 +110,10 @@
       </div>
       <div class="bdgrid">
         <div class="bdcol bdcol-courses">
-          <div class="bdbar">
-            <input id="bdSearchInp" placeholder="搜课程名 / 教师名（空格分隔多关键词）" autocomplete="off">
+          <form class="bdbar" id="bdSearchForm" action="javascript:void(0)">
+            <input id="bdSearchInp" type="search" enterkeyhint="search" placeholder="搜课程名 / 教师名（空格分隔多关键词）" autocomplete="off">
             <button class="bdbtn pri" id="bdSearchBtn" type="button">搜课</button>
-          </div>
+          </form>
           <div class="bdbar">
             <select id="bdPlat" style="flex:0 0 auto">
               <option value="all">全部平台</option>
@@ -168,8 +170,32 @@
       closeModal();
       if (optsCfg.openDownloads) optsCfg.openDownloads();
     };
-    modal.querySelector('#bdSearchBtn').onclick = doSearch;
-    modal.querySelector('#bdSearchInp').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+    const bdInp = modal.querySelector('#bdSearchInp');
+    const bdForm = modal.querySelector('#bdSearchForm');
+    let bdLastSearchAt = 0;
+    const triggerBdSearch = () => {
+      const now = Date.now();
+      if (now - bdLastSearchAt < 120) return;
+      bdLastSearchAt = now;
+      if (window.matchMedia && window.matchMedia('(max-width: 900px)').matches && bdInp) bdInp.blur();
+      doSearch();
+    };
+    modal.querySelector('#bdSearchBtn').onclick = triggerBdSearch;
+    if (bdForm) bdForm.addEventListener('submit', e => { e.preventDefault(); triggerBdSearch(); });
+    if (bdInp) {
+      let pendingEnter = false;
+      bdInp.addEventListener('keydown', e => {
+        const isEnter = e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter' || e.keyCode === 13 || e.which === 13;
+        if (!isEnter) return;
+        e.preventDefault();
+        if (e.isComposing) { pendingEnter = true; return; }
+        triggerBdSearch();
+      });
+      bdInp.addEventListener('compositionend', () => {
+        if (pendingEnter) { pendingEnter = false; triggerBdSearch(); }
+      });
+      bdInp.addEventListener('search', () => { if (bdInp.value.trim()) triggerBdSearch(); });
+    }
     modal.querySelector('#bdPlat').onchange = () => { if (modal.querySelector('#bdSearchInp').value.trim()) doSearch(); };
     modal.querySelector('#bdTerm').onchange = () => { if (modal.querySelector('#bdSearchInp').value.trim() || modal.querySelector('#bdTerm').value) doSearch(); };
     modal.querySelector('#bdSelAll').onclick = () => toggleAll(true);
@@ -677,11 +703,15 @@
     } else {
       setMobileStep('courses');
       const inp = modal.querySelector('#bdSearchInp');
+      const isMob = !!(window.matchMedia && window.matchMedia('(max-width: 900px)').matches);
+      if (isMob && document.activeElement && document.activeElement.blur) {
+        try { document.activeElement.blur(); } catch (e) {}
+      }
       if (inp && !inp.value.trim() && optsCfg.defaultQuery) {
         inp.value = optsCfg.defaultQuery();
         if (inp.value.trim()) doSearch();
       }
-      if (inp) setTimeout(() => inp.focus(), 60);
+      if (inp && !isMob) setTimeout(() => inp.focus(), 60);
     }
   }
 

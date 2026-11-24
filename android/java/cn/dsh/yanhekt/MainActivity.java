@@ -56,6 +56,7 @@ public class MainActivity extends Activity {
     private final java.util.List<String> sessionCookies = new java.util.ArrayList<String>();
     private FrameLayout rootView;
     private android.widget.LinearLayout dlPanel;
+    private android.widget.LinearLayout dlContent;
     private android.widget.LinearLayout dlList;
     private android.widget.ScrollView dlScroll;
     private TextView dlTitleView;
@@ -286,6 +287,9 @@ public class MainActivity extends Activity {
             });
         }
 
+        dlContent = new android.widget.LinearLayout(this);
+        dlContent.setOrientation(android.widget.LinearLayout.VERTICAL);
+
         android.widget.LinearLayout head = new android.widget.LinearLayout(this);
         head.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
@@ -294,14 +298,14 @@ public class MainActivity extends Activity {
         dlTitleView.setTextSize(19f);
         dlTitleView.setTypeface(null, android.graphics.Typeface.BOLD);
         head.addView(dlTitleView, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        dlPanel.addView(head, new android.widget.LinearLayout.LayoutParams(
+        dlContent.addView(head, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         dlTipView = new TextView(this);
         dlTipView.setText("自动双路并发保存至 内部存储/Download · 点击「打开播放」可调用播放器");
         dlTipView.setTextSize(12f);
         dlTipView.setPadding(0, dp(8), 0, dp(10));
-        dlPanel.addView(dlTipView);
+        dlContent.addView(dlTipView);
 
         android.widget.LinearLayout actBar = new android.widget.LinearLayout(this);
         actBar.setOrientation(android.widget.LinearLayout.HORIZONTAL);
@@ -316,7 +320,7 @@ public class MainActivity extends Activity {
             @Override public void onClick(android.view.View v) { clearDoneTasks(); }
         });
         actBar.addView(dlClearDoneBtn, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        dlPanel.addView(actBar, new android.widget.LinearLayout.LayoutParams(
+        dlContent.addView(actBar, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 一键清理：把这台手机里本 App 下载过的文件全删掉（老版本留下的也在内）
@@ -326,15 +330,17 @@ public class MainActivity extends Activity {
         android.widget.LinearLayout.LayoutParams cleanLp = new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         cleanLp.setMargins(0, dp(8), 0, dp(4));
-        dlPanel.addView(cleanBtn, cleanLp);
+        dlContent.addView(cleanBtn, cleanLp);
 
         dlScroll = new android.widget.ScrollView(this);
         dlList = new android.widget.LinearLayout(this);
         dlList.setOrientation(android.widget.LinearLayout.VERTICAL);
         dlScroll.addView(dlList, new android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        dlPanel.addView(dlScroll, new android.widget.LinearLayout.LayoutParams(
+        dlContent.addView(dlScroll, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        dlPanel.addView(dlContent, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         FrameLayout.LayoutParams dlRootLp = new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
@@ -1460,26 +1466,55 @@ public class MainActivity extends Activity {
         closeDlPanel(false);
     }
 
+    @JavascriptInterface
+    public void vibrate(final int ms) {
+        ui.post(new Runnable() { public void run() {
+            try {
+                android.os.Vibrator vib = (android.os.Vibrator) getSystemService(VIBRATOR_SERVICE);
+                if (vib != null && vib.hasVibrator()) {
+                    int dur = Math.max(10, Math.min(120, ms > 0 ? ms : 28));
+                    if (Build.VERSION.SDK_INT >= 26) {
+                        vib.vibrate(android.os.VibrationEffect.createOneShot(dur, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+                    } else {
+                        vib.vibrate(dur);
+                    }
+                    return;
+                }
+            } catch (Exception ignored) {}
+            try {
+                if (web != null) {
+                    web.performHapticFeedback(
+                        android.view.HapticFeedbackConstants.LONG_PRESS,
+                        android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                }
+            } catch (Exception ignored) {}
+        }});
+    }
+
     private void openDlPanel() {
         ui.post(new Runnable() { public void run() {
             if (dlPanel == null) return;
-            dlPanel.animate().cancel();
+            if (dlContent != null) dlContent.animate().cancel();
             rebuildDlRows();
             boolean wasHidden = dlPanel.getVisibility() != android.view.View.VISIBLE;
-            if (wasHidden) {
-                dlPanel.setAlpha(0f);
-                dlPanel.setTranslationY(dp(14));
-                dlPanel.setVisibility(android.view.View.VISIBLE);
-                dlPanel.animate()
-                    .alpha(1f)
-                    .translationY(0f)
-                    .setDuration(220)
-                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.8f))
-                    .setListener(null)
-                    .start();
-            } else {
-                dlPanel.setAlpha(1f);
-                dlPanel.setTranslationY(0f);
+            dlPanel.setAlpha(1f);
+            dlPanel.setTranslationY(0f);
+            dlPanel.setVisibility(android.view.View.VISIBLE);
+            if (dlContent != null) {
+                if (wasHidden) {
+                    dlContent.setAlpha(0f);
+                    dlContent.setTranslationY(dp(10));
+                    dlContent.animate()
+                        .alpha(1f)
+                        .translationY(0f)
+                        .setDuration(200)
+                        .setInterpolator(new android.view.animation.DecelerateInterpolator(1.8f))
+                        .setListener(null)
+                        .start();
+                } else {
+                    dlContent.setAlpha(1f);
+                    dlContent.setTranslationY(0f);
+                }
             }
             if (web != null) {
                 try { web.evaluateJavascript("window.__yhktDlOpened&&window.__yhktDlOpened()", null); } catch (Exception ignored) {}
@@ -1586,6 +1621,11 @@ public class MainActivity extends Activity {
 
     private void closeDlPanel(final boolean notifyWeb) {
         ui.post(new Runnable() { public void run() {
+            if (dlContent != null) {
+                dlContent.animate().cancel();
+                dlContent.setAlpha(1f);
+                dlContent.setTranslationY(0f);
+            }
             if (dlPanel != null) {
                 dlPanel.animate().cancel();
                 dlPanel.setAlpha(1f);

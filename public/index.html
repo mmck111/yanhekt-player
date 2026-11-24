@@ -388,6 +388,16 @@
     box-shadow:0 6px 20px rgba(0,0,0,.38);white-space:nowrap}
   .speedpill svg{width:16px;height:16px;flex:none;color:#a8c7fa}
   .speedpill.on{display:inline-flex}
+  .swipepill{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9;display:none;flex-direction:column;align-items:center;gap:3px;
+    padding:10px 18px;border-radius:16px;background:rgba(15,16,20,.88);backdrop-filter:blur(10px);
+    border:1px solid rgba(255,255,255,.16);color:#fff;font-variant-numeric:tabular-nums;pointer-events:none;
+    box-shadow:0 8px 24px rgba(0,0,0,.44);white-space:nowrap}
+  .swipepill.on{display:flex}
+  .swipepill b{font-size:15.5px;font-weight:700;letter-spacing:.01em}
+  .swipepill span{font-size:12px;color:#a8c7fa;font-weight:600}
+  .playerbox,.playerbox *,.stagewrap,.stagewrap *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  .stagewrap,.stage{touch-action:none}
+  .inpbox input[type="search"]::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;display:none}
   .mobback,.mob-below{display:none}
   #btnMute .ico-mute{display:none}
   #btnMute.muted .ico-vol{display:none}
@@ -522,18 +532,21 @@
 
   .mbreak,.mnav{display:none}
 
-  @keyframes mobTabIn{from{opacity:0;transform:translate3d(0,12px,0)}to{opacity:1;transform:none}}
-  @keyframes mnavPillPop{0%{transform:scale(.88)}65%{transform:scale(1.04)}100%{transform:scale(1)}}
+  @keyframes mobTabIn{from{opacity:0;transform:translate3d(0,10px,0)}to{opacity:1;transform:none}}
   @media (max-width:900px){
+    body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;background:var(--bg)}
+    input,textarea{-webkit-user-select:text;user-select:text}
     .wrap,.lgmodal,.mnav{--mnav-h:calc(64px + env(safe-area-inset-bottom))}
-    .wrap{grid-template-columns:1fr;grid-template-rows:1fr;height:100dvh;padding-bottom:var(--mnav-h)}
+    .wrap{grid-template-columns:1fr;grid-template-rows:1fr;height:100dvh;padding-bottom:var(--mnav-h);background:var(--bg)}
     .menu,.sb-tools,.hint{display:none}
     aside{display:none;position:fixed;left:0;top:0;right:0;bottom:var(--mnav-h);width:100%;max-width:none;height:auto;max-height:none;
       z-index:22;border-right:none;border-radius:0;box-shadow:none;transform:none;
       padding-top:env(safe-area-inset-top)}
-    .wrap.mob-courses aside{display:flex;animation:mobTabIn .24s var(--ease-decel)}
-    .wrap.mob-courses.mob-watching aside{display:none;animation:none}
-    main.mob-pane-anim{animation:mobTabIn .24s var(--ease-decel)}
+    .wrap.mob-courses aside{display:flex}
+    .wrap.mob-courses:not(.mob-watching) aside > *{animation:mobTabIn .2s cubic-bezier(.22,1,.36,1)}
+    .wrap.mob-courses.mob-watching aside{display:none}
+    .wrap.mob-batch main,.wrap.mob-downloads main,.wrap.mob-settings main{visibility:hidden}
+    #mainPane.mob-pane-anim .bar,#mainPane.mob-pane-anim .mob-below{animation:mobTabIn .2s cubic-bezier(.22,1,.36,1)}
     main{overflow:hidden;min-height:0}
     .brand{padding:12px 16px 10px}
     .list{padding:10px 12px 18px}
@@ -594,9 +607,10 @@
     .ctrl .time{font-size:11.5px;padding:0 3px}
     .toast{left:16px;right:16px;top:auto;bottom:calc(74px + env(safe-area-inset-bottom));text-align:center}
     .lgmodal:not(#lgmodal){top:0;left:0;right:0;bottom:var(--mnav-h);padding:0;background:var(--bg);
-      backdrop-filter:none;z-index:26;align-items:stretch;justify-content:stretch;animation:mdFade .16s var(--ease)}
+      backdrop-filter:none;z-index:26;align-items:stretch;justify-content:stretch;animation:none}
     .lgmodal:not(#lgmodal) .login{width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:none;
-      box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 16px;animation:mobTabIn .24s var(--ease-decel)}
+      box-shadow:none;background:var(--bg);padding:max(14px,env(safe-area-inset-top)) 16px 16px;animation:none}
+    .lgmodal:not(#lgmodal) .login > *{animation:mobTabIn .2s cubic-bezier(.22,1,.36,1)}
     .mnav{position:fixed;left:0;right:0;bottom:0;height:var(--mnav-h);padding:4px 4px env(safe-area-inset-bottom);
       background:var(--panel);border-top:1px solid var(--line);display:flex;align-items:stretch;
       justify-content:space-around;z-index:35;box-shadow:0 -2px 10px rgba(0,0,0,.04)}
@@ -607,9 +621,9 @@
     .mnav-pill{position:relative;width:54px;height:30px;border-radius:999px;display:inline-flex;align-items:center;
       justify-content:center;transition:background .18s var(--ease),color .18s var(--ease),transform .12s var(--ease)}
     .mnav-pill svg{width:20px;height:20px}
-    .mnav-btn.on .mnav-pill{background:var(--sec-soft);color:var(--on-sec-soft);animation:mnavPillPop .24s var(--ease-decel)}
+    .mnav-btn.on .mnav-pill{background:var(--sec-soft);color:var(--on-sec-soft)}
     @media (prefers-reduced-motion:reduce){
-      .wrap.mob-courses aside,main.mob-pane-anim,.lgmodal:not(#lgmodal),.lgmodal:not(#lgmodal) .login,.mnav-btn.on .mnav-pill{animation:none!important}
+      .wrap.mob-courses:not(.mob-watching) aside > *,#mainPane.mob-pane-anim .bar,#mainPane.mob-pane-anim .mob-below,.lgmodal:not(#lgmodal) .login > *,.setbox h2,.setbox .setscroll,.setbox .setfoot,.bdhead,.bdstep,.bdgrid,.bdfoot{animation:none!important}
     }
     .mnav-btn.on .mnav-lbl{color:var(--fg);font-weight:700}
     .mnav-btn:active .mnav-pill{transform:scale(.94)}
@@ -657,12 +671,12 @@
         </button>
       </div>
       <div class="finder">
-        <div class="inpbox">
+        <form class="inpbox" id="dqForm" action="javascript:void(0)">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L20 20"/></svg>
-          <input id="dq" placeholder="课程名 / 教师名，如 理论力学" spellcheck="false" autocomplete="off">
+          <input id="dq" type="search" enterkeyhint="search" placeholder="课程名 / 教师名，如 理论力学" spellcheck="false" autocomplete="off">
           <button class="clrbtn" id="dqClr" type="button" title="清空"><svg viewBox="0 0 24 24"><path d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7A1 1 0 0 0 5.7 7.11L10.59 12 5.7 16.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.89a1 1 0 0 0 1.41-1.41L13.41 12l4.89-4.89a1 1 0 0 0 0-1.4z" fill="currentColor"/></svg></button>
-        </div>
-        <button id="dgo" class="sbtn">搜课</button>
+        </form>
+        <button id="dgo" class="sbtn" type="button">搜课</button>
       </div>
       <div class="finder">
         <select id="dterm" title="按学期筛选"><option value="">全部学期</option></select>
@@ -735,6 +749,7 @@
         </div>
         <div class="spin" id="spin"><i></i><span>缓冲中…</span></div>
         <div class="speedpill" id="speedPill"><svg viewBox="0 0 24 24"><path d="M5.59 7.41 10.18 12l-4.59 4.59L7 18l6-6-6-6-1.41 1.41zM12 6l-1.41 1.41L15.17 12l-4.58 4.59L12 18l6-6-6-6z" fill="currentColor"/></svg><span>2.0× 倍速播放中</span></div>
+        <div class="swipepill" id="swipePill"><b>00:00 / 00:00</b><span>+0s</span></div>
       </div>
 
       <div class="ctrldeck" id="ctrldeck">
@@ -1755,7 +1770,7 @@ function splashEmpty(title, data){
 }
 
 /* ---------- 自定义进度条 / 播放控件 ---------- */
-let isMuted = false, dragging = false;
+let isMuted = false, dragging = false, stageSwipe = null;
 function updatePlayUI(){
   const v = activeVideo();
   const paused = v.paused;
@@ -1765,7 +1780,7 @@ function updatePlayUI(){
   updateProgressUI();
 }
 function updateProgressUI(){
-  if (dragging) return;
+  if (dragging || stageSwipe) return;
   const v = activeVideo();
   const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : (cur && Number(cur.duration)) || 0;
   const curT = v.currentTime || 0;
@@ -1843,12 +1858,18 @@ function seekToFraction(frac){
   const v = vids[k];
   v.addEventListener('play', () => {
     updatePlayUI();
-    if (v === activeVideo() && auxAudioActive && vids.aux) vids.aux.play().catch(()=>{});
+    if (v === activeVideo()) {
+      wakeHud();
+      if (auxAudioActive && vids.aux) vids.aux.play().catch(()=>{});
+    }
   });
   v.addEventListener('pause', () => {
     updatePlayUI();
     saveCourseProgress(true);
-    if (v === activeVideo() && auxAudioActive && vids.aux) vids.aux.pause();
+    if (v === activeVideo()) {
+      wakeHud();
+      if (auxAudioActive && vids.aux) vids.aux.pause();
+    }
   });
   v.addEventListener('timeupdate', () => {
     if (v === activeVideo()) {
@@ -1914,7 +1935,13 @@ function wakeHud(){
 }
 function hideHud(){
   clearTimeout(idleTimer);
-  $('#playerBox').classList.add('idle');
+  const pb = $('#playerBox');
+  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  if (pb && (isFs || (typeof isMobileUI === 'function' && isMobileUI()))) pb.classList.add('idle');
+}
+function hapticPulse(){
+  try { if (window.yhktApp && window.yhktApp.vibrate) { window.yhktApp.vibrate(28); return; } } catch(e){}
+  try { if (navigator && typeof navigator.vibrate === 'function') navigator.vibrate(25); } catch(e){}
 }
 
 function setActivePlaybackRate(rate){
@@ -1922,10 +1949,11 @@ function setActivePlaybackRate(rate){
   vids.vga.playbackRate = rate;
   if (vids.aux) vids.aux.playbackRate = rate;
 }
-function startSpeedBoost(){
+function startSpeedBoost(opts){
   if (speedBoostActive || $('#stage').style.display === 'none') return;
   const av = activeVideo();
   if (!av || av.paused) return;
+  try { const sel = window.getSelection && window.getSelection(); if (sel && sel.removeAllRanges) sel.removeAllRanges(); } catch(e){}
   speedBoostBaseRate = Number($('#rate').value) || getSavedRate() || 1;
   const boostRate = speedBoostBaseRate >= 2 ? 3 : 2;
   speedBoostActive = true;
@@ -1936,6 +1964,7 @@ function startSpeedBoost(){
     if (lbl) lbl.textContent = boostRate.toFixed(1) + '× 倍速播放中';
     sp.classList.add('on');
   }
+  if (opts && opts.haptic) hapticPulse();
 }
 function stopSpeedBoost(){
   if (!speedBoostActive) return;
@@ -1945,69 +1974,123 @@ function stopSpeedBoost(){
   if (sp) sp.classList.remove('on');
 }
 
-$('#playerBox').addEventListener('mousemove', wakeHud);
+let lastStageTouchMs = 0, lastStageTap = null, stageTouchPt = null;
+let touchWasIdle = false, singleTapHudTimer = 0, longPressTimer = 0, longPressActive = false;
+$('#playerBox').addEventListener('mousemove', () => {
+  if (Date.now() - lastStageTouchMs < 700) return;
+  wakeHud();
+});
+if ($('#ctrldeck')) $('#ctrldeck').addEventListener('touchstart', wakeHud, { passive: true });
+if ($('#fshud')) $('#fshud').addEventListener('touchstart', wakeHud, { passive: true });
 document.addEventListener('fullscreenchange', wakeHud);
 document.addEventListener('webkitfullscreenchange', wakeHud);
 
-let lastStageTouchMs = 0, lastStageTap = null, stageTouchPt = null;
-let touchWasIdle = false, singleTapHudTimer = 0, longPressTimer = 0;
-$('#playerBox').addEventListener('touchstart', e => {
-  clearTimeout(longPressTimer);
-  if (e.target.closest('.ctrldeck') || e.target.closest('.fshud')) {
+$('#stage').addEventListener('touchstart', e => {
+  clearTimeout(longPressTimer); longPressTimer = 0;
+  touchWasIdle = $('#playerBox').classList.contains('idle');
+  if (e.target.closest('.perr')) { stageTouchPt = null; return; }
+  if (mode === 'dual' && dualPip && e.target.closest('.pip-sub')) { stageTouchPt = null; return; }
+  if (!e.touches || e.touches.length !== 1) {
     stageTouchPt = null;
-    wakeHud();
+    if (longPressActive) { longPressActive = false; stopSpeedBoost(); }
+    if (stageSwipe) {
+      stageSwipe = null;
+      const spw = $('#swipePill'); if (spw) spw.classList.remove('on');
+      updateProgressUI();
+    }
     return;
   }
-  touchWasIdle = $('#playerBox').classList.contains('idle');
-  if (e.target.closest('#stage') && !e.target.closest('.perr')
-      && !(mode === 'dual' && dualPip && e.target.closest('.pip-sub'))
-      && e.touches && e.touches.length === 1) {
-    stageTouchPt = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    longPressTimer = setTimeout(() => {
-      longPressTimer = 0;
-      clearTimeout(singleTapHudTimer);
-      lastStageTap = null;
-      startSpeedBoost();
-    }, 380);
-  } else {
-    stageTouchPt = null;
-  }
-}, { passive: true, capture: true });
-$('#stage').addEventListener('touchmove', e => {
-  if (!longPressTimer || !stageTouchPt || !e.touches || !e.touches.length) return;
-  const t = e.touches[0];
-  if (Math.hypot(t.clientX - stageTouchPt.x, t.clientY - stageTouchPt.y) > 20) {
-    clearTimeout(longPressTimer);
+  stageTouchPt = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  longPressActive = false;
+  stageSwipe = null;
+  longPressTimer = setTimeout(() => {
     longPressTimer = 0;
+    if (stageSwipe) return;
+    longPressActive = true;
+    clearTimeout(singleTapHudTimer); singleTapHudTimer = 0;
+    lastStageTap = null;
+    startSpeedBoost({ haptic: true });
+  }, 380);
+}, { passive: true });
+$('#stage').addEventListener('touchmove', e => {
+  if (!stageTouchPt || !e.touches || e.touches.length !== 1) return;
+  if (longPressActive) return;
+  const t = e.touches[0];
+  const dx = t.clientX - stageTouchPt.x;
+  const dy = t.clientY - stageTouchPt.y;
+  if (!stageSwipe) {
+    if (Math.hypot(dx, dy) > 14) {
+      clearTimeout(longPressTimer); longPressTimer = 0;
+    }
+    const av = activeVideo();
+    const dur = (srcMode !== 'live' && av && isFinite(av.duration) && av.duration > 0) ? av.duration : 0;
+    if (dur > 0 && Math.abs(dx) > 16 && Math.abs(dx) > Math.abs(dy) * 1.35) {
+      clearTimeout(singleTapHudTimer); singleTapHudTimer = 0;
+      lastStageTap = null;
+      const baseTime = Math.max(0, Math.min(dur, av.currentTime || 0));
+      stageSwipe = { startX: stageTouchPt.x + (dx > 0 ? 14 : -14), baseTime, dur, targetTime: baseTime };
+    }
+  }
+  if (stageSwipe) {
+    const rect = $('#stage').getBoundingClientRect();
+    const w = Math.max(240, (rect && rect.width) || 360);
+    const spanSec = Math.min(180, Math.max(60, stageSwipe.dur * 0.12));
+    const deltaSec = Math.round(((t.clientX - stageSwipe.startX) / w) * spanSec);
+    const target = Math.max(0, Math.min(stageSwipe.dur, stageSwipe.baseTime + deltaSec));
+    stageSwipe.targetTime = target;
+    const diff = Math.round(target - stageSwipe.baseTime);
+    const spw = $('#swipePill');
+    if (spw) {
+      const bEl = spw.querySelector('b'), sEl = spw.querySelector('span');
+      if (bEl) bEl.textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
+      if (sEl) sEl.textContent = (diff >= 0 ? '快进 +' : '快退 ') + diff + 's';
+      spw.classList.add('on');
+    }
+    const pct = (target / stageSwipe.dur) * 100;
+    if ($('#scrubFill')) $('#scrubFill').style.width = pct + '%';
+    if ($('#scrubThumb')) $('#scrubThumb').style.left = pct + '%';
+    if ($('#timeTxt')) $('#timeTxt').textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
   }
 }, { passive: true });
-$('#stage').addEventListener('touchcancel', () => {
-  clearTimeout(longPressTimer); longPressTimer = 0;
-  clearTimeout(singleTapHudTimer);
-  stageTouchPt = null;
-  stopSpeedBoost();
-}, { passive: true });
-$('#stage').addEventListener('touchend', e => {
+const endStageTouch = e => {
   clearTimeout(longPressTimer); longPressTimer = 0;
   lastStageTouchMs = Date.now();
-  if (speedBoostActive) {
+  if (stageSwipe) {
+    const sw = stageSwipe;
+    stageSwipe = null;
+    stageTouchPt = null;
+    lastStageTap = null;
+    const spw = $('#swipePill'); if (spw) spw.classList.remove('on');
+    if (e.type !== 'touchcancel' && sw.dur > 0) {
+      seekToFraction(sw.targetTime / sw.dur);
+      if (!touchWasIdle) wakeHud();
+    } else {
+      updateProgressUI();
+    }
+    return;
+  }
+  if (longPressActive || speedBoostActive) {
+    longPressActive = false;
     stageTouchPt = null;
     lastStageTap = null;
     stopSpeedBoost();
     return;
   }
-  if (e.target.closest('.perr')) return;
-  if (mode === 'dual' && dualPip && e.target.closest('.pip-sub')) return;
-  if (!e.changedTouches || e.changedTouches.length !== 1) return;
+  if (e.target.closest('.perr')) { stageTouchPt = null; return; }
+  if (mode === 'dual' && dualPip && e.target.closest('.pip-sub')) { stageTouchPt = null; return; }
+  if (e.type === 'touchcancel' || !e.changedTouches || e.changedTouches.length !== 1) {
+    stageTouchPt = null;
+    return;
+  }
   const t = e.changedTouches[0];
   if (stageTouchPt && Math.hypot(t.clientX - stageTouchPt.x, t.clientY - stageTouchPt.y) > 24) {
     stageTouchPt = null; return;
   }
   stageTouchPt = null;
   const now = Date.now();
-  if (lastStageTap && now - lastStageTap.t < 280
+  if (lastStageTap && now - lastStageTap.t < 240
       && Math.hypot(t.clientX - lastStageTap.x, t.clientY - lastStageTap.y) < 56) {
-    clearTimeout(singleTapHudTimer);
+    clearTimeout(singleTapHudTimer); singleTapHudTimer = 0;
     lastStageTap = null;
     $('#btnPlay').click();
     return;
@@ -2018,10 +2101,21 @@ $('#stage').addEventListener('touchend', e => {
     wakeHud();
   } else {
     singleTapHudTimer = setTimeout(() => {
+      singleTapHudTimer = 0;
       if (!$('#playerBox').classList.contains('idle')) hideHud();
-    }, 230);
+    }, 240);
   }
-}, { passive: true });
+};
+$('#stage').addEventListener('touchend', endStageTouch, { passive: true });
+$('#stage').addEventListener('touchcancel', endStageTouch, { passive: true });
+$('#playerBox').addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('selectstart', e => {
+  const tn = (e.target && e.target.tagName) || '';
+  if (/^(INPUT|TEXTAREA)$/.test(tn)) return;
+  if ((typeof isMobileUI === 'function' && isMobileUI()) || (e.target && e.target.closest && e.target.closest('#playerBox'))) {
+    e.preventDefault();
+  }
+});
 $('#stage').addEventListener('click', e => {
   if (e.target.closest('.perr')) return;
   if (mode === 'dual' && dualPip) {
@@ -2831,16 +2925,38 @@ async function cancelWebDownload(id){
 /* ---------- 控件与快捷键 ---------- */
 $('#mRec').onclick = () => setSrcMode('record');
 $('#mLive').onclick = () => setSrcMode('live');
-$('#dgo').onclick = dbSearch;
-$('#dqClr').onclick = () => { $('#dq').value = ''; syncClearBtn(); $('#dq').focus(); exitFavView({ restoreList: false }); if (srcMode === 'live') { liveQuery = ''; renderLive(); } else if (!curCourse) renderHist(); };
-$('#btnFavList').onclick = enterFavView;
-$('#btnFavCur').onclick = () => {
-  if (!curCourse || !curCourse.course) return;
-  const item = favItemFromOld(curCourse.course);
-  if (item) toggleFav(item);
-};
-$('#dq').addEventListener('input', syncClearBtn);
-$('#dq').addEventListener('keydown', e => { if (e.key === 'Enter') dbSearch(); });
+{
+  const dqInp = $('#dq'), dqForm = $('#dqForm');
+  let dqLastAt = 0, dqPendingEnter = false;
+  const triggerDbSearch = () => {
+    const now = Date.now();
+    if (now - dqLastAt < 120) return;
+    dqLastAt = now;
+    if (typeof isMobileUI === 'function' && isMobileUI() && dqInp) dqInp.blur();
+    dbSearch();
+  };
+  $('#dgo').onclick = triggerDbSearch;
+  $('#dqClr').onclick = () => { dqInp.value = ''; syncClearBtn(); dqInp.focus(); exitFavView({ restoreList: false }); if (srcMode === 'live') { liveQuery = ''; renderLive(); } else if (!curCourse) renderHist(); };
+  $('#btnFavList').onclick = enterFavView;
+  $('#btnFavCur').onclick = () => {
+    if (!curCourse || !curCourse.course) return;
+    const item = favItemFromOld(curCourse.course);
+    if (item) toggleFav(item);
+  };
+  dqInp.addEventListener('input', syncClearBtn);
+  if (dqForm) dqForm.addEventListener('submit', e => { e.preventDefault(); triggerDbSearch(); });
+  dqInp.addEventListener('keydown', e => {
+    const isEnter = e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter' || e.keyCode === 13 || e.which === 13;
+    if (!isEnter) return;
+    e.preventDefault();
+    if (e.isComposing) { dqPendingEnter = true; return; }
+    triggerDbSearch();
+  });
+  dqInp.addEventListener('compositionend', () => {
+    if (dqPendingEnter) { dqPendingEnter = false; triggerDbSearch(); }
+  });
+  dqInp.addEventListener('search', () => { if (dqInp.value.trim()) triggerDbSearch(); });
+}
 $('#dterm').onchange = () => { if (srcMode === 'record' && ($('#dq').value.trim() || $('#dterm').value)) dbSearch(); };
 $('#btnSetup').onclick = () => showLogin('', true);
 $('#btnRefresh').onclick = () => { if (curCourse) openCourse(curCourse.course.id, { force: true }); };
