@@ -19,6 +19,7 @@ type dlTrackItem struct {
 	ID         string `json:"id"`
 	Platform   string `json:"platform"` // "old" | "y2"
 	Title      string `json:"title"`
+	Stage      string `json:"stage,omitempty"`
 	ReqPath    string `json:"reqPath,omitempty"`
 	SavePath   string `json:"savePath,omitempty"`
 	DoneSegs   int    `json:"doneSegs"`
@@ -33,6 +34,8 @@ type dlTrackItem struct {
 
 	cancel    func()
 	cancelled bool
+	quiet     bool
+	onUpdate  func(doneSegs, totalSegs int, bytes, totalBytes int64)
 	lastSave  int64
 	winAt     int64
 	winBytes  int64
@@ -227,6 +230,7 @@ func dlTrackBindOrStart(queueID, platform, title string, totalSegs int, totalByt
 				if totalBytes > 0 {
 					it.TotalBytes = totalBytes
 				}
+				it.Stage = ""
 				it.Status = "running"
 				it.Error = ""
 				it.SpeedBps = 0
@@ -268,14 +272,67 @@ func dlTrackStart(platform, title string, totalSegs int, totalBytes int64) *dlTr
 	return it
 }
 
+func dlTrackStartQuiet(onUpdate func(doneSegs, totalSegs int, bytes, totalBytes int64)) *dlTrackItem {
+	now := time.Now().UnixMilli()
+	return &dlTrackItem{
+		ID:        fmt.Sprintf("qdl-%d-%d", now, atomic.AddUint64(&dlTrackSeq, 1)),
+		Status:    "running",
+		quiet:     true,
+		onUpdate:  onUpdate,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func (it *dlTrackItem) snapshotState() (string, string) {
+	if it == nil {
+		return "", ""
+	}
+	dlTrackMu.Lock()
+	st, errMsg := it.Status, it.Error
+	dlTrackMu.Unlock()
+	return st, errMsg
+}
+
+func (it *dlTrackItem) setStage(stage string) {
+	if it == nil {
+		return
+	}
+	dlTrackMu.Lock()
+	it.Stage = stage
+	it.UpdatedAt = time.Now().UnixMilli()
+	q := it.quiet
+	dlTrackMu.Unlock()
+	if !q {
+		dlTrackSaveLocked(true)
+	}
+}
+
+func (it *dlTrackItem) setTotalBytes(tb int64) {
+	if it == nil {
+		return
+	}
+	dlTrackMu.Lock()
+	it.TotalBytes = tb
+	it.UpdatedAt = time.Now().UnixMilli()
+	q := it.quiet
+	dlTrackMu.Unlock()
+	if !q {
+		dlTrackSaveLocked(true)
+	}
+}
+
 func (it *dlTrackItem) setReqPath(reqPath string) {
 	if it == nil || reqPath == "" {
 		return
 	}
 	dlTrackMu.Lock()
 	it.ReqPath = cleanDLReqPath(reqPath)
+	q := it.quiet
 	dlTrackMu.Unlock()
-	dlTrackSaveLocked(false)
+	if !q {
+		dlTrackSaveLocked(false)
+	}
 }
 
 func (it *dlTrackItem) setResumeInit(doneSegs int, bytes int64) {
@@ -290,7 +347,12 @@ func (it *dlTrackItem) setResumeInit(doneSegs int, bytes int64) {
 		it.Bytes = bytes
 	}
 	it.UpdatedAt = time.Now().UnixMilli()
+	ds, ts, b, tb := it.DoneSegs, it.TotalSegs, it.Bytes, it.TotalBytes
+	cb := it.onUpdate
 	dlTrackMu.Unlock()
+	if cb != nil {
+		cb(ds, ts, b, tb)
+	}
 }
 
 func dlTrackAttachFile(id, reqPath, savePath string) {
@@ -443,8 +505,14 @@ func (it *dlTrackItem) update(doneSegs int, bytes int64) {
 	it.Bytes = bytes
 	it.UpdatedAt = now
 	it.updateSpeedLocked(now)
+	q, cb, ts, tb := it.quiet, it.onUpdate, it.TotalSegs, it.TotalBytes
 	dlTrackMu.Unlock()
-	dlTrackSaveLocked(true)
+	if cb != nil {
+		cb(doneSegs, ts, bytes, tb)
+	}
+	if !q {
+		dlTrackSaveLocked(true)
+	}
 }
 
 func (it *dlTrackItem) addBytes(n int64) {
@@ -456,8 +524,14 @@ func (it *dlTrackItem) addBytes(n int64) {
 	it.Bytes += n
 	it.UpdatedAt = now
 	it.updateSpeedLocked(now)
+	q, cb, ds, ts, b, tb := it.quiet, it.onUpdate, it.DoneSegs, it.TotalSegs, it.Bytes, it.TotalBytes
 	dlTrackMu.Unlock()
-	dlTrackSaveLocked(true)
+	if cb != nil {
+		cb(ds, ts, b, tb)
+	}
+	if !q {
+		dlTrackSaveLocked(true)
+	}
 }
 
 func (it *dlTrackItem) finish(status, errMsg string) {
@@ -469,11 +543,15 @@ func (it *dlTrackItem) finish(status, errMsg string) {
 		status = "interrupted"
 	}
 	it.Status = status
+	it.Stage = ""
 	it.SpeedBps = 0
 	it.Error = errMsg
 	it.UpdatedAt = time.Now().UnixMilli()
+	q := it.quiet
 	dlTrackMu.Unlock()
-	dlTrackSaveLocked(false)
+	if !q {
+		dlTrackSaveLocked(false)
+	}
 }
 
 func (it *dlTrackItem) markDone() {
@@ -483,11 +561,15 @@ func (it *dlTrackItem) markDone() {
 	dlTrackMu.Lock()
 	it.DoneSegs = it.TotalSegs
 	it.Status = "done"
+	it.Stage = ""
 	it.SpeedBps = 0
 	it.Error = ""
 	it.UpdatedAt = time.Now().UnixMilli()
+	q := it.quiet
 	dlTrackMu.Unlock()
-	dlTrackSaveLocked(false)
+	if !q {
+		dlTrackSaveLocked(false)
+	}
 }
 
 func (it *dlTrackItem) setCancel(fn func()) {

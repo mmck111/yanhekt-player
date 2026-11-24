@@ -301,6 +301,14 @@ var desktopDLClient = &http.Client{
 	},
 }
 
+var desktopDualDLClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        8,
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func (a *desktopApp) dispatch(fn func()) {
 	a.dqMu.Lock()
 	a.dq = append(a.dq, fn)
@@ -1261,19 +1269,22 @@ func (a *desktopApp) runDesktopDownloadTask(fullURL, queueID, overrideDir, cooki
 		var oldItem dlTrackItem
 		var hasOld bool
 		reqURL := curURL
+		isDual := parsedURL != nil && (parsedURL.Query().Get("kind") == "dual" || parsedURL.Query().Get("k") == "dual")
 		if parsedURL != nil {
 			q := parsedURL.Query()
 			resumeID = strings.TrimSpace(q.Get("resumeId"))
 			if resumeID != "" {
-				if old, ok := dlTrackGet(resumeID); ok && old.SavePath != "" {
-					oldItem = old
-					hasOld = true
-					if fi, err := os.Stat(old.SavePath); err == nil && fi.Size() > 0 {
-						if old.TotalSegs > 1 && old.DoneSegs > 0 && old.DoneSegs < old.TotalSegs && fi.Size() == old.Bytes {
-							q.Set("startSeg", fmt.Sprintf("%d", old.DoneSegs))
-							q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
-						} else if old.TotalSegs <= 1 {
-							q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
+				if !isDual {
+					if old, ok := dlTrackGet(resumeID); ok && old.SavePath != "" {
+						oldItem = old
+						hasOld = true
+						if fi, err := os.Stat(old.SavePath); err == nil && fi.Size() > 0 {
+							if old.TotalSegs > 1 && old.DoneSegs > 0 && old.DoneSegs < old.TotalSegs && fi.Size() == old.Bytes {
+								q.Set("startSeg", fmt.Sprintf("%d", old.DoneSegs))
+								q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
+							} else if old.TotalSegs <= 1 {
+								q.Set("startBytes", fmt.Sprintf("%d", fi.Size()))
+							}
 						}
 					}
 				}
@@ -1298,8 +1309,16 @@ func (a *desktopApp) runDesktopDownloadTask(fullURL, queueID, overrideDir, cooki
 		if cookieHdr != "" {
 			req.Header.Set("Cookie", cookieHdr)
 		}
-		resp, err := desktopDLClient.Do(req)
+		dlClient := desktopDLClient
+		if isDual {
+			dlClient = desktopDualDLClient
+		}
+		resp, err := dlClient.Do(req)
 		if err != nil {
+			if curQueueID != "" && dlTrackIsCancelled(curQueueID) {
+				dlTrackSetStatus(curQueueID, "cancelled", "用户已取消")
+				return
+			}
 			desktopLog("desktop download HTTP failed: %v", err)
 			if curQueueID != "" {
 				dlTrackSetStatus(curQueueID, "interrupted", "请求失败，可在下载管理中重试")
@@ -1310,6 +1329,10 @@ func (a *desktopApp) runDesktopDownloadTask(fullURL, queueID, overrideDir, cooki
 		if resp.StatusCode != 200 {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 			_ = resp.Body.Close()
+			if curQueueID != "" && dlTrackIsCancelled(curQueueID) {
+				dlTrackSetStatus(curQueueID, "cancelled", "用户已取消")
+				return
+			}
 			msg := strings.TrimSpace(string(b))
 			if msg == "" {
 				msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
@@ -1482,7 +1505,7 @@ func (a *desktopApp) runDesktopDownloadTask(fullURL, queueID, overrideDir, cooki
 			if e == nil && it.Error != "" {
 				e = fmt.Errorf("%s", it.Error)
 			}
-			if autoAttempt < 2 && written > 0 && it.Status != "cancelled" {
+			if !isDual && autoAttempt < 2 && written > 0 && it.Status != "cancelled" {
 				desktopLog("download transient break path=%s bytes=%d, auto-resuming attempt=%d", savePath, written, autoAttempt+1)
 				dlTrackSetStatus(dlID, "running", "网络波动，自动断点续传中…")
 				time.Sleep(1500 * time.Millisecond)

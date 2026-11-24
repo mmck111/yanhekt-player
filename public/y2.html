@@ -195,6 +195,13 @@
   .ctrl .sp{flex:1}
   .volbox{display:inline-flex;align-items:center;gap:5px}
   .volbox input[type=range]{width:68px;accent-color:var(--accent);cursor:pointer}
+  .dlwrap{position:relative;display:inline-flex}
+  .dlmenu{position:absolute;bottom:calc(100% + 6px);right:0;min-width:220px;background:rgba(15,19,28,.98);border:1px solid var(--line-hi,rgba(255,255,255,.18));border-radius:10px;padding:5px;box-shadow:0 12px 32px rgba(0,0,0,.55);display:none;flex-direction:column;gap:3px;z-index:40}
+  .dlmenu.show{display:flex}
+  .dlmenu button{width:100%;height:auto;padding:7px 10px;border-radius:7px;background:transparent;border:none;color:var(--fg);font-size:12px;justify-content:space-between;text-align:left;cursor:pointer}
+  .dlmenu button:hover:not(:disabled){background:rgba(91,156,255,.16);color:#b8d7ff}
+  .dlmenu button:disabled{opacity:.4;cursor:not-allowed}
+  .dlmenu .dtag{font-size:10.5px;color:var(--dim);margin-left:8px;white-space:nowrap}
 
   .hint{padding:6px 16px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:space-between;gap:10px}
   .hint kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:10.5px;color:var(--dim)}
@@ -419,7 +426,7 @@
             <option value="1.25">1.25×</option><option value="1.5">1.5×</option>
             <option value="1.75">1.75×</option><option value="2">2×</option>
           </select>
-          <button id="dl" title="把当前这一路画面下载成 mp4 / ts">下载</button>
+          <span class="dlwrap"><button id="dl" title="下载教师、课件或双画面视频">下载</button><div class="dlmenu" id="dlMenu"></div></span>
           <button id="btnRefresh" title="清缓存重新读取该课程讲次">重载</button>
           <button id="fs" title="全屏 (F)">全屏</button>
         </div>
@@ -448,7 +455,9 @@
 <script>
 const $ = s => document.querySelector(s);
 const v = $('#v'), vSub = $('#vSub'), vAux = $('#vAudioAux');
-let hls = null, hlsSub = null, hlsAux = null, info = null, infoAudios = [], kind = 'camera', curCourse = null, curSub = null, curQuery = '';
+let hls = null, hlsSub = null, hlsAux = null, info = null, infoAudios = [], kind = 'camera', curCourse = null, playCourse = null, curSub = null, curQuery = '';
+let serverHasFFmpeg = null;
+function activePlayCourse(){ return playCourse || curCourse; }
 let dualPip = false, dualSwapped = false, audioFrom = 'camera';
 let autoNext = false, lastSaveAt = 0;
 let searchSeq = 0, searchAbort = null, listScrollBackup = 0, curSearchLimit = 20;
@@ -518,7 +527,8 @@ function updateSidebarItemProg(sid, t, dur){
 
 function saveCourseProgress(force){
   if (suppressProgressSave || window.__yhktRememberPos === false) return;
-  if (!curCourse || !curSub) return;
+  const pc = activePlayCourse();
+  if (!pc || !curSub) return;
   const now = performance.now();
   if (!force && now - lastSaveAt < 3500) return;
   const t = v.currentTime || 0;
@@ -532,7 +542,7 @@ function saveCourseProgress(force){
   }
   if (t < 3 && !force) return;
   lastSaveAt = now;
-  const cid = String(curCourse.courseId);
+  const cid = String(pc.courseId);
   const sid = String(curSub.subId);
   const m = loadProgMap();
   const c = m[cid] || { sessions: {} };
@@ -1273,18 +1283,26 @@ async function loadSessions(c, el, opts){
   }
 }
 
-async function play(s, el, { noResume = false } = {}){
+async function play(s, el, { noResume = false, courseData = null } = {}){
   saveCourseProgress(true);
   suppressProgressSave = true;
+  if (courseData && courseData.courseId) {
+    playCourse = courseData;
+  } else if (curCourse && curCourse.courseId &&
+             (!Array.isArray(curCourse._sessions) || curCourse._sessions.some(x => String(x.subId) === String(s.subId)))) {
+    playCourse = curCourse;
+  }
+  const pc = activePlayCourse();
+  if (!pc || !pc.courseId) { suppressProgressSave = false; toast('还没有课程信息', 2600); return; }
   document.querySelectorAll('.item').forEach(x=>x.classList.toggle('on', x===el));
   const t0 = performance.now();
   curSub = s;
-  const saved = !noResume ? getSessionProg(curCourse.courseId, s.subId) : null;
+  const saved = !noResume ? getSessionProg(pc.courseId, s.subId) : null;
   const resumeAt = (saved && saved.t > 5 && (!saved.d || saved.t < saved.d - 15)) ? saved.t : 0;
   pendingSeekGuard = resumeAt;
 
   try{
-    const j = await jget(`/api/y2/sub?courseId=${encodeURIComponent(curCourse.courseId)}&subId=${encodeURIComponent(s.subId)}`);
+    const j = await jget(`/api/y2/sub?courseId=${encodeURIComponent(pc.courseId)}&subId=${encodeURIComponent(s.subId)}`);
     if(!j.ok){ suppressProgressSave = false; pendingSeekGuard = 0; toast('读取失败：'+(j.error||''), 4000); return; }
     info = j.info;
     infoAudios = Array.isArray(j.audios) ? j.audios : (info && info.audio ? [{ label: '独立音频', url: info.audio, format: 'aac' }] : []);
@@ -1293,12 +1311,13 @@ async function play(s, el, { noResume = false } = {}){
     if (resumeAt > 0) toast('已从 ' + fmt(resumeAt) + ' 续播', 2600);
     pick(t0, { seekTo: resumeAt, autoPlay: true });
     const nextS = adjacentSession(1);
-    if (nextS) prefetchY2Sub(curCourse.courseId, nextS.subId);
+    if (nextS) prefetchY2Sub(pc.courseId, nextS.subId);
   }catch(e){ suppressProgressSave = false; pendingSeekGuard = 0; if (e.message !== 'need login') toast('出错：'+e.message, 4000); }
 }
 
 function adjacentSession(dir){
-  const arr = (curCourse && curCourse._sessions) || [];
+  const pc = activePlayCourse();
+  const arr = (pc && pc._sessions) || [];
   if (!arr.length || !curSub) return null;
   const idx = arr.findIndex(x => String(x.subId) === String(curSub.subId));
   if (idx < 0) return null;
@@ -1659,10 +1678,11 @@ function pick(t0, { seekTo = 0, autoPlay = true } = {}){
   }
   renderStage();
 
+  const pc = activePlayCourse();
   const tag = info.kind === 'live' ? ' · 直播回放' : '';
   const titleStr = `${info.title} ${info.subTitle||''}`.trim();
   $('#now').textContent = titleStr || '课程播放';
-  $('#nowSub').textContent = `${names[kind]||kind}${tag}${curCourse && curCourse.teacher ? ' · ' + curCourse.teacher : ''}`;
+  $('#nowSub').textContent = `${names[kind]||kind}${tag}${pc && pc.teacher ? ' · ' + pc.teacher : ''}`;
   $('#fsTitle').textContent = titleStr + ' · ' + (names[kind] || kind);
 
   if(t0){
@@ -1791,7 +1811,8 @@ v.addEventListener('ended', () => {
   if (next) {
     const row = document.querySelector(`.item[data-sid="${CSS.escape(String(next.subId))}"]`);
     toast('即将连播下一讲：' + (next.title || next.date), 2500);
-    setTimeout(() => play(next, row, { noResume: true }), 1200);
+    const pc = activePlayCourse();
+    setTimeout(() => play(next, row, { noResume: true, courseData: pc }), 1200);
   }
 });
 
@@ -1894,12 +1915,13 @@ async function refreshWebDownloads(){
           const pct = it.totalSegs > 1 ? Math.round(it.doneSegs / it.totalSegs * 100)
             : (it.totalBytes > 0 ? Math.round(it.bytes / it.totalBytes * 100) : (it.status === 'done' ? 100 : 0));
           const speedTxt = (it.status === 'running' && it.speedBps > 0) ? (fmtMB(it.speedBps) + '/s · ') : '';
-          const stText = it.status === 'running' ? '下载中'
+          const stText = it.status === 'running' ? (it.stage || '下载中')
             : it.status === 'queued' ? '排队中'
             : it.status === 'done' ? '已完成'
             : it.status === 'interrupted' ? '已中断（可继续）'
             : it.status === 'cancelled' ? '已取消' : ('失败 ' + (it.error || ''));
-          const segText = it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '';
+          const segText = it.stage ? (it.totalSegs > 1 ? `${it.doneSegs}% · ` : '')
+            : (it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '');
           let act = '';
           if (it.status === 'running' || it.status === 'queued') {
             act = `<button class="dlcancel" type="button" onclick="cancelWebDownload('${esc(it.id)}')">取消</button>`;
@@ -1961,18 +1983,75 @@ async function cancelWebDownload(id){
   } catch(e){}
 }
 
-$('#dl').onclick = () => {
-  if (!curCourse || !curSub || !info) { toast('先点一讲再下载', 2600); return; }
-  const dlKind = kind === 'dual' ? 'camera' : kind;
-  const label = dlKind === 'screen' ? '课件' : dlKind === 'room' ? '教室' : '教师画面';
-  const title = (curCourse.title || '课程') + '_' + ((curSub.date || '').slice(0, 10)) + '_' + label;
-  const url = '/y2dl?c=' + encodeURIComponent(curCourse.courseId)
+function closeDlMenu(){
+  const m = $('#dlMenu');
+  if (m) m.classList.remove('show');
+}
+document.addEventListener('click', e => {
+  const wrap = e.target && e.target.closest && e.target.closest('.dlwrap');
+  if (!wrap) closeDlMenu();
+});
+
+function startY2DownloadKind(dlKind){
+  closeDlMenu();
+  const pc = activePlayCourse();
+  if (!pc || !curSub || !info) { toast('先点一讲再下载', 2600); return; }
+  const streams = (info && info.streams) || [];
+  const hasCam = streams.some(x => x.type === 'camera' || x.type === 'room');
+  const hasScreen = streams.some(x => x.type === 'screen');
+  if (dlKind === 'dual' && (!hasCam || !hasScreen)) {
+    toast('这一讲缺少教师或课件画面，无法合成双画面', 3000);
+    return;
+  }
+  const label = dlKind === 'dual' ? '双画面' : dlKind === 'screen' ? '课件' : dlKind === 'room' ? '教室' : '教师画面';
+  const title = (pc.title || '课程') + '_' + ((curSub.date || '').slice(0, 10)) + '_' + label;
+  const url = '/y2dl?c=' + encodeURIComponent(pc.courseId)
     + '&s=' + encodeURIComponent(curSub.subId)
     + '&k=' + encodeURIComponent(dlKind)
     + '&title=' + encodeURIComponent(title);
   window.open(url, '_blank');
-  toast('开始下载' + label + '，可在「下载管理」看进度', 4200);
+  toast(dlKind === 'dual'
+    ? '开始下载并合成双画面（完成后保存为单个 .mp4），可在「下载管理」看进度'
+    : ('开始下载' + label + '，可在「下载管理」看进度'), 4500);
   if (!NATIVE_DL) setTimeout(refreshWebDownloads, 600);
+}
+
+$('#dl').onclick = () => {
+  const pc = activePlayCourse();
+  if (!pc || !curSub || !info) { toast('先点一讲再下载', 2600); return; }
+  const streams = (info && info.streams) || [];
+  const types = new Set(streams.map(x => x.type));
+  const hasCam = types.has('camera') || types.has('room');
+  const hasScreen = types.has('screen');
+  const menu = $('#dlMenu');
+  if (!menu || (!hasScreen && !types.has('room')) || streams.length <= 1) {
+    startY2DownloadKind(kind === 'dual' ? 'camera' : (streams[0] && !types.has(kind) ? streams[0].type : kind));
+    return;
+  }
+  if (menu.classList.contains('show')) { closeDlMenu(); return; }
+  const opts = [];
+  if (types.has('camera') || !types.has('room')) {
+    opts.push({ k: 'camera', label: '教师画面', tag: kind === 'camera' ? '当前视角' : '' });
+  }
+  if (hasScreen) {
+    opts.push({ k: 'screen', label: '课件画面', tag: kind === 'screen' ? '当前视角' : '' });
+  }
+  if (types.has('room')) {
+    opts.push({ k: 'room', label: '教室画面', tag: kind === 'room' ? '当前视角' : '' });
+  }
+  if (hasCam && hasScreen) {
+    const ffHint = serverHasFFmpeg === false ? '需 ffmpeg' : '同屏单个 .mp4';
+    opts.push({ k: 'dual', label: '双画面（合成）', tag: kind === 'dual' ? '当前视角 · ' + ffHint : ffHint });
+  }
+  menu.innerHTML = '';
+  opts.forEach(o => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.innerHTML = `<span>⤓ ${esc(o.label)}</span>` + (o.tag ? `<span class="dtag">${esc(o.tag)}</span>` : '');
+    btn.onclick = () => startY2DownloadKind(o.k);
+    menu.appendChild(btn);
+  });
+  menu.classList.add('show');
 };
 
 const wrapEl = $('#wrap');
@@ -2052,14 +2131,14 @@ $('#btnPrev').onclick = () => {
   const s = adjacentSession(-1);
   if (s) {
     const row = document.querySelector(`.item[data-sid="${CSS.escape(String(s.subId))}"]`);
-    play(s, row);
+    play(s, row, { courseData: activePlayCourse() });
   }
 };
 $('#btnNext').onclick = () => {
   const s = adjacentSession(1);
   if (s) {
     const row = document.querySelector(`.item[data-sid="${CSS.escape(String(s.subId))}"]`);
-    play(s, row);
+    play(s, row, { courseData: activePlayCourse() });
   }
 };
 $('#btnAutoNext').onclick = () => {
@@ -2126,10 +2205,11 @@ document.addEventListener('keydown', e => {
   else if (e.key === '2' && !document.querySelector('.tab[data-k="screen"]').disabled) switchTab('screen');
   else if (e.key === '3' && !document.querySelector('.tab[data-k="room"]').disabled) switchTab('room');
   else if (e.key === '4' && !document.querySelector('.tab[data-k="dual"]').disabled) switchTab('dual');
-  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktBatch) window.yhktBatch.close(); if (window.yhktSettings) window.yhktSettings.close(); }
+  else if (e.key === 'Escape') { closeDlMenu(); hideLoginModal(); closeWebDownloads(); if (window.yhktBatch) window.yhktBatch.close(); if (window.yhktSettings) window.yhktSettings.close(); }
 });
 
 window.__yhktBack = () => {
+  if ($('#dlMenu') && $('#dlMenu').classList.contains('show')) { closeDlMenu(); return 'handled'; }
   if (window.yhktSettings && window.yhktSettings.isOpen()) { window.yhktSettings.close(); return 'handled'; }
   if (window.yhktBatch && window.yhktBatch.isOpen()) { window.yhktBatch.close(); return 'handled'; }
   if ($('#dlModal').style.display === 'flex') { closeWebDownloads(); return 'handled'; }
@@ -2186,14 +2266,15 @@ function applyAppSettings(s){
       },
       defaultQuery: () => $('#q').value.trim(),
       getCurrentCourse: () => {
-        if (!curCourse) return null;
+        const pc = curCourse || playCourse;
+        if (!pc) return null;
         return {
           platform: 'y2',
-          id: String(curCourse.courseId),
-          title: curCourse.title || ('课程 ' + curCourse.courseId),
-          teacher: curCourse.teacher || '',
-          term: curCourse.termName || '',
-          sessions: curCourse._sessions || [],
+          id: String(pc.courseId),
+          title: pc.title || ('课程 ' + pc.courseId),
+          teacher: pc.teacher || '',
+          term: pc.termName || '',
+          sessions: pc._sessions || [],
         };
       },
     });
@@ -2216,6 +2297,7 @@ function applyAppSettings(s){
   let logged = false;
   try {
     const st = await (await fetch('/api/y2/status')).json();
+    if (st && typeof st.hasFFmpeg === 'boolean') serverHasFFmpeg = st.hasFFmpeg;
     logged = !!st.loggedIn;
     if (!logged && (!APP || (DESKTOP_APP && !sessionStorage.getItem('yhkt_manual_logout')))) {
       const a = await (await fetch('/api/y2/login/auto', { method: 'POST' })).json();

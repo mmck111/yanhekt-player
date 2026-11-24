@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -82,6 +83,7 @@ type y2StatusResp struct {
 	LoggedIn  bool  `json:"loggedIn"`
 	UserID    any   `json:"userId"`
 	ExpiresAt int64 `json:"expiresAt"`
+	HasFFmpeg bool  `json:"hasFFmpeg"`
 }
 
 var (
@@ -115,7 +117,7 @@ func y2WarmScheduleAsync(jwt string, id *y2Identity) {
 func handleY2Status(w http.ResponseWriter, r *http.Request) {
 	jwt := y2Token(r)
 	id := y2Who(jwt)
-	resp := y2StatusResp{LoggedIn: id != nil, UserID: nil, ExpiresAt: 0}
+	resp := y2StatusResp{LoggedIn: id != nil, UserID: nil, ExpiresAt: 0, HasFFmpeg: findFFmpeg() != ""}
 	if id != nil {
 		resp.UserID = id.userId
 		resp.ExpiresAt = y2JwtExp(jwt)
@@ -818,12 +820,6 @@ func handleY2Download(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("下载出错：" + err.Error()))
 		return
 	}
-	st, ok := y2PickStream(info, k)
-	if !ok {
-		w.WriteHeader(404)
-		_, _ = w.Write([]byte("这一讲没有可下载的画面"))
-		return
-	}
 	name := qv.Get("title")
 	if name == "" {
 		name = "course-" + c
@@ -833,6 +829,17 @@ func handleY2Download(w http.ResponseWriter, r *http.Request) {
 		name = string(r[:80])
 	}
 	queueID := strings.TrimSpace(qv.Get("queueId"))
+	if k == "dual" {
+		handleY2DualDownload(w, r, name, queueID, info, id)
+		return
+	}
+	st, ok := y2PickStream(info, k)
+	if !ok {
+		w.Header().Set("content-type", "text/plain; charset=utf-8")
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte("这一讲没有可下载的画面"))
+		return
+	}
 	if strings.HasSuffix(strings.ToLower(strings.Split(st.URL, "?")[0]), ".m3u8") {
 		if err := y2DownloadHLS(w, r, st.URL, name, id, queueID); err != nil {
 			w.Header().Set("content-type", "text/plain; charset=utf-8")
@@ -854,29 +861,57 @@ var (
 	y2MapURIAttr = regexp.MustCompile(`URI="([^"]+)"`)
 )
 
+func y2ResolvePlaylistRef(ref, origURL string, finalURL *url.URL) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ref
+	}
+	low := strings.ToLower(ref)
+	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+		return ref
+	}
+	origParsed, err := url.Parse(origURL)
+	if err != nil {
+		return ref
+	}
+	baseParsed := origParsed
+	if finalURL != nil && finalURL.Host != "" && strings.EqualFold(finalURL.Host, origParsed.Host) {
+		baseParsed = finalURL
+	}
+	refParsed, err := url.Parse(ref)
+	if err != nil {
+		return ref
+	}
+	return baseParsed.ResolveReference(refParsed).String()
+}
+
 // y2DownloadHLS 新版录像 HLS：直接直连上游签名拉片，4 路并发有序拼片 + 空闲卡顿看门狗 + 断线重试
 func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name string, id *y2Identity, queueID string) error {
-	fetchUpstream := func(ctx context.Context, rawURL string, maxBytes int64) (int, []byte, string, error) {
+	return y2DownloadHLSWithTracker(w, r, streamURL, name, id, queueID, nil)
+}
+
+func y2DownloadHLSWithTracker(w http.ResponseWriter, r *http.Request, streamURL, name string, id *y2Identity, queueID string, extTracker *dlTrackItem) error {
+	fetchUpstream := func(ctx context.Context, rawURL string, maxBytes int64) (int, []byte, *url.URL, error) {
 		target, err := y2SignedURL(rawURL, id)
 		if err != nil {
-			return 0, nil, rawURL, err
+			return 0, nil, nil, err
 		}
 		segCtx, segCancel := context.WithTimeout(ctx, 55*time.Second)
 		defer segCancel()
 		req, err := http.NewRequestWithContext(segCtx, "GET", target, nil)
 		if err != nil {
-			return 0, nil, rawURL, err
+			return 0, nil, nil, err
 		}
 		req.Header.Set("User-Agent", y2UA)
 		req.Header.Set("Referer", y2Base+"/")
 		req.Header.Set("Accept", "*/*")
 		resp, err := y2StreamClient.Do(req)
 		if err != nil {
-			return 0, nil, rawURL, err
+			return 0, nil, nil, err
 		}
-		finalURL := rawURL
+		var finalURL *url.URL
 		if resp.Request != nil && resp.Request.URL != nil {
-			finalURL = resp.Request.URL.String()
+			finalURL = resp.Request.URL
 		}
 		if resp.StatusCode != 200 {
 			_ = resp.Body.Close()
@@ -888,12 +923,12 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 
 	curURL := streamURL
 	text := ""
-	baseURL := ""
+	var lastFinalURL *url.URL
 	for hop := 0; hop < 4; hop++ {
 		var hopErr error
 		var st int
 		var b []byte
-		var finalU string
+		var finalU *url.URL
 		for try := 0; try < 3; try++ {
 			st, b, finalU, hopErr = fetchUpstream(r.Context(), curURL, y2SegMax)
 			if hopErr == nil && st == 200 {
@@ -908,10 +943,7 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 			return fmt.Errorf("播放列表 HTTP %d", st)
 		}
 		text = string(b)
-		baseURL = finalU
-		if i := strings.LastIndex(finalU, "/"); i >= 0 {
-			baseURL = finalU[:i+1]
-		}
+		lastFinalURL = finalU
 		if !y2MasterRe.MatchString(text) {
 			break
 		}
@@ -926,7 +958,7 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		if child == "" {
 			return fmt.Errorf("主播放列表里没有子列表")
 		}
-		curURL = abs(child, strings.TrimSuffix(baseURL, "/"))
+		curURL = y2ResolvePlaylistRef(child, curURL, finalU)
 	}
 
 	if strings.Contains(text, "#EXT-X-KEY") && strings.Contains(text, "METHOD=AES-128") {
@@ -935,7 +967,6 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 
 	initURL := ""
 	segs := []string{}
-	baseTrim := strings.TrimSuffix(baseURL, "/")
 	for _, line := range strings.Split(text, "\n") {
 		t := strings.TrimSpace(line)
 		if t == "" {
@@ -943,14 +974,14 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 		}
 		if strings.HasPrefix(t, "#EXT-X-MAP") {
 			if m := y2MapURIAttr.FindStringSubmatch(t); len(m) > 1 {
-				initURL = abs(m[1], baseTrim)
+				initURL = y2ResolvePlaylistRef(m[1], curURL, lastFinalURL)
 			}
 			continue
 		}
 		if strings.HasPrefix(t, "#") {
 			continue
 		}
-		segs = append(segs, abs(t, baseTrim))
+		segs = append(segs, y2ResolvePlaylistRef(t, curURL, lastFinalURL))
 	}
 	if len(segs) == 0 {
 		return fmt.Errorf("播放列表里没有分片")
@@ -988,8 +1019,16 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 
 	dlCtx, dlCancel := context.WithCancel(r.Context())
 	defer dlCancel()
-	tracker := dlTrackBindOrStart(queueID, "y2", name+".ts", len(order), 0)
-	tracker.setReqPath(r.URL.RequestURI())
+	tracker := extTracker
+	if tracker == nil {
+		tracker = dlTrackBindOrStart(queueID, "y2", name+".ts", len(order), 0)
+		tracker.setReqPath(r.URL.RequestURI())
+	} else {
+		dlTrackMu.Lock()
+		tracker.TotalSegs = len(order)
+		tracker.Title = name + ".ts"
+		dlTrackMu.Unlock()
+	}
 	if startSeg > 0 {
 		tracker.setResumeInit(startSeg, startBytes)
 		w.Header().Set("X-YHKT-Resume-Seg", strconv.Itoa(startSeg))
@@ -1183,6 +1222,7 @@ type y2ProxyOpts struct {
 	reqPath    string
 	resumeFrom int64
 	queueID    string
+	extTracker *dlTrackItem
 }
 
 func y2ParseContentRangeTotal(cr string) int64 {
@@ -1297,11 +1337,20 @@ func y2DownloadMP4(w http.ResponseWriter, r *http.Request, rawURL string, id *y2
 			chunkEnds = append(chunkEnds, end)
 		}
 		totalSegs := 1 + len(chunkStarts)
-		tracker := dlTrackBindOrStart(opts.queueID, "y2", opts.filename, totalSegs, totalSize)
-		if opts.reqPath != "" {
-			tracker.setReqPath(opts.reqPath)
+		tracker := opts.extTracker
+		if tracker == nil {
+			tracker = dlTrackBindOrStart(opts.queueID, "y2", opts.filename, totalSegs, totalSize)
+			if opts.reqPath != "" {
+				tracker.setReqPath(opts.reqPath)
+			} else {
+				tracker.setReqPath(r.URL.RequestURI())
+			}
 		} else {
-			tracker.setReqPath(r.URL.RequestURI())
+			dlTrackMu.Lock()
+			tracker.TotalSegs = totalSegs
+			tracker.TotalBytes = totalSize
+			tracker.Title = opts.filename
+			dlTrackMu.Unlock()
 		}
 		resumed := startOffset > 0
 		if resumed {
@@ -1465,11 +1514,20 @@ func y2DownloadMP4(w http.ResponseWriter, r *http.Request, rawURL string, id *y2
 	if resumed && totalBytes > 0 {
 		totalBytes += startOffset
 	}
-	tracker := dlTrackBindOrStart(opts.queueID, "y2", opts.filename, 1, totalBytes)
-	if opts.reqPath != "" {
-		tracker.setReqPath(opts.reqPath)
+	tracker := opts.extTracker
+	if tracker == nil {
+		tracker = dlTrackBindOrStart(opts.queueID, "y2", opts.filename, 1, totalBytes)
+		if opts.reqPath != "" {
+			tracker.setReqPath(opts.reqPath)
+		} else {
+			tracker.setReqPath(r.URL.RequestURI())
+		}
 	} else {
-		tracker.setReqPath(r.URL.RequestURI())
+		dlTrackMu.Lock()
+		tracker.TotalSegs = 1
+		tracker.TotalBytes = totalBytes
+		tracker.Title = opts.filename
+		dlTrackMu.Unlock()
 	}
 	if resumed {
 		tracker.setResumeInit(0, startOffset)
@@ -1520,30 +1578,57 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 		}
 	}
 
-	target, err := y2SignedURL(rawURL, id)
-	if err != nil {
-		return err
+	var up *http.Response
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		target, serr := y2SignedURL(rawURL, id)
+		if serr != nil {
+			return serr
+		}
+		req, rerr := http.NewRequestWithContext(r.Context(), "GET", target, nil)
+		if rerr != nil {
+			return rerr
+		}
+		req.Header.Set("User-Agent", y2UA)
+		req.Header.Set("Referer", y2Base+"/")
+		req.Header.Set("Accept", "*/*")
+		if rg != "" {
+			req.Header.Set("Range", rg)
+		}
+		up, err = y2StreamClient.Do(req)
+		if err == nil && up != nil {
+			if up.StatusCode != 403 && up.StatusCode != 429 && up.StatusCode < 500 {
+				break
+			}
+			if attempt == 0 {
+				_ = up.Body.Close()
+				up = nil
+				if !sleepCtx(r.Context(), 220) {
+					return r.Context().Err()
+				}
+				continue
+			}
+			break
+		}
+		if err != nil {
+			if attempt == 0 && r.Context().Err() == nil && sleepCtx(r.Context(), 220) {
+				continue
+			}
+			return err
+		}
 	}
-	req, err := http.NewRequestWithContext(r.Context(), "GET", target, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", y2UA)
-	req.Header.Set("Referer", y2Base+"/")
-	req.Header.Set("Accept", "*/*")
-	if rg != "" {
-		req.Header.Set("Range", rg)
-	}
-
-	up, err := y2StreamClient.Do(req)
-	if err != nil {
+	if up == nil {
 		return err
 	}
 	defer up.Body.Close()
 
 	baseURL := rawURL
+	if i := strings.Index(baseURL, "#"); i >= 0 {
+		baseURL = baseURL[:i]
+	}
+	var finalURL *url.URL
 	if up.Request != nil && up.Request.URL != nil {
-		baseURL = up.Request.URL.String()
+		finalURL = up.Request.URL
 	}
 
 	if isPlaylist && up.StatusCode == 200 {
@@ -1552,11 +1637,6 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 			return err
 		}
 		text := string(body)
-		base := ""
-		if i := strings.LastIndex(baseURL, "/"); i >= 0 {
-			base = baseURL[:i+1]
-		}
-		baseTrim := strings.TrimSuffix(base, "/")
 		lines := strings.Split(text, "\n")
 		var out strings.Builder
 		out.Grow(len(text) + 256)
@@ -1572,15 +1652,15 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 					if len(sub) < 2 {
 						return m
 					}
-					uAbs := abs(sub[1], baseTrim)
-					if strings.HasPrefix(strings.ToUpper(t), "#EXT-X-MAP") && len(prefetchURLs) < 2 {
+					uAbs := y2ResolvePlaylistRef(sub[1], baseURL, finalURL)
+					if strings.HasPrefix(strings.ToUpper(t), "#EXT-X-MAP") && len(prefetchURLs) < 1 {
 						prefetchURLs = append(prefetchURLs, uAbs)
 					}
 					return `URI="/y2play?u=` + enc(uAbs) + `"`
 				}))
 			default:
-				uAbs := abs(t, baseTrim)
-				if !strings.HasSuffix(strings.ToLower(strings.Split(uAbs, "?")[0]), ".m3u8") && len(prefetchURLs) < 2 {
+				uAbs := y2ResolvePlaylistRef(t, baseURL, finalURL)
+				if !strings.HasSuffix(strings.ToLower(strings.Split(uAbs, "?")[0]), ".m3u8") && len(prefetchURLs) < 1 {
 					prefetchURLs = append(prefetchURLs, uAbs)
 				}
 				out.WriteString("/y2play?u=" + enc(uAbs))
@@ -1590,7 +1670,9 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 			}
 		}
 		outText := out.String()
-		playlistPut("y2:"+rawURL, outText)
+		if strings.Contains(text, "#EXT") {
+			playlistPut("y2:"+rawURL, outText)
+		}
 		if len(prefetchURLs) > 0 {
 			go y2PrefetchSegs(prefetchURLs, id)
 		}

@@ -206,6 +206,13 @@
   .ctrl .sp{flex:1}
   .volbox{display:inline-flex;align-items:center;gap:5px}
   .volbox input[type=range]{width:68px;accent-color:var(--accent);cursor:pointer}
+  .dlwrap{position:relative;display:inline-flex}
+  .dlmenu{position:absolute;bottom:calc(100% + 6px);right:0;min-width:220px;background:rgba(15,19,28,.98);border:1px solid var(--line-hi,rgba(255,255,255,.18));border-radius:10px;padding:5px;box-shadow:0 12px 32px rgba(0,0,0,.55);display:none;flex-direction:column;gap:3px;z-index:40}
+  .dlmenu.show{display:flex}
+  .dlmenu button{width:100%;height:auto;padding:7px 10px;border-radius:7px;background:transparent;border:none;color:var(--fg);font-size:12px;justify-content:space-between;text-align:left;cursor:pointer}
+  .dlmenu button:hover:not(:disabled){background:rgba(91,156,255,.16);color:#b8d7ff}
+  .dlmenu button:disabled{opacity:.4;cursor:not-allowed}
+  .dlmenu .dtag{font-size:10.5px;color:var(--dim);margin-left:8px;white-space:nowrap}
 
   .hint{padding:6px 16px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:space-between;gap:10px}
   .hint kbd{background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:10.5px;color:var(--dim)}
@@ -438,7 +445,7 @@
             <option value="1.25">1.25×</option><option value="1.5">1.5×</option>
             <option value="1.75">1.75×</option><option value="2">2×</option>
           </select>
-          <button id="btnDl" title="把这一讲下载成单个文件">下载</button>
+          <span class="dlwrap"><button id="btnDl" title="下载全景、课件或双画面视频">下载</button><div class="dlmenu" id="dlMenu"></div></span>
           <button id="btnRefresh" title="清缓存重新读取该课程">重载</button>
           <button id="btnFs" title="全屏 (F)">全屏</button>
         </div>
@@ -512,9 +519,11 @@ const vids = { main: $('#vMain'), vga: $('#vVga'), aux: $('#vAudioAux') };
 const players = { main: null, vga: null, aux: null };
 const attachedUrls = { main: '', vga: '', aux: '' };
 let mode = 'main', dualPip = false, dualSwapped = false, audioFrom = 'main';
-let curCourse = null, cur = null, me = null;
+let curCourse = null, playCourse = null, cur = null, me = null;
+let serverHasFFmpeg = null;
 let autoNext = false, pendingResumeSec = 0, lastSaveAt = 0;
 let searchSeq = 0, searchAbort = null, listScrollBackup = 0;
+function activePlayCourse(){ return playCourse || curCourse; }
 
 const LS_RATE = 'yhkt_rate_v1';
 const LS_PROG = 'yhkt_prog_v1';
@@ -591,7 +600,8 @@ function updateSidebarItemProg(sid, t, dur){
 
 function saveCourseProgress(force){
   if (suppressProgressSave || window.__yhktRememberPos === false) return;
-  if (srcMode !== 'record' || !curCourse || !curCourse.course || !cur) return;
+  const pc = activePlayCourse();
+  if (srcMode !== 'record' || !pc || !pc.course || !cur) return;
   const now = performance.now();
   if (!force && now - lastSaveAt < 3500) return;
   const v = activeVideo();
@@ -606,7 +616,7 @@ function saveCourseProgress(force){
   }
   if (t < 3 && !force) return;
   lastSaveAt = now;
-  const cid = String(curCourse.course.id);
+  const cid = String(pc.course.id);
   const sid = String(cur.id);
   const m = loadProgMap();
   const c = m[cid] || { sessions: {} };
@@ -1026,9 +1036,15 @@ function activeVideo(){
   return (mode === 'vga' && ((srcMode === 'record' && cur && cur.vga) || (srcMode === 'live' && liveCur))) ? vids.vga : vids.main;
 }
 
-function loadSession(s, { noResume = false } = {}){
+function loadSession(s, { noResume = false, courseData = null } = {}){
   saveCourseProgress(true);
   suppressProgressSave = true;
+  if (courseData && courseData.course) {
+    playCourse = courseData;
+  } else if (curCourse && curCourse.course && Array.isArray(curCourse.sessions) &&
+             curCourse.sessions.some(x => String(x.id) === String(s.id))) {
+    playCourse = curCourse;
+  }
   cur = s;
   $('#splash').style.display = 'none';
   $('#stage').style.display = '';
@@ -1036,7 +1052,8 @@ function loadSession(s, { noResume = false } = {}){
   $('#tagVga').textContent = '课件（屏幕）';
   document.querySelectorAll('.item').forEach(el => el.classList.toggle('on', String(el.dataset.id) === String(s.id)));
 
-  const cid = curCourse && curCourse.course ? curCourse.course.id : '';
+  const pc = activePlayCourse();
+  const cid = pc && pc.course ? pc.course.id : '';
   const saved = (!noResume && cid) ? getSessionProg(cid, s.id) : null;
   let resumeAt = 0;
   if (saved && saved.t > 5 && (!saved.d || saved.t < saved.d - 15)) {
@@ -1060,7 +1077,9 @@ function loadSession(s, { noResume = false } = {}){
   }
   renderStage();
   updateNavButtons();
-  $('#fsTitle').textContent = ($('#cname').textContent || '') + (s.title ? ' · ' + s.title : '');
+  const fsCname = (pc && pc.course && pc.course.name) || $('#cname').textContent || '';
+  if (pc && pc.course && pc.course.name) $('#cname').textContent = pc.course.name;
+  $('#fsTitle').textContent = fsCname + (s.title ? ' · ' + s.title : '');
   markLoad('起播');
   if (resumeAt > 0) toast('已从 ' + fmt(resumeAt) + ' 续播', 2600);
 }
@@ -1237,14 +1256,16 @@ function onLectureEnded(){
   const next = adjacentSession(1);
   if (next) {
     toast('即将连播下一讲：' + (next.title || next.date), 2500);
-    setTimeout(() => loadSession(next, { noResume: true }), 1200);
+    const pc = activePlayCourse();
+    setTimeout(() => loadSession(next, { noResume: true, courseData: pc }), 1200);
   }
 }
 
 function adjacentSession(dir){
-  if (!curCourse || !curCourse.sessions || !cur) return null;
+  const pc = activePlayCourse();
+  if (!pc || !pc.sessions || !cur) return null;
   // sessions 默认按时间倒序（最新在前），"下一讲"指时间更晚或列表下一条？按学习习惯：列表按时间顺序往下一节（dir=+1 为下一条，dir=-1 为上一条）
-  const playable = curCourse.sessions.filter(s => s.main || s.vga);
+  const playable = pc.sessions.filter(s => s.main || s.vga);
   const idx = playable.findIndex(s => String(s.id) === String(cur.id));
   if (idx < 0) return null;
   const ni = idx + dir;
@@ -1711,7 +1732,7 @@ function setSrcMode(m){
   $('#btnDl').title = m === 'live' ? '直播是实时流，不能下载' : '把这一讲下载成单个文件';
   if (m === 'live') {
     saveCourseProgress(true);
-    cur = null; curCourse = null; liveCur = null;
+    cur = null; curCourse = null; playCourse = null; liveCur = null;
     if (mode === 'room') mode = 'main';
     $('#dualbar').classList.remove('show');
     loadLive();
@@ -2015,12 +2036,13 @@ async function refreshWebDownloads(){
           const pct = it.totalSegs > 1 ? Math.round(it.doneSegs / it.totalSegs * 100)
             : (it.totalBytes > 0 ? Math.round(it.bytes / it.totalBytes * 100) : (it.status === 'done' ? 100 : 0));
           const speedTxt = (it.status === 'running' && it.speedBps > 0) ? (fmtMB(it.speedBps) + '/s · ') : '';
-          const stText = it.status === 'running' ? '下载中'
+          const stText = it.status === 'running' ? (it.stage || '下载中')
             : it.status === 'queued' ? '排队中'
             : it.status === 'done' ? '已完成'
             : it.status === 'interrupted' ? '已中断（可继续）'
             : it.status === 'cancelled' ? '已取消' : ('失败 ' + (it.error || ''));
-          const segText = it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '';
+          const segText = it.stage ? (it.totalSegs > 1 ? `${it.doneSegs}% · ` : '')
+            : (it.totalSegs > 1 ? `${it.doneSegs}/${it.totalSegs} 片 · ` : '');
           let act = '';
           if (it.status === 'running' || it.status === 'queued') {
             act = `<button class="dlcancel" type="button" onclick="cancelWebDownload('${esc(it.id)}')">取消</button>`;
@@ -2095,21 +2117,63 @@ $('#dterm').onchange = () => { if (srcMode === 'record' && ($('#dq').value.trim(
 $('#btnSetup').onclick = () => showLogin('', true);
 $('#btnRefresh').onclick = () => { if (curCourse) openCourse(curCourse.course.id, { force: true }); };
 
-function downloadCurrent(){
+function closeDlMenu(){
+  const m = $('#dlMenu');
+  if (m) m.classList.remove('show');
+}
+document.addEventListener('click', e => {
+  const wrap = e.target && e.target.closest && e.target.closest('.dlwrap');
+  if (!wrap) closeDlMenu();
+});
+
+function startDownloadKind(kind){
+  closeDlMenu();
   if (srcMode === 'live') { toast('直播是实时流，不能下载；想存就等它变成回放', 3600); return; }
   if (!cur) { toast('先点一个讲次', 2600); return; }
-  const kind = mode === 'vga' ? 'vga' : 'main';
-  const label = kind === 'vga' ? '课件' : '全景';
-  if (!cur[kind]) { toast('这一讲没有' + label + '画面', 3000); return; }
-  const cid = curCourse && curCourse.course && curCourse.course.id;
+  const label = kind === 'dual' ? '双画面' : (kind === 'vga' ? '课件' : '全景');
+  if (kind === 'dual') {
+    if (!cur.main || !cur.vga) { toast('这一讲缺少全景或课件画面，无法合成双画面', 3000); return; }
+  } else if (!cur[kind]) {
+    toast('这一讲没有' + label + '画面', 3000); return;
+  }
+  const pc = activePlayCourse();
+  const cid = pc && pc.course && pc.course.id;
   if (!cid) { toast('还没有课程信息', 2600); return; }
-  const cname = (curCourse.course && curCourse.course.name) || '课程';
+  const cname = (pc.course && pc.course.name) || '课程';
   const title = cname + '_' + (cur.date || '') + '_' + label;
   const url = '/dl?course=' + encodeURIComponent(cid)
     + '&session=' + encodeURIComponent(cur.id) + '&kind=' + kind + '&title=' + encodeURIComponent(title);
   window.open(url, '_blank');
-  toast('开始下载' + label + '画面，可在「下载管理」看进度', 4200);
+  toast(kind === 'dual'
+    ? '开始下载并合成双画面（完成后保存为单个 .mp4），可在「下载管理」看进度'
+    : ('开始下载' + label + '画面，可在「下载管理」看进度'), 4500);
   if (!NATIVE_DL) setTimeout(refreshWebDownloads, 600);
+}
+
+function downloadCurrent(){
+  if (srcMode === 'live') { toast('直播是实时流，不能下载；想存就等它变成回放', 3600); return; }
+  if (!cur) { toast('先点一个讲次', 2600); return; }
+  const menu = $('#dlMenu');
+  if (!menu || !cur.vga || !cur.main) {
+    startDownloadKind(cur.vga && !cur.main ? 'vga' : (mode === 'vga' && cur.vga ? 'vga' : 'main'));
+    return;
+  }
+  if (menu.classList.contains('show')) { closeDlMenu(); return; }
+  const ffHint = serverHasFFmpeg === false ? '需 ffmpeg' : '同屏单个 .mp4';
+  const opts = [
+    { k: 'main', label: '教师 / 全景画面', tag: mode === 'main' ? '当前视角' : '' },
+    { k: 'vga', label: '课件画面', tag: mode === 'vga' ? '当前视角' : '' },
+    { k: 'dual', label: '双画面（合成）', tag: mode === 'dual' ? '当前视角 · ' + ffHint : ffHint },
+  ];
+  menu.innerHTML = '';
+  opts.forEach(o => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.innerHTML = `<span>⤓ ${esc(o.label)}</span>` + (o.tag ? `<span class="dtag">${esc(o.tag)}</span>` : '');
+    btn.onclick = () => startDownloadKind(o.k);
+    menu.appendChild(btn);
+  });
+  menu.classList.add('show');
 }
 
 $('#btnLogout').onclick = async () => {
@@ -2134,8 +2198,8 @@ $('#btnPlay').onclick = () => {
   }
   wakeHud();
 };
-$('#btnPrev').onclick = () => { const s = adjacentSession(-1); if (s) loadSession(s); };
-$('#btnNext').onclick = () => { const s = adjacentSession(1); if (s) loadSession(s); };
+$('#btnPrev').onclick = () => { const s = adjacentSession(-1); if (s) loadSession(s, { courseData: activePlayCourse() }); };
+$('#btnNext').onclick = () => { const s = adjacentSession(1); if (s) loadSession(s, { courseData: activePlayCourse() }); };
 $('#btnAutoNext').onclick = () => {
   autoNext = !autoNext;
   $('#btnAutoNext').classList.toggle('on', autoNext);
@@ -2248,11 +2312,12 @@ document.addEventListener('keydown', e => {
   else if (e.key === '1') switchTab('main');
   else if (e.key === '2' && !document.querySelector('.tab[data-mode="vga"]').disabled) switchTab('vga');
   else if (e.key === '3' && !document.querySelector('.tab[data-mode="dual"]').disabled) switchTab('dual');
-  else if (e.key === 'Escape') { hideLoginModal(); closeWebDownloads(); if (window.yhktBatch) window.yhktBatch.close(); if (window.yhktSettings) window.yhktSettings.close(); }
+  else if (e.key === 'Escape') { closeDlMenu(); hideLoginModal(); closeWebDownloads(); if (window.yhktBatch) window.yhktBatch.close(); if (window.yhktSettings) window.yhktSettings.close(); }
 });
 
 /* 给 Android App 返回键用的优先关闭钩子 */
 window.__yhktBack = () => {
+  if ($('#dlMenu') && $('#dlMenu').classList.contains('show')) { closeDlMenu(); return 'handled'; }
   if (window.yhktSettings && window.yhktSettings.isOpen()) { window.yhktSettings.close(); return 'handled'; }
   if (window.yhktBatch && window.yhktBatch.isOpen()) { window.yhktBatch.close(); return 'handled'; }
   if ($('#dlModal').style.display === 'flex') { closeWebDownloads(); return 'handled'; }
@@ -2306,15 +2371,16 @@ function applyAppSettings(s){
       },
       defaultQuery: () => $('#dq').value.trim(),
       getCurrentCourse: () => {
-        if (!curCourse || !curCourse.course) return null;
-        const c = curCourse.course;
+        const pc = curCourse || playCourse;
+        if (!pc || !pc.course) return null;
+        const c = pc.course;
         return {
           platform: 'old',
           id: String(c.id),
           title: c.name || ('课程 ' + c.id),
           teacher: (c.professors || []).join('、'),
           term: c.year ? (c.year + ' 第' + c.semester + '学期') : '',
-          sessions: curCourse.sessions || [],
+          sessions: pc.sessions || [],
         };
       },
     });
@@ -2324,6 +2390,7 @@ function applyAppSettings(s){
   window.addEventListener('beforeunload', () => saveCourseProgress(true));
   loadDbTerms();
   fetch('/api/status').then(r => r.json()).then(j => {
+    if (j && typeof j.hasFFmpeg === 'boolean') serverHasFFmpeg = j.hasFFmpeg;
     if (j.build) {
       $('#build').textContent = 'build ' + j.build;
       $('#verpill').textContent = 'v' + j.build;

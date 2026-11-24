@@ -102,8 +102,9 @@
             <button class="bdbtn" id="bdSelNone" type="button" disabled>☐ 清空</button>
             <select id="bdViewMode" title="批量下载选择的画面视角" style="margin-left:auto;background:var(--panel,#111622);border:1px solid var(--line,rgba(255,255,255,.12));color:var(--fg,#edf2f7);border-radius:8px;padding:5px 8px;font-size:12px">
               <option value="camera">下载：教师 / 全景画面</option>
-              <option value="screen">下载：课件（屏幕）</option>
-              <option value="both">下载：全景 + 课件（两路都下）</option>
+              <option value="screen">下载：课件画面</option>
+              <option value="dual">下载：双画面（同屏合成单个 .mp4）</option>
+              <option value="both">下载：全景 + 课件（分别保存 2 个文件）</option>
             </select>
           </div>
           <div class="bdlist" id="bdSessionList">
@@ -416,26 +417,45 @@
     updateCounts();
   }
 
-  function buildTasksForSelection() {
+  function buildTasksForSelection(probed) {
     if (!activeCourse) return [];
     const vm = modal.querySelector('#bdViewMode').value;
     const tasks = [];
     const picked = sessions.filter(s => s.playable && s.checked);
     for (const s of picked) {
       if (activeCourse.platform === 'y2') {
-        const wants = vm === 'both' ? ['camera', 'screen'] : [vm];
+        let wants = [vm];
+        if (vm === 'both') {
+          if (probed) {
+            wants = [];
+            if (s.hasMain !== false) wants.push('camera');
+            if (s.hasVga) wants.push('screen');
+            if (!wants.length) wants.push('camera');
+          } else {
+            wants = ['camera', 'screen'];
+          }
+        } else if (vm === 'dual') {
+          wants = s.hasVga === false ? ['camera'] : ['dual'];
+        }
         for (const k of wants) {
-          const label = k === 'screen' ? '课件' : '教师画面';
+          const label = k === 'dual' ? '双画面' : k === 'screen' ? '课件' : '教师画面';
           const title = (activeCourse.title || '课程') + '_' + (s.date ? s.date.slice(0, 10) : ('讲' + (s.idx + 1))) + '_' + label;
           const url = '/y2dl?c=' + encodeURIComponent(activeCourse.id)
             + '&s=' + encodeURIComponent(s.id)
             + '&k=' + encodeURIComponent(k)
             + '&title=' + encodeURIComponent(title);
-          tasks.push({ url, title: title + (k === 'screen' ? ' (课件)' : '') });
+          const displayTitle = !probed
+            ? (title + (k === 'screen' ? ' (课件)' : k === 'dual' ? ' (双画面)' : ''))
+            : title;
+          tasks.push({ url, title: displayTitle });
         }
       } else {
         const wants = [];
-        if (vm === 'both') {
+        if (vm === 'dual') {
+          if (s.hasMain && s.hasVga) wants.push('dual');
+          else if (s.hasMain) wants.push('main');
+          else if (s.hasVga) wants.push('vga');
+        } else if (vm === 'both') {
           if (s.hasMain) wants.push('main');
           if (s.hasVga) wants.push('vga');
         } else if (vm === 'screen') {
@@ -446,7 +466,7 @@
           else if (s.hasVga) wants.push('vga');
         }
         for (const k of wants) {
-          const label = k === 'vga' ? '课件' : '全景';
+          const label = k === 'dual' ? '双画面' : k === 'vga' ? '课件' : '全景';
           const title = (activeCourse.title || '课程') + '_' + (s.date ? s.date.slice(0, 10) : ('讲' + (s.idx + 1))) + '_' + label;
           const url = '/dl?course=' + encodeURIComponent(activeCourse.id)
             + '&session=' + encodeURIComponent(s.id)
@@ -502,8 +522,8 @@
       return;
     }
 
-    // 新版选择「全景+课件」或「仅课件」时，快速并发探一次实际存在的流，避免无课件讲次重复下两份教师画面
-    if (activeCourse.platform === 'y2' && (vm === 'both' || vm === 'screen')) {
+    // 新版选择「双画面 / 全景+课件 / 仅课件」时，快速并发探一次实际存在的流，避免无课件讲次重复下或误选双画面
+    if (activeCourse.platform === 'y2' && (vm === 'both' || vm === 'screen' || vm === 'dual')) {
       const btn = modal.querySelector('#bdStartBtn');
       const oldTxt = btn.textContent;
       btn.disabled = true;
@@ -527,48 +547,7 @@
       btn.textContent = oldTxt;
     }
 
-    const tasks = [];
-    for (const s of picked) {
-      if (activeCourse.platform === 'y2') {
-        let wants = [vm];
-        if (vm === 'both') {
-          wants = [];
-          if (s.hasMain !== false) wants.push('camera');
-          if (s.hasVga) wants.push('screen');
-          if (!wants.length) wants.push('camera');
-        }
-        for (const k of wants) {
-          const label = k === 'screen' ? '课件' : '教师画面';
-          const title = (activeCourse.title || '课程') + '_' + (s.date ? s.date.slice(0, 10) : ('讲' + (s.idx + 1))) + '_' + label;
-          const url = '/y2dl?c=' + encodeURIComponent(activeCourse.id)
-            + '&s=' + encodeURIComponent(s.id)
-            + '&k=' + encodeURIComponent(k)
-            + '&title=' + encodeURIComponent(title);
-          tasks.push({ url, title });
-        }
-      } else {
-        const wants = [];
-        if (vm === 'both') {
-          if (s.hasMain) wants.push('main');
-          if (s.hasVga) wants.push('vga');
-        } else if (vm === 'screen') {
-          if (s.hasVga) wants.push('vga');
-          else if (s.hasMain) wants.push('main');
-        } else {
-          if (s.hasMain) wants.push('main');
-          else if (s.hasVga) wants.push('vga');
-        }
-        for (const k of wants) {
-          const label = k === 'vga' ? '课件' : '全景';
-          const title = (activeCourse.title || '课程') + '_' + (s.date ? s.date.slice(0, 10) : ('讲' + (s.idx + 1))) + '_' + label;
-          const url = '/dl?course=' + encodeURIComponent(activeCourse.id)
-            + '&session=' + encodeURIComponent(s.id)
-            + '&kind=' + k
-            + '&title=' + encodeURIComponent(title);
-          tasks.push({ url, title });
-        }
-      }
-    }
+    const tasks = buildTasksForSelection(true);
 
     if (!tasks.length) {
       toastMsg('所选讲次暂无对应画面');

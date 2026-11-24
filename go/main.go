@@ -238,7 +238,7 @@ func registerAPI(mux *http.ServeMux) {
 	// ---- 状态 ----
 	mux.HandleFunc("/api/status", safe(func(w http.ResponseWriter, r *http.Request) {
 		user := verifyToken(tokenOf(r))
-		writeJSON(w, 200, statusResp{LoggedIn: user != nil, User: user, Signer: signerSource(), Build: build})
+		writeJSON(w, 200, statusResp{LoggedIn: user != nil, User: user, Signer: signerSource(), Build: build, HasFFmpeg: findFFmpeg() != ""})
 	}))
 
 	// ---- Yanhe 2.0（新版平台 aita.yanhekt.cn）----
@@ -413,8 +413,11 @@ func registerAPI(mux *http.ServeMux) {
 			kind:    "main",
 			probe:   r.URL.Query().Get("probe") == "1",
 		}
-		if r.URL.Query().Get("kind") == "vga" {
+		switch r.URL.Query().Get("kind") {
+		case "vga":
 			opt.kind = "vga"
+		case "dual":
+			opt.kind = "dual"
 		}
 		downloadSession(w, r, opt, token, user)
 	}))
@@ -423,10 +426,11 @@ func registerAPI(mux *http.ServeMux) {
 // ---------------------------------------------------------------- 响应结构
 
 type statusResp struct {
-	LoggedIn bool      `json:"loggedIn"`
-	User     *userInfo `json:"user"`
-	Signer   string    `json:"signer"`
-	Build    string    `json:"build"`
+	LoggedIn  bool      `json:"loggedIn"`
+	User      *userInfo `json:"user"`
+	Signer    string    `json:"signer"`
+	Build     string    `json:"build"`
+	HasFFmpeg bool      `json:"hasFFmpeg"`
 }
 
 type dbTermsResp struct {

@@ -246,10 +246,11 @@ func fetchSegmentCtx(ctx context.Context, rawURL string, getVid func(force bool)
 // ---------------------------------------------------------------- /dl
 
 type dlOpt struct {
-	course  string
-	session string
-	kind    string // main / vga
-	probe   bool
+	course     string
+	session    string
+	kind       string // main / vga / dual
+	probe      bool
+	extTracker *dlTrackItem
 }
 
 // downloadSession 课程录像是 HLS（一节课被切成几百个分片），浏览器里没法右键另存。
@@ -290,6 +291,10 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	}
 	if s == nil {
 		fail(404, "找不到这一讲")
+		return
+	}
+	if opt.kind == "dual" && !opt.probe {
+		downloadOldDual(w, r, opt, d, s, token, user)
 		return
 	}
 	src := s.mainURL()
@@ -401,8 +406,17 @@ func downloadSession(w http.ResponseWriter, r *http.Request, opt dlOpt, token st
 	}
 
 	queueID := strings.TrimSpace(r.URL.Query().Get("queueId"))
-	tracker := dlTrackBindOrStart(queueID, "old", title+ext, len(order), 0)
-	tracker.setReqPath(r.URL.RequestURI())
+	var tracker *dlTrackItem
+	if opt.extTracker != nil {
+		tracker = opt.extTracker
+		dlTrackMu.Lock()
+		tracker.TotalSegs = len(order)
+		tracker.Title = title + ext
+		dlTrackMu.Unlock()
+	} else {
+		tracker = dlTrackBindOrStart(queueID, "old", title+ext, len(order), 0)
+		tracker.setReqPath(r.URL.RequestURI())
+	}
 	if startSeg > 0 {
 		tracker.setResumeInit(startSeg, startBytes)
 		w.Header().Set("X-YHKT-Resume-Seg", strconv.Itoa(startSeg))
