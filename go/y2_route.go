@@ -861,6 +861,36 @@ var (
 	y2MapURIAttr = regexp.MustCompile(`URI="([^"]+)"`)
 )
 
+func y2HasCloudSig(rawQuery string) bool {
+	if rawQuery == "" {
+		return false
+	}
+	lq := strings.ToLower(rawQuery)
+	for _, key := range []string{"signature=", "x-amz-signature=", "x-oss-signature=", "ossaccesskeyid=", "auth_key=", "q-signature="} {
+		if strings.Contains(lq, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func y2PrepareStreamURL(rawURL string, id *y2Identity) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return y2SignedURL(rawURL, id)
+	}
+	if y2HasCloudSig(u.RawQuery) {
+		return rawURL, nil
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "" && !strings.Contains(host, "yanhekt.cn") && host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		if !strings.HasPrefix(u.Path, "/play/") && !strings.HasPrefix(u.Path, "/live/") {
+			return rawURL, nil
+		}
+	}
+	return y2SignedURL(rawURL, id)
+}
+
 func y2ResolvePlaylistRef(ref, origURL string, finalURL *url.URL) string {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -875,7 +905,8 @@ func y2ResolvePlaylistRef(ref, origURL string, finalURL *url.URL) string {
 		return ref
 	}
 	baseParsed := origParsed
-	if finalURL != nil && finalURL.Host != "" && strings.EqualFold(finalURL.Host, origParsed.Host) {
+	if finalURL != nil && finalURL.Host != "" && strings.EqualFold(finalURL.Host, origParsed.Host) &&
+		!y2HasCloudSig(finalURL.RawQuery) && (strings.HasPrefix(finalURL.Path, "/play/") || strings.HasPrefix(finalURL.Path, "/live/")) {
 		baseParsed = finalURL
 	}
 	refParsed, err := url.Parse(ref)
@@ -892,7 +923,7 @@ func y2DownloadHLS(w http.ResponseWriter, r *http.Request, streamURL, name strin
 
 func y2DownloadHLSWithTracker(w http.ResponseWriter, r *http.Request, streamURL, name string, id *y2Identity, queueID string, extTracker *dlTrackItem) error {
 	fetchUpstream := func(ctx context.Context, rawURL string, maxBytes int64) (int, []byte, *url.URL, error) {
-		target, err := y2SignedURL(rawURL, id)
+		target, err := y2PrepareStreamURL(rawURL, id)
 		if err != nil {
 			return 0, nil, nil, err
 		}
@@ -1252,7 +1283,7 @@ func y2DownloadMP4(w http.ResponseWriter, r *http.Request, rawURL string, id *y2
 	defer dlCancel()
 
 	openRange := func(start, end int64) (*http.Response, error) {
-		target, err := y2SignedURL(rawURL, id)
+		target, err := y2PrepareStreamURL(rawURL, id)
 		if err != nil {
 			return nil, err
 		}
@@ -1381,7 +1412,7 @@ func y2DownloadMP4(w http.ResponseWriter, r *http.Request, rawURL string, id *y2
 					return nil, context.Canceled
 				}
 				cCtx, cCancel := context.WithTimeout(dlCtx, 65*time.Second)
-				target, err := y2SignedURL(rawURL, id)
+				target, err := y2PrepareStreamURL(rawURL, id)
 				if err != nil {
 					cCancel()
 					return nil, err
@@ -1559,15 +1590,7 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	isPlaylist := strings.HasSuffix(lowPath, ".m3u8")
 	rg := r.Header.Get("Range")
 
-	if isPlaylist {
-		if text, ok := playlistGet("y2:" + rawURL); ok {
-			w.Header().Set("content-type", "application/vnd.apple.mpegurl")
-			w.Header().Set("cache-control", "no-store")
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte(text))
-			return nil
-		}
-	} else if rg == "" && !strings.HasSuffix(lowPath, ".mp4") {
+	if !isPlaylist && rg == "" && !strings.HasSuffix(lowPath, ".mp4") {
 		if hit := cacheGet("y2:" + rawURL); hit != nil {
 			w.Header().Set("content-type", "video/mp2t")
 			w.Header().Set("content-length", strconv.Itoa(len(hit)))
@@ -1581,7 +1604,7 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	var up *http.Response
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
-		target, serr := y2SignedURL(rawURL, id)
+		target, serr := y2PrepareStreamURL(rawURL, id)
 		if serr != nil {
 			return serr
 		}
@@ -1640,7 +1663,6 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 		lines := strings.Split(text, "\n")
 		var out strings.Builder
 		out.Grow(len(text) + 256)
-		var prefetchURLs []string
 		for i, line := range lines {
 			t := strings.TrimSpace(line)
 			switch {
@@ -1653,16 +1675,10 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 						return m
 					}
 					uAbs := y2ResolvePlaylistRef(sub[1], baseURL, finalURL)
-					if strings.HasPrefix(strings.ToUpper(t), "#EXT-X-MAP") && len(prefetchURLs) < 1 {
-						prefetchURLs = append(prefetchURLs, uAbs)
-					}
 					return `URI="/y2play?u=` + enc(uAbs) + `"`
 				}))
 			default:
 				uAbs := y2ResolvePlaylistRef(t, baseURL, finalURL)
-				if !strings.HasSuffix(strings.ToLower(strings.Split(uAbs, "?")[0]), ".m3u8") && len(prefetchURLs) < 1 {
-					prefetchURLs = append(prefetchURLs, uAbs)
-				}
 				out.WriteString("/y2play?u=" + enc(uAbs))
 			}
 			if i < len(lines)-1 {
@@ -1670,12 +1686,6 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 			}
 		}
 		outText := out.String()
-		if strings.Contains(text, "#EXT") {
-			playlistPut("y2:"+rawURL, outText)
-		}
-		if len(prefetchURLs) > 0 {
-			go y2PrefetchSegs(prefetchURLs, id)
-		}
 		w.Header().Set("content-type", "application/vnd.apple.mpegurl")
 		w.Header().Set("cache-control", "no-store")
 		w.WriteHeader(200)
@@ -1694,6 +1704,32 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	status := up.StatusCode
 	if status == 0 {
 		status = 200
+	}
+	if status >= 400 {
+		errBody, _ := io.ReadAll(io.LimitReader(up.Body, 512))
+		snip := strings.TrimSpace(y2SpaceRun.ReplaceAllString(string(errBody), " "))
+		if rs := []rune(snip); len(rs) > 140 {
+			snip = string(rs[:140])
+		}
+		origHost, origPath := "", ""
+		if uo, uerr := url.Parse(rawURL); uerr == nil {
+			origHost, origPath = uo.Host, uo.Path
+		}
+		finHost := origHost
+		if finalURL != nil && finalURL.Host != "" {
+			finHost = finalURL.Host
+		}
+		hint := fmt.Sprintf("%s -> %s (%s)", origHost, finHost, origPath)
+		if snip != "" {
+			hint += " | " + snip
+		}
+		fmt.Printf("  [y2play] HTTP %d %s\n", status, hint)
+		desktopLog("[y2play] HTTP %d %s", status, hint)
+		w.Header().Set("X-YHKT-Upstream-Err", encodeURIComponent(hint))
+		w.Header().Set("cache-control", "no-store")
+		w.WriteHeader(status)
+		_, _ = w.Write(errBody)
+		return nil
 	}
 	w.WriteHeader(status)
 
@@ -1738,45 +1774,6 @@ func y2ProxyPlay(w http.ResponseWriter, r *http.Request, rawURL string, id *y2Id
 	}
 	_, _ = io.CopyBuffer(w, up.Body, make([]byte, 64*1024))
 	return nil
-}
-
-func y2PrefetchSegs(urls []string, id *y2Identity) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	for _, u := range urls {
-		ckey := "y2:" + u
-		if cacheGet(ckey) != nil {
-			continue
-		}
-		prefetchMu.Lock()
-		if prefetchInFlight[ckey] {
-			prefetchMu.Unlock()
-			continue
-		}
-		if len(prefetchInFlight) > 128 {
-			prefetchInFlight = map[string]bool{}
-		}
-		prefetchInFlight[ckey] = true
-		prefetchMu.Unlock()
-
-		if target, err := y2SignedURL(u, id); err == nil {
-			if req, err := http.NewRequestWithContext(ctx, "GET", target, nil); err == nil {
-				req.Header.Set("User-Agent", y2UA)
-				req.Header.Set("Referer", y2Base+"/")
-				if up, err := y2StreamClient.Do(req); err == nil && up != nil {
-					if up.StatusCode == http.StatusOK {
-						if b, rerr := io.ReadAll(io.LimitReader(up.Body, segCacheMax/4)); rerr == nil && len(b) > 0 {
-							cachePut(ckey, b)
-						}
-					}
-					_ = up.Body.Close()
-				}
-			}
-		}
-		prefetchMu.Lock()
-		delete(prefetchInFlight, ckey)
-		prefetchMu.Unlock()
-	}
 }
 
 type dlTrackWriter struct {

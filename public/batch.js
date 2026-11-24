@@ -66,7 +66,7 @@
     modal.className = 'lgmodal';
     modal.innerHTML = `<div class="bdbox">
       <div class="bdhead">
-        <h2>📦 批量搜课下载专区</h2>
+        <h2>📦 批量下载</h2>
         <div class="bdacts">
           <button class="bdbtn" id="bdGoQueue" type="button">⤓ 查看下载任务</button>
           <button class="xbtn" id="bdClose" type="button" style="background:var(--panel2,#171c26);border:1px solid var(--line,rgba(255,255,255,.1));color:var(--dim,#8f9db3);border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:15px">×</button>

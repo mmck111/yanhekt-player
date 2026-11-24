@@ -33,6 +33,18 @@ func TestY2ResolvePlaylistRef(t *testing.T) {
 	if got := y2ResolvePlaylistRef(absU, orig, cdnURL); got != absU {
 		t.Fatalf("absolute ref = %q", got)
 	}
+
+	// 已带对象存储签名的外链分片，绝不能再被 y2SignedURL 注入 &t= 或改写 %2B 编码
+	id := &y2Identity{userId: 12345, tenantId: 21, phone: "13800138000"}
+	ossSeg := "https://oss-cn-beijing.aliyuncs.com/v/seg0.ts?OSSAccessKeyId=LTAI&Expires=1800000000&Signature=abc%2Bdef%3D"
+	gotOss, err := y2PrepareStreamURL(ossSeg, id)
+	if err != nil || gotOss != ossSeg {
+		t.Fatalf("y2PrepareStreamURL mutated cloud-signed url: got=%q err=%v", gotOss, err)
+	}
+	authKeySeg := "https://vod.example.com/hls/seg0.ts?auth_key=1800000000-0-0-deadbeef"
+	if gotAuth, err := y2PrepareStreamURL(authKeySeg, id); err != nil || gotAuth != authKeySeg {
+		t.Fatalf("y2PrepareStreamURL mutated auth_key url: got=%q err=%v", gotAuth, err)
+	}
 }
 
 func TestY2ProxyPlayExternalCDNRedirectNo403(t *testing.T) {
@@ -97,6 +109,21 @@ func TestY2ProxyPlayExternalCDNRedirectNo403(t *testing.T) {
 	}
 	if segRec.Code != 200 || segRec.Body.String() != "TS_DATA_OK" {
 		t.Fatalf("seg response code=%d body=%q", segRec.Code, segRec.Body.String())
+	}
+
+	// 验证上游 403 时透传诊断头 X-YHKT-Upstream-Err
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("AccessDenied signature mismatch"))
+	}))
+	defer errSrv.Close()
+	errReq := httptest.NewRequest("GET", "/y2play?u="+enc(errSrv.URL+"/play/x.ts"), nil)
+	errRec := httptest.NewRecorder()
+	if err := y2ProxyPlay(errRec, errReq, errSrv.URL+"/play/x.ts", id, y2ProxyOpts{}); err != nil {
+		t.Fatalf("y2ProxyPlay 403 error: %v", err)
+	}
+	if errRec.Code != 403 || !strings.Contains(errRec.Header().Get("X-YHKT-Upstream-Err"), "AccessDenied") {
+		t.Fatalf("expected 403 + diagnostic header, got code=%d hdr=%q", errRec.Code, errRec.Header().Get("X-YHKT-Upstream-Err"))
 	}
 }
 

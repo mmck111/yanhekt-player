@@ -367,7 +367,7 @@
     <div class="sb-tools">
       <a href="#" id="btnDl2" class="toolbtn dlentry" title="查看下载任务与断点续传">⤓ 下载管理</a>
       <a href="#" id="btnSet" class="toolbtn setentry" title="默认下载目录与播放器设置">⚙ 设置</a>
-      <a href="#" id="btnBatchDl" class="toolbtn batchentry" title="搜索并勾选课程任意讲次或全选整门课批量下载">📦 批量搜课下载专区</a>
+      <a href="#" id="btnBatchDl" class="toolbtn batchentry" title="搜索并勾选课程任意讲次或全选整门课批量下载">📦 批量下载</a>
     </div>
     <div class="list" id="list"></div>
   </aside>
@@ -2030,7 +2030,7 @@ async function refreshWebDownloads(){
     if ($('#dlModal').style.display === 'flex') {
       const body = $('#dlBody');
       if (!items.length) {
-        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」或打开「📦 批量搜课下载专区」即可批量稳定下载。</div>';
+        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」或打开「📦 批量下载」即可批量稳定下载。</div>';
       } else {
         body.innerHTML = items.map(it => {
           const pct = it.totalSegs > 1 ? Math.round(it.doneSegs / it.totalSegs * 100)

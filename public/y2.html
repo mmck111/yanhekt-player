@@ -344,7 +344,7 @@
     <div class="sb-tools">
       <a href="#" id="dlnk" class="toolbtn dlentry" title="查看下载任务与断点续传">⤓ 下载管理</a>
       <a href="#" id="btnSet" class="toolbtn setentry" title="默认下载目录与播放器设置">⚙ 设置</a>
-      <a href="#" id="btnBatchDl" class="toolbtn batchentry" title="搜索并勾选课程任意讲次或全选整门课批量下载">📦 批量搜课下载专区</a>
+      <a href="#" id="btnBatchDl" class="toolbtn batchentry" title="搜索并勾选课程任意讲次或全选整门课批量下载">📦 批量下载</a>
     </div>
     <div class="fmeta" id="fmeta" style="padding:6px 12px 0"></div>
     <div class="list" id="list"></div>
@@ -1440,7 +1440,7 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
       fragLoadingMaxRetry: 6,
       fragLoadingRetryDelay: 300,
       manifestLoadingMaxRetry: 4,
-      startFragPrefetch: true,
+      startFragPrefetch: false,
       liveDurationInfinity: !!(info && info.kind === 'live'),
       startPosition: needSeek ? needSeek : -1,
       abortLoadingOnSeek: true,
@@ -1450,7 +1450,13 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
     h.on(Hls.Events.ERROR, (_, d) => {
       if (!d.fatal || isAux) return;
       const code = d.response && d.response.code;
-      showErr(paneSel, '取不到视频流' + (code ? `（HTTP ${code}）` : ''), '本地转发未能拿到视频数据（可能登录过期或 CDN 限流）。', retry);
+      let extra = '';
+      try {
+        const xhr = d.networkDetails;
+        const hErr = xhr && typeof xhr.getResponseHeader === 'function' ? xhr.getResponseHeader('X-YHKT-Upstream-Err') : '';
+        if (hErr) extra = ' [' + decodeURIComponent(hErr) + ']';
+      } catch(e){}
+      showErr(paneSel, '取不到视频流' + (code ? `（HTTP ${code}）` : ''), '本地转发未能拿到视频数据（可能登录过期或 CDN 限流）。' + extra, retry);
     });
     h.loadSource(url); h.attachMedia(vid);
     if (isAux) hlsAux = h; else if (isSub) hlsSub = h; else hls = h;
@@ -1909,7 +1915,7 @@ async function refreshWebDownloads(){
     if ($('#dlModal').style.display === 'flex') {
       const body = $('#dlBody');
       if (!items.length) {
-        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」或打开「📦 批量搜课下载专区」即可批量稳定下载。</div>';
+        body.innerHTML = '<div class="listnote">当前还没有下载任务。播放界面点「下载」或打开「📦 批量下载」即可批量稳定下载。</div>';
       } else {
         body.innerHTML = items.map(it => {
           const pct = it.totalSegs > 1 ? Math.round(it.doneSegs / it.totalSegs * 100)
