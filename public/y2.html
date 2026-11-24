@@ -446,22 +446,24 @@
     #btnAutoNext,#dl,#fs{width:32px;padding:0}
   }
 
+  .mbreak,.mnav{display:none}
+
   @media (max-width:900px){
-    .wrap{grid-template-columns:1fr;grid-template-rows:1fr;height:100dvh}
-    .menu{display:inline-flex;align-items:center;justify-content:center}
-    aside{position:fixed;left:0;top:0;bottom:0;width:88%;max-width:360px;height:100%;max-height:none;
-      border-right:1px solid var(--line);transform:translateX(-104%);transition:transform .26s var(--ease-decel);z-index:20;
-      box-shadow:var(--shadow);border-radius:0 24px 24px 0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
-    .wrap.drawer aside{transform:translateX(0)}
-    .backdrop{position:fixed;inset:0;background:var(--scrim);z-index:19}
-    .wrap.drawer .backdrop{display:block}
-    .bar{padding:8px 12px;gap:8px;flex-wrap:wrap;min-height:52px;
-      padding-top:max(8px,env(safe-area-inset-top));padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
+    .wrap,.lgmodal,.mnav{--mnav-h:calc(64px + env(safe-area-inset-bottom))}
+    .wrap{grid-template-columns:1fr;grid-template-rows:1fr;height:100dvh;padding-bottom:var(--mnav-h)}
+    .menu,.sb-tools,.hint{display:none}
+    aside{display:none;position:fixed;left:0;top:0;right:0;bottom:var(--mnav-h);width:100%;max-width:none;height:auto;max-height:none;
+      border-right:none;transform:none;z-index:22;box-shadow:none;border-radius:0;padding-top:env(safe-area-inset-top)}
+    .wrap.mob-courses aside{display:flex}
+    .hd{padding:12px 16px 10px}
+    .list{padding:10px 12px 18px}
+    .item{padding:12px 14px;border-radius:16px;margin-bottom:6px}
+    .bar{padding:max(8px,env(safe-area-inset-top)) 12px 8px;gap:6px;flex-wrap:wrap;min-height:48px}
     .bar .who{min-width:120px}
     .bar .t{font-size:14px}
-    .tabs{overflow-x:auto;scrollbar-width:none;max-width:100%}
+    .tabs{width:100%;display:flex;overflow-x:auto;scrollbar-width:none;max-width:100%}
     .tabs::-webkit-scrollbar{display:none}
-    .tab{height:30px;padding:0 11px;font-size:12px;touch-action:manipulation}
+    .tab{flex:1;min-width:62px;height:30px;padding:0 10px;font-size:12px;touch-action:manipulation;text-align:center}
     .lgbtn,.menu,.chipbtn,.ctrl button,.ctrl select{touch-action:manipulation}
     .lgbtn{height:30px;padding:0 11px;font-size:11.5px}
     .playerbox{margin:0;border-radius:0;border:none;box-shadow:none}
@@ -469,7 +471,9 @@
     .stage.dual{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
     .stage.pip .pane.pip-sub{width:42%;right:10px;bottom:10px}
     .inpbox input{font-size:16px}
-    .ctrldeck{padding:6px 10px max(10px,env(safe-area-inset-bottom))}
+    .scrub{height:28px}
+    .scrubthumb{transform:translate(-50%,-50%) scale(1)}
+    .ctrldeck{padding:4px 10px 10px}
     .fshud{padding:max(10px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 10px max(12px,env(safe-area-inset-left))}
     .playerbox:fullscreen .ctrldeck,.playerbox:-webkit-full-screen .ctrldeck{
       padding:18px max(12px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
@@ -478,20 +482,44 @@
     .ctrl button,.ctrl select{height:36px;padding:0 9px;font-size:12px}
     .ctrl button.pri{height:36px;padding:0 13px}
     .ctrl .time{font-size:11.5px;padding:0 3px}
-    #fs{margin-left:auto}
-    .hint{display:none}
+    .toast{left:16px;right:16px;top:auto;bottom:calc(74px + env(safe-area-inset-bottom));text-align:center}
+    .lgmodal:not(#lgmodal){top:0;left:0;right:0;bottom:var(--mnav-h);padding:0;background:var(--bg);
+      backdrop-filter:none;z-index:26;align-items:stretch;justify-content:stretch;animation:none}
+    .lgmodal:not(#lgmodal) .login{width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:none;
+      box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 16px;animation:none}
+    .mnav{position:fixed;left:0;right:0;bottom:0;height:var(--mnav-h);padding:4px 4px env(safe-area-inset-bottom);
+      background:var(--panel);border-top:1px solid var(--line);display:flex;align-items:stretch;
+      justify-content:space-around;z-index:35;box-shadow:0 -2px 10px rgba(0,0,0,.04)}
+    body.mob-fs .mnav{display:none}
+    .mnav-btn{flex:1;min-width:0;border:none;background:transparent;color:var(--dim);padding:4px 2px 6px;display:flex;
+      flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;touch-action:manipulation;
+      transition:color .16s var(--ease)}
+    .mnav-pill{position:relative;width:54px;height:30px;border-radius:999px;display:inline-flex;align-items:center;
+      justify-content:center;transition:background .18s var(--ease),color .18s var(--ease),transform .12s var(--ease)}
+    .mnav-pill svg{width:20px;height:20px}
+    .mnav-btn.on .mnav-pill{background:var(--sec-soft);color:var(--on-sec-soft)}
+    .mnav-btn.on .mnav-lbl{color:var(--fg);font-weight:700}
+    .mnav-btn:active .mnav-pill{transform:scale(.94)}
+    .mnav-lbl{font-size:11px;font-weight:500;line-height:1.15;white-space:nowrap}
+    .mnav-badge{position:absolute;top:2px;right:8px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;
+      background:var(--err);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;display:none}
+    .mnav-badge.show{display:inline-block}
   }
-  @media (max-width:560px){
-    #playTxt{display:none}
+  @media (max-width:640px){
+    .mbreak{display:block;flex-basis:100%;height:2px}
     .ctrl .sp{display:none}
+    .ctrl .time{margin-left:auto}
+    #btnAutoNext span,#dl span,#fs span{display:inline}
+    #btnAutoNext,#dl,#fs{width:auto;padding:0 10px}
+    #fs{margin-left:auto}
     .ctrl button,.ctrl select{padding:0 8px}
-    .ctrl button.pri{padding:0 12px}
+    .ctrl button.pri{padding:0 13px}
   }
 </style>
 </head>
 <body>
 <div class="toast" id="toast"></div>
-<div class="wrap" id="wrap">
+<div class="wrap mob-courses" id="wrap">
 <div class="backdrop" id="backdrop"></div>
   <aside>
     <div class="hd">
@@ -597,6 +625,7 @@
           <button data-jump="15" title="前进 15 秒 (→)"><svg viewBox="0 0 24 24"><path d="M12 5V2.21c0-.45.54-.67.85-.35l3.8 3.79c.2.2.2.51 0 .71l-3.79 3.79c-.32.31-.86.09-.86-.36V7c-3.73 0-6.68 3.42-5.86 7.29.47 2.27 2.31 4.1 4.57 4.57 3.57.75 6.75-1.7 7.23-5.01a1 1 0 0 1 1-.85c.6 0 1.08.53 1 1.13-.62 4.39-4.8 7.64-9.53 6.72-3.12-.61-5.63-3.12-6.24-6.24C3.16 9.48 7.06 5 12 5z" fill="currentColor"/></svg><span>15s</span></button>
           <button id="btnNext" class="ic" title="下一讲" disabled><svg viewBox="0 0 24 24"><path d="M7.58 16.89 13.35 12.82a1 1 0 0 0 0-1.64L7.58 7.11C6.91 6.65 6 7.12 6 7.93v8.14c0 .81.91 1.28 1.58.82zM16 7v10c0 .55.45 1 1 1s1-.45 1-1V7c0-.55-.45-1-1-1s-1 .45-1 1z" fill="currentColor"/></svg></button>
           <span class="time" id="timeTxt">00:00 / 00:00</span>
+          <span class="mbreak"></span>
           <span class="sp"></span>
           <button id="btnAutoNext" title="播完当前讲次后自动播放下一讲"><svg viewBox="0 0 24 24"><path d="M4 10h10a1 1 0 0 1 0 2H4a1 1 0 0 1 0-2zm0-4h10a1 1 0 0 1 0 2H4a1 1 0 0 1 0-2zm0 8h6a1 1 0 0 1 0 2H4a1 1 0 0 1 0-2zm10.5.5 4.5 2.75-4.5 2.75v-5.5z" fill="currentColor"/></svg><span>连播</span></button>
           <div class="volbox">
@@ -629,6 +658,29 @@
     </div>
   </main>
 </div>
+
+<nav class="mnav" id="mnav" aria-label="手机模块导航">
+  <button type="button" class="mnav-btn on" data-mnav="courses">
+    <span class="mnav-pill"><svg viewBox="0 0 24 24"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z" fill="currentColor"/></svg></span>
+    <span class="mnav-lbl">课程</span>
+  </button>
+  <button type="button" class="mnav-btn" data-mnav="player">
+    <span class="mnav-pill"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" fill="currentColor"/></svg></span>
+    <span class="mnav-lbl">播放</span>
+  </button>
+  <button type="button" class="mnav-btn" data-mnav="batch">
+    <span class="mnav-pill"><svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7.53 12L9 10.5l1.4-1.41 2.07 2.08L17.6 6 19 7.41 12.47 14z" fill="currentColor"/></svg></span>
+    <span class="mnav-lbl">批量</span>
+  </button>
+  <button type="button" class="mnav-btn" data-mnav="downloads">
+    <span class="mnav-pill"><svg viewBox="0 0 24 24"><path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42l2.3 2.3V4a1 1 0 0 1 1-1zm-7 15a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z" fill="currentColor"/></svg><span class="mnav-badge" id="mnavDlBadge"></span></span>
+    <span class="mnav-lbl">下载</span>
+  </button>
+  <button type="button" class="mnav-btn" data-mnav="settings">
+    <span class="mnav-pill"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg></span>
+    <span class="mnav-lbl">设置</span>
+  </button>
+</nav>
 
 <div class="lgmodal" id="lgmodal"></div>
 <div class="lgmodal" id="dlModal">
@@ -1889,6 +1941,7 @@ function pick(t0, { seekTo = 0, autoPlay = true } = {}){
   detach();
   $('#splash').style.display = 'none';
   $('#stage').style.display = '';
+  if (typeof isMobileUI === 'function' && isMobileUI()) setMobileTab('player');
 
   const names = { camera:'教师画面', screen:'课件画面', room:'教室画面', dual:'双画面' };
   $('#tagMain').textContent = kind === 'dual' ? '教师画面' : (names[kind] || kind);
@@ -2043,6 +2096,7 @@ function wakeHud(){
   const pb = $('#playerBox');
   const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
   pb.classList.toggle('is-fs', isFs);
+  document.body.classList.toggle('mob-fs', isFs);
   pb.classList.remove('idle');
   clearTimeout(idleTimer);
   if (isFs && !v.paused) {
@@ -2106,8 +2160,8 @@ $('#stage').addEventListener('dblclick', e => {
 
 /* ---------- 下载与抽屉 ---------- */
 let dlPoll = 0;
-function openWebDownloads(){ $('#dlModal').style.display = 'flex'; refreshWebDownloads(); }
-function closeWebDownloads(){ $('#dlModal').style.display = 'none'; clearTimeout(dlPoll); dlPoll = 0; }
+function openWebDownloads(){ $('#dlModal').style.display = 'flex'; if (typeof setMobileNavState === 'function') setMobileNavState('downloads'); refreshWebDownloads(); }
+function closeWebDownloads(){ $('#dlModal').style.display = 'none'; clearTimeout(dlPoll); dlPoll = 0; if (typeof syncMobileBackFromModal === 'function') syncMobileBackFromModal(); }
 $('#dlClose').onclick = closeWebDownloads;
 if ($('#dlClear')) $('#dlClear').onclick = clearWebDownloads;
 $('#dlModal').onclick = e => { if (e.target === $('#dlModal')) closeWebDownloads(); };
@@ -2132,6 +2186,7 @@ async function refreshWebDownloads(){
       dlEntry.classList.toggle('busy', activeCnt > 0);
       dlEntry.classList.toggle('warn', activeCnt === 0 && interrupted > 0);
     }
+    if (!NATIVE_DL && typeof updateMobileDlBadge === 'function') updateMobileDlBadge(activeCnt);
     if ($('#dlModal').style.display === 'flex') {
       const body = $('#dlBody');
       if (!items.length) {
@@ -2313,6 +2368,63 @@ $('#dl').onclick = async () => {
 };
 
 const wrapEl = $('#wrap');
+const isMobileUI = () => !!(window.matchMedia && window.matchMedia('(max-width: 900px)').matches);
+let mobTab = 'courses', mobContentTab = 'courses';
+function updateMobileDlBadge(n){
+  const mb = document.getElementById('mnavDlBadge');
+  if (!mb) return;
+  mb.textContent = n > 99 ? '99+' : (n > 0 ? String(n) : '');
+  mb.classList.toggle('show', n > 0);
+}
+function setMobileNavState(tab){
+  if (!tab) return;
+  mobTab = tab;
+  if (tab === 'courses' || tab === 'player') mobContentTab = tab;
+  if (wrapEl) ['courses','player','batch','downloads','settings'].forEach(k => wrapEl.classList.toggle('mob-' + k, tab === k));
+  document.querySelectorAll('.mnav-btn').forEach(b => b.classList.toggle('on', b.dataset.mnav === tab));
+}
+function syncMobileBackFromModal(){
+  setTimeout(() => {
+    const bOpen = !!(window.yhktBatch && window.yhktBatch.isOpen());
+    const sOpen = !!(window.yhktSettings && window.yhktSettings.isOpen());
+    const dOpen = $('#dlModal').style.display === 'flex';
+    if (!bOpen && !sOpen && !dOpen && (mobTab === 'batch' || mobTab === 'settings' || mobTab === 'downloads')) {
+      setMobileNavState(mobContentTab || 'courses');
+    }
+  }, 0);
+}
+function getBatchCoursePayload(){
+  const pc = curCourse || playCourse;
+  if (!pc) return null;
+  return {
+    platform: 'y2',
+    id: String(pc.courseId),
+    title: pc.title || ('课程 ' + pc.courseId),
+    teacher: pc.teacher || '',
+    term: pc.termName || '',
+    sessions: pc._sessions || [],
+  };
+}
+function setMobileTab(tab){
+  if (tab === 'downloads' && NATIVE_DL) {
+    if (window.yhktApp && window.yhktApp.openDownloads) window.yhktApp.openDownloads();
+    return;
+  }
+  setMobileNavState(tab);
+  if (tab !== 'batch' && window.yhktBatch && window.yhktBatch.isOpen()) window.yhktBatch.close();
+  if (tab !== 'settings' && window.yhktSettings && window.yhktSettings.isOpen()) window.yhktSettings.close();
+  if (tab !== 'downloads' && $('#dlModal').style.display === 'flex') closeWebDownloads();
+  if (tab === 'batch' && window.yhktBatch && !window.yhktBatch.isOpen()) {
+    window.yhktBatch.open(getBatchCoursePayload());
+  } else if (tab === 'settings' && window.yhktSettings && !window.yhktSettings.isOpen()) {
+    window.yhktSettings.open();
+  } else if (tab === 'downloads' && $('#dlModal').style.display !== 'flex') {
+    openWebDownloads();
+  }
+}
+document.querySelectorAll('.mnav-btn').forEach(b => {
+  b.onclick = () => setMobileTab(b.dataset.mnav);
+});
 const closeDrawer = () => { if (wrapEl) wrapEl.classList.remove('drawer'); };
 if ($('#menu')) $('#menu').onclick = () => { if (wrapEl) wrapEl.classList.toggle('drawer'); };
 if ($('#backdrop')) $('#backdrop').onclick = closeDrawer;
@@ -2326,6 +2438,7 @@ window.__yhktDl = (n) => {
     else a.textContent = txt;
     a.classList.toggle('busy', n > 0);
   }
+  updateMobileDlBadge(n);
 };
 if ($('#dlnk')) $('#dlnk').onclick = (e) => {
   e.preventDefault();
@@ -2476,6 +2589,7 @@ window.__yhktBack = () => {
   if ($('#dlModal').style.display === 'flex') { closeWebDownloads(); return 'handled'; }
   if ($('#lgmodal').style.display === 'flex') { hideLoginModal(); return 'handled'; }
   if ($('#wrap').classList.contains('drawer')) { closeDrawer(); return 'handled'; }
+  if (isMobileUI() && mobTab === 'player') { setMobileTab('courses'); return 'handled'; }
   if (curCourse && courseListBackup) { backToCourseList(); return 'handled'; }
   return 'none';
 };
@@ -2506,13 +2620,15 @@ function applyAppSettings(s){
   $('#btnAutoNext').classList.toggle('on', autoNext);
   applyRate(getSavedRate());
   if (window.yhktSettings) {
-    await window.yhktSettings.init({ toast, onBeforeOpen: closeDrawer, onApply: applyAppSettings });
+    await window.yhktSettings.init({ toast, onBeforeOpen: closeDrawer, onOpen: () => setMobileNavState('settings'), onClose: syncMobileBackFromModal, onApply: applyAppSettings });
   }
   if (window.yhktBatch) {
     window.yhktBatch.init({
       toast,
       defaultPlatform: 'all',
       onBeforeOpen: closeDrawer,
+      onOpen: () => setMobileNavState('batch'),
+      onClose: syncMobileBackFromModal,
       openDownloads: () => {
         if (window.yhktApp && window.yhktApp.openDownloads) window.yhktApp.openDownloads();
         else openWebDownloads();
@@ -2526,18 +2642,7 @@ function applyAppSettings(s){
         }
       },
       defaultQuery: () => $('#q').value.trim(),
-      getCurrentCourse: () => {
-        const pc = curCourse || playCourse;
-        if (!pc) return null;
-        return {
-          platform: 'y2',
-          id: String(pc.courseId),
-          title: pc.title || ('课程 ' + pc.courseId),
-          teacher: pc.teacher || '',
-          term: pc.termName || '',
-          sessions: pc._sessions || [],
-        };
-      },
+      getCurrentCourse: getBatchCoursePayload,
     });
   }
   refreshWebDownloads();

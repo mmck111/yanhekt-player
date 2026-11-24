@@ -49,10 +49,25 @@
   .bdfoot .dirinfo a{color:var(--accent,#0b57d0);cursor:pointer;text-decoration:none;font-weight:600;padding:3px 8px;border-radius:999px;transition:background .15s}
   .bdfoot .dirinfo a:hover{background:var(--accent-soft,#d3e3fd)}
   .bdempty{margin:auto;padding:26px 16px;text-align:center;color:var(--dim,#444746);font-size:13px;line-height:1.65}
-  @media (max-width:740px){
-    .bdbox{padding:18px 16px;border-radius:24px}
-    .bdgrid{grid-template-columns:1fr;overflow:auto}
-    .bdlist{max-height:28vh;min-height:140px}
+  .bdstep{display:none}
+  @media (max-width:900px){
+    .bdbox{width:100%;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;padding:max(12px,env(safe-area-inset-top)) 14px 12px;animation:none}
+    .bdhead{padding-bottom:10px}
+    #bdGoQueue{display:none}
+    .bdstep{display:grid;grid-template-columns:1fr 1fr;padding:3px;gap:3px;background:var(--panel,#f0f4f9);border:1px solid var(--line,rgba(68,71,70,.15));border-radius:999px;margin-top:10px;flex:none}
+    .bdstep button{height:34px;border:none;border-radius:999px;background:transparent;color:var(--dim,#444746);font-size:12.5px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}
+    .bdstep button.on{background:var(--sec-soft,#c2e7ff);color:var(--on-sec-soft,#001d35);box-shadow:var(--shadow-1,0 1px 2px rgba(0,0,0,.08))}
+    .bdgrid{grid-template-columns:1fr;margin-top:10px;overflow:hidden}
+    .bdcol{border-radius:18px;padding:12px}
+    .bdbox.mob-step-courses .bdcol-sessions{display:none}
+    .bdbox.mob-step-sessions .bdcol-courses{display:none}
+    .bdbar input,.bdbar select{height:40px;font-size:14px}
+    .bdlist{max-height:none;min-height:0;flex:1}
+    .bdtoolbar{gap:6px}
+    .bdviewsel{max-width:100%;margin-left:0;flex:1}
+    .bdfoot{margin-top:10px;padding-top:10px;gap:8px}
+    .bdfoot .dirinfo{width:100%;justify-content:space-between;font-size:11.5px}
+    .bdfoot > div:last-child{width:100%;justify-content:space-between}
   }
   `;
 
@@ -86,8 +101,12 @@
           <button class="bdxbtn" id="bdClose" type="button" aria-label="关闭">×</button>
         </div>
       </div>
+      <div class="bdstep" id="bdSteps">
+        <button type="button" class="on" data-bdstep="courses">1. 搜索选课</button>
+        <button type="button" data-bdstep="sessions">2. 勾选讲次</button>
+      </div>
       <div class="bdgrid">
-        <div class="bdcol">
+        <div class="bdcol bdcol-courses">
           <div class="bdbar">
             <input id="bdSearchInp" placeholder="搜课程名 / 教师名（空格分隔多关键词）" autocomplete="off">
             <button class="bdbtn pri" id="bdSearchBtn" type="button">搜课</button>
@@ -106,7 +125,7 @@
             <div class="bdempty">输入课程名或教师名搜课，然后在右侧勾选要下载的讲次（支持全选整门课程一起下载）。</div>
           </div>
         </div>
-        <div class="bdcol">
+        <div class="bdcol bdcol-sessions">
           <div id="bdCourseHead" style="margin-bottom:10px">
             <div id="bdCourseTitle" style="font-size:15px;font-weight:600;color:var(--fg)">未选择课程</div>
             <div id="bdCourseMeta" style="font-size:12px;color:var(--dim);margin-top:3px">点击左侧任意课程即可加载全部讲次</div>
@@ -141,6 +160,9 @@
 
     modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
     modal.querySelector('#bdClose').onclick = closeModal;
+    modal.querySelectorAll('[data-bdstep]').forEach(b => {
+      b.onclick = () => setMobileStep(b.dataset.bdstep);
+    });
     modal.querySelector('#bdGoQueue').onclick = () => {
       closeModal();
       if (optsCfg.openDownloads) optsCfg.openDownloads();
@@ -286,6 +308,7 @@
         box.querySelectorAll('.bdrow').forEach(x => x.classList.remove('on'));
         row.classList.add('on');
         loadCourseSessions(item);
+        setMobileStep('sessions');
       };
       box.appendChild(row);
     }
@@ -611,13 +634,28 @@
     }
   }
 
+  function setMobileStep(step) {
+    if (!modal) return;
+    const box = modal.querySelector('.bdbox');
+    const s = step === 'sessions' ? 'sessions' : 'courses';
+    if (box) {
+      box.classList.toggle('mob-step-courses', s === 'courses');
+      box.classList.toggle('mob-step-sessions', s === 'sessions');
+    }
+    modal.querySelectorAll('[data-bdstep]').forEach(b => b.classList.toggle('on', b.dataset.bdstep === s));
+  }
+
   async function openModal(preCourse) {
     ensureUI();
+    if (typeof optsCfg.onOpen === 'function') optsCfg.onOpen();
+    modal.style.display = 'flex';
+    if (preCourse && preCourse.id) setMobileStep('sessions');
+    else setMobileStep('courses');
     await Promise.all([loadTerms(), refreshSaveHint(), syncFFmpegMode()]);
     const platEl = modal.querySelector('#bdPlat');
     if (platEl && optsCfg.defaultPlatform) platEl.value = optsCfg.defaultPlatform;
-    modal.style.display = 'flex';
     if (preCourse && preCourse.id) {
+      setMobileStep('sessions');
       const box = modal.querySelector('#bdCourseList');
       if (box && (!box.querySelector('.bdrow') || box.querySelector('.bdempty') || box.dataset.fromCur === '1')) {
         box.dataset.fromCur = '1';
@@ -630,11 +668,13 @@
           box.querySelectorAll('.bdrow').forEach(x => x.classList.remove('on'));
           row.classList.add('on');
           loadCourseSessions(preCourse);
+          setMobileStep('sessions');
         };
         box.appendChild(row);
       }
       loadCourseSessions(preCourse);
     } else {
+      setMobileStep('courses');
       const inp = modal.querySelector('#bdSearchInp');
       if (inp && !inp.value.trim() && optsCfg.defaultQuery) {
         inp.value = optsCfg.defaultQuery();
@@ -646,6 +686,7 @@
 
   function closeModal() {
     if (modal) modal.style.display = 'none';
+    if (typeof optsCfg.onClose === 'function') optsCfg.onClose();
   }
 
   window.yhktBatch = {

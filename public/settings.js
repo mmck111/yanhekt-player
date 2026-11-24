@@ -31,7 +31,16 @@
   .setnote{background:var(--accent-soft,#d3e3fd);color:var(--on-accent-soft,#041e49);border-radius:14px;padding:10px 14px;font-size:12.5px;line-height:1.55;margin:10px 0 4px}
   .setwarn{background:var(--warn-soft,#feefc3);color:var(--on-warn-soft,#412100);border-radius:12px;padding:9px 12px;font-size:12px;line-height:1.55;margin-top:8px}
   .setfoot{display:flex;justify-content:flex-end;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line,rgba(68,71,70,.15))}
-  @media (max-width:520px){.setgrid{grid-template-columns:1fr}.setdir{flex-wrap:wrap}}
+  .setscroll{min-height:0}
+  @media (max-width:900px){
+    .setbox{width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 14px;display:flex;flex-direction:column;animation:none}
+    .setscroll{flex:1;overflow:auto;padding-right:2px}
+    .setgrid{grid-template-columns:1fr}
+    .setdir{flex-wrap:wrap}
+    .setrow select,.setdir input{height:44px;font-size:14px}
+    .setfoot{margin-top:10px;padding-top:12px}
+    .setfoot .setbtn.pri{flex:1;height:42px}
+  }
   `;
 
   let modal = null;
@@ -48,6 +57,8 @@
   let isDesktop = false;
   let isLowIL = false;
   let onApplyCb = null;
+  let onOpenCb = null;
+  let onCloseCb = null;
   let toastFn = m => { try { if (typeof toast === 'function') toast(m, 2600); } catch(e){} };
 
   function ensureUI(){
@@ -61,6 +72,7 @@
     modal.className = 'lgmodal';
     modal.innerHTML = `<div class="login setbox">
       <h2><span class="sethead-t"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg><span>播放器与下载设置</span></span><button class="xbtn" id="setClose" type="button" aria-label="关闭">×</button></h2>
+      <div class="setscroll">
       <div id="setDesktopSec" class="setcard">
         <div class="setrow">
           <label class="lbl">默认下载目录（桌面独立窗口版）</label>
@@ -113,6 +125,7 @@
         </div>
       </div>
       <div class="seterr" id="setErr"></div>
+      </div>
       <div class="setfoot">
         <button class="setbtn" id="setResetDir" type="button">恢复默认目录</button>
         <button class="setbtn pri" id="setSaveBtn" type="button">保存并应用</button>
@@ -208,14 +221,17 @@
 
   async function openModal(){
     ensureUI();
-    await load();
+    if (typeof onOpenCb === 'function') onOpenCb();
     modal.querySelector('#setErr').textContent = '';
     renderForm();
     modal.style.display = 'flex';
+    await load();
+    renderForm();
   }
 
   function closeModal(){
     if (modal) modal.style.display = 'none';
+    if (typeof onCloseCb === 'function') onCloseCb();
   }
 
   async function load(){
@@ -254,6 +270,8 @@
     close: closeModal,
     async init(opts){
       if (opts && typeof opts.onApply === 'function') onApplyCb = opts.onApply;
+      if (opts && typeof opts.onOpen === 'function') onOpenCb = opts.onOpen;
+      if (opts && typeof opts.onClose === 'function') onCloseCb = opts.onClose;
       if (opts && typeof opts.toast === 'function') toastFn = opts.toast;
       const btn = document.getElementById('btnSet');
       if (btn) btn.onclick = e => { e.preventDefault(); if (opts && opts.onBeforeOpen) opts.onBeforeOpen(); openModal(); };
