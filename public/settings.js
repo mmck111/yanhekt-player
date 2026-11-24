@@ -1,19 +1,37 @@
 (() => {
   const CSS = `
+  .setbox{max-width:568px}
+  .sethead-t{display:inline-flex;align-items:center;gap:10px}
+  .sethead-t svg{width:22px;height:22px;color:var(--accent,#0b57d0);flex:none}
+  .setcard{background:var(--panel,#f0f4f9);border:1px solid var(--line,rgba(68,71,70,.15));border-radius:18px;padding:14px 16px;margin:12px 0}
   .setrow{margin:10px 0}
-  .setrow label.lbl{display:block;font-size:12px;color:var(--dim,#8f9db3);margin-bottom:5px}
-  .setdir{display:flex;gap:6px;align-items:center}
-  .setdir input{flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid var(--line,rgba(255,255,255,.1));background:var(--panel2,#171c26);color:var(--fg,#edf2f7);font:12.5px/1.3 monospace}
-  .setbtn{border:1px solid var(--line,rgba(255,255,255,.12));background:var(--panel2,#171c26);color:var(--fg,#edf2f7);border-radius:8px;padding:7px 10px;font-size:12px;cursor:pointer;white-space:nowrap}
-  .setbtn:hover{border-color:rgba(91,156,255,.5);color:#fff}
-  .setbtn.pri{background:var(--accent,#5b9cff);color:#041022;border-color:transparent;font-weight:700}
-  .setgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .setrow select{width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line,rgba(255,255,255,.1));background:var(--panel2,#171c26);color:var(--fg,#edf2f7);font-size:12.5px}
-  .setchk{display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;margin:8px 0;color:var(--fg,#edf2f7)}
-  .setchk input{width:15px;height:15px;accent-color:var(--accent,#5b9cff)}
-  .seterr{font-size:12px;color:#fca5a5;margin-top:6px;min-height:16px}
-  .sethint{font-size:11.5px;color:var(--dim,#8f9db3);line-height:1.45;margin-top:4px}
-  @media (max-width:520px){.setgrid{grid-template-columns:1fr}}
+  .setcard .setrow:first-child{margin-top:0}
+  .setcard .setrow:last-child{margin-bottom:0}
+  .setrow label.lbl{display:block;font-size:12px;font-weight:600;color:var(--dim,#444746);margin-bottom:6px;letter-spacing:.01em}
+  .setdir{display:flex;gap:8px;align-items:center}
+  .setdir input{flex:1;min-width:0;height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line-strong,var(--line,rgba(68,71,70,.25)));background:var(--input-bg,var(--surface-card,#fff));color:var(--fg,#1f1f1f);font:12px/1.3 ui-monospace,Consolas,monospace;outline:none;transition:border-color .16s,box-shadow .16s}
+  .setdir input:focus{border-color:var(--accent,#0b57d0);box-shadow:0 0 0 3px var(--accent-soft,rgba(11,87,208,.18))}
+  .setbtn{height:38px;border:1px solid var(--line,rgba(68,71,70,.18));background:var(--panel2,#e9eef6);color:var(--fg,#1f1f1f);border-radius:999px;padding:0 16px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:background .15s,filter .15s,box-shadow .15s,transform .12s}
+  .setbtn:hover{background:var(--panel3,#dde3ea)}
+  .setbtn:active{transform:scale(.97)}
+  .setbtn.pri{background:var(--accent,#0b57d0);color:var(--on-accent,#fff);border-color:transparent;box-shadow:var(--shadow-1,0 1px 2px rgba(0,0,0,.1))}
+  .setbtn.pri:hover{background:var(--accent,#0b57d0);filter:brightness(1.06);box-shadow:var(--shadow-2,0 2px 6px rgba(0,0,0,.14))}
+  .setgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+  .setgrid .setrow{margin:0}
+  .setrow select{width:100%;height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line-strong,var(--line,rgba(68,71,70,.25)));background:var(--input-bg,var(--surface-card,#fff));color:var(--fg,#1f1f1f);font-size:13px;outline:none;cursor:pointer;transition:border-color .16s}
+  .setrow select:focus{border-color:var(--accent,#0b57d0)}
+  .setchk{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;font-weight:500;cursor:pointer;padding:8px 2px;margin:2px 0;color:var(--fg,#1f1f1f);user-select:none}
+  .setchk input{appearance:none;-webkit-appearance:none;position:relative;width:44px;height:26px;border-radius:999px;background:var(--panel3,#dde3ea);border:1.5px solid var(--muted,#747775);cursor:pointer;flex:none;order:2;transition:background .18s cubic-bezier(.2,0,0,1),border-color .18s}
+  .setchk input::after{content:"";position:absolute;left:4px;top:50%;width:14px;height:14px;border-radius:50%;background:var(--muted,#747775);transform:translateY(-50%);transition:transform .18s cubic-bezier(.2,0,0,1),width .18s,height .18s,background .18s}
+  .setchk input:checked{background:var(--accent,#0b57d0);border-color:var(--accent,#0b57d0)}
+  .setchk input:checked::after{width:18px;height:18px;background:var(--on-accent,#fff);transform:translate(17px,-50%)}
+  .setswitches{display:flex;flex-direction:column;gap:2px;margin-top:10px;padding-top:8px;border-top:1px solid var(--line,rgba(68,71,70,.15))}
+  .seterr{font-size:12.5px;font-weight:500;color:var(--err,#b3261e);margin-top:8px;min-height:18px}
+  .sethint{font-size:12px;color:var(--dim,#444746);line-height:1.55;margin-top:6px}
+  .setnote{background:var(--accent-soft,#d3e3fd);color:var(--on-accent-soft,#041e49);border-radius:14px;padding:10px 14px;font-size:12.5px;line-height:1.55;margin:10px 0 4px}
+  .setwarn{background:var(--warn-soft,#feefc3);color:var(--on-warn-soft,#412100);border-radius:12px;padding:9px 12px;font-size:12px;line-height:1.55;margin-top:8px}
+  .setfoot{display:flex;justify-content:flex-end;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line,rgba(68,71,70,.15))}
+  @media (max-width:520px){.setgrid{grid-template-columns:1fr}.setdir{flex-wrap:wrap}}
   `;
 
   let modal = null;
@@ -41,9 +59,9 @@
     modal = document.createElement('div');
     modal.id = 'setModal';
     modal.className = 'lgmodal';
-    modal.innerHTML = `<div class="login" style="max-width:500px">
-      <h2><span>播放器与下载设置</span><button class="xbtn" id="setClose" type="button">×</button></h2>
-      <div id="setDesktopSec">
+    modal.innerHTML = `<div class="login setbox">
+      <h2><span class="sethead-t"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg><span>播放器与下载设置</span></span><button class="xbtn" id="setClose" type="button" aria-label="关闭">×</button></h2>
+      <div id="setDesktopSec" class="setcard">
         <div class="setrow">
           <label class="lbl">默认下载目录（桌面独立窗口版）</label>
           <div class="setdir">
@@ -52,48 +70,50 @@
             <button class="setbtn" id="setOpenDir" type="button">打开</button>
           </div>
           <div class="sethint" id="setDirEff"></div>
-          <div class="sethint" id="setLowIlWarn" style="display:none;color:#fbbf24"></div>
+          <div class="setwarn" id="setLowIlWarn" style="display:none"></div>
         </div>
-        <label class="setchk"><input id="setAskSave" type="checkbox"> 每次下载前弹窗「另存为」（不勾选则直接保存到默认目录，无权限弹窗）</label>
+        <label class="setchk"><span>每次下载前弹窗「另存为」</span><input id="setAskSave" type="checkbox"></label>
       </div>
-      <div id="setBrowserNote" class="sethint" style="display:none;margin-bottom:8px">
+      <div id="setBrowserNote" class="setnote" style="display:none">
         当前为浏览器模式，下载路径由浏览器自身设置管理；播放偏好对老/新版页面同时生效。
       </div>
-      <div class="setgrid">
-        <div class="setrow">
-          <label class="lbl">默认播放视角</label>
-          <select id="setView">
-            <option value="camera">教师 / 全景画面</option>
-            <option value="dual">双画同步（自动回落单画）</option>
-            <option value="screen">课件 / 电脑屏幕</option>
-            <option value="room">教室视角（仅新版/直播）</option>
-          </select>
+      <div class="setcard">
+        <div class="setgrid">
+          <div class="setrow">
+            <label class="lbl">默认播放视角</label>
+            <select id="setView">
+              <option value="camera">教师 / 全景画面</option>
+              <option value="dual">双画同步（自动回落单画）</option>
+              <option value="screen">课件 / 电脑屏幕</option>
+              <option value="room">教室视角（仅新版/直播）</option>
+            </select>
+          </div>
+          <div class="setrow">
+            <label class="lbl">双画默认布局</label>
+            <select id="setDualPip">
+              <option value="0">并排双屏</option>
+              <option value="1">画中画</option>
+            </select>
+          </div>
+          <div class="setrow">
+            <label class="lbl">默认倍速</label>
+            <select id="setRate">
+              <option value="0.75">0.75x</option>
+              <option value="1">1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="1.75">1.75x</option>
+              <option value="2">2.0x</option>
+            </select>
+          </div>
         </div>
-        <div class="setrow">
-          <label class="lbl">双画默认布局</label>
-          <select id="setDualPip">
-            <option value="0">并排双屏</option>
-            <option value="1">画中画</option>
-          </select>
-        </div>
-        <div class="setrow">
-          <label class="lbl">默认倍速</label>
-          <select id="setRate">
-            <option value="0.75">0.75x</option>
-            <option value="1">1.0x</option>
-            <option value="1.25">1.25x</option>
-            <option value="1.5">1.5x</option>
-            <option value="1.75">1.75x</option>
-            <option value="2">2.0x</option>
-          </select>
-        </div>
-        <div class="setrow" style="display:flex;flex-direction:column;justify-content:flex-end">
-          <label class="setchk" style="margin:4px 0"><input id="setAutoNext" type="checkbox"> 自动连播下一讲</label>
-          <label class="setchk" style="margin:4px 0"><input id="setRememberPos" type="checkbox"> 记住上次播放位置</label>
+        <div class="setswitches">
+          <label class="setchk"><span>自动连播下一讲</span><input id="setAutoNext" type="checkbox"></label>
+          <label class="setchk"><span>记住上次播放位置</span><input id="setRememberPos" type="checkbox"></label>
         </div>
       </div>
       <div class="seterr" id="setErr"></div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+      <div class="setfoot">
         <button class="setbtn" id="setResetDir" type="button">恢复默认目录</button>
         <button class="setbtn pri" id="setSaveBtn" type="button">保存并应用</button>
       </div>

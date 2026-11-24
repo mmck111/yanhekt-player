@@ -1,42 +1,56 @@
 (() => {
   const CSS = `
-  .bdbox{width:min(900px,96vw);max-height:90vh;display:flex;flex-direction:column;background:var(--panel,#111622);border:1px solid var(--line,rgba(255,255,255,.1));border-radius:16px;padding:18px 20px;box-shadow:0 24px 64px rgba(0,0,0,.65);color:var(--fg,#edf2f7)}
-  .bdhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--line,rgba(255,255,255,.08))}
-  .bdhead h2{margin:0;font-size:16.5px;display:flex;align-items:center;gap:8px}
+  .bdbox{width:min(940px,96vw);max-height:90vh;display:flex;flex-direction:column;background:var(--dialog-bg,var(--panel,#fff));border:1px solid var(--line,rgba(68,71,70,.15));border-radius:28px;padding:22px 26px;box-shadow:var(--shadow,0 20px 56px rgba(0,0,0,.28));color:var(--fg,#1f1f1f);animation:mdDialogIn .22s cubic-bezier(.05,.7,.1,1)}
+  .bdhead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:14px;border-bottom:1px solid var(--line,rgba(68,71,70,.15))}
+  .bdhead h2{margin:0;font-size:18px;font-weight:600;display:flex;align-items:center;gap:10px;color:var(--fg,#1f1f1f)}
+  .bdhead h2 svg{width:22px;height:22px;color:var(--ok,#146c2e);flex:none}
   .bdhead .bdacts{display:flex;align-items:center;gap:8px}
-  .bdgrid{display:grid;grid-template-columns:1.02fr 1.18fr;gap:14px;min-height:0;flex:1;margin-top:12px;overflow:hidden}
-  .bdcol{display:flex;flex-direction:column;min-height:0;border:1px solid var(--line,rgba(255,255,255,.08));border-radius:12px;background:var(--panel2,#171c26);padding:12px}
-  .bdbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
-  .bdbar input,.bdbar select{background:var(--panel,#111622);border:1px solid var(--line,rgba(255,255,255,.12));color:var(--fg,#edf2f7);border-radius:8px;padding:7px 10px;font-size:12.5px;outline:none}
-  .bdbar input{flex:1;min-width:140px}
-  .bdbar input:focus,.bdbar select:focus{border-color:var(--accent,#5b9cff)}
-  .bdbtn{border:1px solid var(--line,rgba(255,255,255,.14));background:var(--panel3,#1e2533);color:var(--fg,#edf2f7);border-radius:8px;padding:7px 12px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
-  .bdbtn:hover:not(:disabled){border-color:rgba(91,156,255,.6);color:#fff}
+  .bdgrid{display:grid;grid-template-columns:1.02fr 1.18fr;gap:16px;min-height:0;flex:1;margin-top:16px;overflow:hidden}
+  .bdcol{display:flex;flex-direction:column;min-height:0;border:1px solid var(--line,rgba(68,71,70,.15));border-radius:20px;background:var(--panel,#f0f4f9);padding:14px}
+  .bdbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .bdbar input,.bdbar select{height:38px;background:var(--input-bg,var(--surface-card,#fff));border:1px solid var(--line,rgba(68,71,70,.18));color:var(--fg,#1f1f1f);border-radius:12px;padding:0 12px;font-size:13px;outline:none;transition:border-color .16s,box-shadow .16s}
+  .bdbar input{flex:1;min-width:140px;border-radius:999px;padding:0 16px;box-shadow:var(--shadow-1,0 1px 2px rgba(0,0,0,.06))}
+  .bdbar input:focus,.bdbar select:focus{border-color:var(--accent,#0b57d0);box-shadow:0 0 0 3px var(--accent-soft,rgba(11,87,208,.18))}
+  .bdbtn{height:36px;border:1px solid var(--line,rgba(68,71,70,.18));background:var(--panel2,#e9eef6);color:var(--fg,#1f1f1f);border-radius:999px;padding:0 14px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:background .15s,filter .15s,box-shadow .15s,transform .12s}
+  .bdbtn svg{width:16px;height:16px;flex:none}
+  .bdbtn:hover:not(:disabled){background:var(--panel3,#dde3ea)}
+  .bdbtn:active:not(:disabled){transform:scale(.97)}
   .bdbtn:disabled{opacity:.42;cursor:not-allowed}
-  .bdbtn.pri{background:var(--accent,#5b9cff);border-color:var(--accent,#5b9cff);color:#041022;font-weight:700}
-  .bdbtn.pri:hover:not(:disabled){filter:brightness(1.08);color:#041022}
-  .bdlist{flex:1;min-height:220px;max-height:48vh;overflow:auto;display:flex;flex-direction:column;gap:5px;padding-right:2px}
-  .bdrow{padding:8px 10px;border-radius:9px;border:1px solid transparent;background:rgba(255,255,255,.025);cursor:pointer;transition:all .12s}
-  .bdrow:hover{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.1)}
-  .bdrow.on{background:rgba(91,156,255,.16);border-color:rgba(91,156,255,.55)}
-  .bdrow .t{font-size:13px;font-weight:600;line-height:1.4;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-  .bdrow .m{font-size:11px;color:var(--dim,#8f9db3);margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-  .bdtag{font-size:10.5px;padding:1px 6px;border-radius:5px;border:1px solid rgba(255,255,255,.12);color:var(--dim,#8f9db3);background:rgba(255,255,255,.04)}
-  .bdtag.y2{color:#8be9be;border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.1)}
-  .bdtag.old{color:#fde68a;border-color:rgba(251,191,36,.32);background:rgba(251,191,36,.1)}
-  .bdtoolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--line,rgba(255,255,255,.08))}
-  .bdsess{display:flex;align-items:flex-start;gap:9px;padding:8px 9px;border-radius:9px;border:1px solid transparent;background:rgba(255,255,255,.025);cursor:pointer}
-  .bdsess:hover:not(.dead){background:rgba(255,255,255,.06)}
+  .bdbtn.pri{background:var(--accent,#0b57d0);border-color:transparent;color:var(--on-accent,#fff);font-weight:600;box-shadow:var(--shadow-1,0 1px 2px rgba(0,0,0,.1))}
+  .bdbtn.pri:hover:not(:disabled){background:var(--accent,#0b57d0);filter:brightness(1.06);color:var(--on-accent,#fff);box-shadow:var(--shadow-2,0 2px 6px rgba(0,0,0,.14))}
+  .bdbtn.tonal{background:var(--accent-soft,#d3e3fd);border-color:transparent;color:var(--on-accent-soft,#041e49)}
+  .bdbtn.tonal:hover:not(:disabled){filter:brightness(.97)}
+  .bdxbtn{width:34px;height:34px;border-radius:50%;border:none;background:transparent;color:var(--dim,#444746);cursor:pointer;font-size:20px;line-height:1;display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+  .bdxbtn:hover{background:var(--hover,rgba(0,0,0,.06));color:var(--fg,#1f1f1f)}
+  .bdlist{flex:1;min-height:220px;max-height:48vh;overflow:auto;display:flex;flex-direction:column;gap:4px;padding-right:3px}
+  .bdrow{padding:10px 12px;border-radius:14px;border:1px solid transparent;background:var(--surface-card,transparent);cursor:pointer;transition:background .14s,border-color .14s}
+  .bdrow:hover{background:var(--hover,rgba(0,0,0,.05));border-color:var(--line,rgba(68,71,70,.12))}
+  .bdrow.on{background:var(--sec-soft,#c2e7ff);color:var(--on-sec-soft,#001d35);border-color:transparent}
+  .bdrow.on .m{color:var(--on-sec-soft,#001d35);opacity:.82}
+  .bdrow .t{font-size:13.5px;font-weight:600;line-height:1.4;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .bdrow .m{font-size:11.5px;color:var(--dim,#444746);margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .bdtag{font-size:11px;font-weight:600;padding:1px 8px;border-radius:8px;color:var(--dim,#444746);background:var(--panel2,#e9eef6)}
+  .bdtag.y2{color:var(--on-ok-soft,#072711);background:var(--ok-soft,#c4eed0)}
+  .bdtag.old{color:var(--on-warn-soft,#412100);background:var(--warn-soft,#feefc3)}
+  .bdtoolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line,rgba(68,71,70,.15))}
+  .bdviewsel{margin-left:auto;height:36px;line-height:normal;background:var(--input-bg,var(--surface-card,#fff));border:1px solid var(--line,rgba(68,71,70,.18));color:var(--fg,#1f1f1f);border-radius:999px;padding:0 12px;font-size:12.5px;font-weight:500;outline:none;cursor:pointer;vertical-align:middle}
+  .bdviewsel:focus{border-color:var(--accent,#0b57d0)}
+  .bdsess{display:flex;align-items:flex-start;gap:10px;padding:9px 11px;border-radius:12px;border:1px solid transparent;background:var(--surface-card,transparent);cursor:pointer;transition:background .14s,border-color .14s}
+  .bdsess:hover:not(.dead){background:var(--hover,rgba(0,0,0,.05))}
+  .bdsess:has(input:checked){background:var(--accent-soft,#d3e3fd);color:var(--on-accent-soft,#041e49)}
+  .bdsess:has(input:checked) .sm{color:var(--on-accent-soft,#041e49);opacity:.8}
   .bdsess.dead{opacity:.42;cursor:not-allowed}
-  .bdsess input[type=checkbox]{width:16px;height:16px;margin-top:2px;accent-color:var(--accent,#5b9cff);cursor:pointer;flex:none}
+  .bdsess input[type=checkbox]{width:17px;height:17px;margin-top:2px;accent-color:var(--accent,#0b57d0);cursor:pointer;flex:none;border-radius:4px}
   .bdsess .info{flex:1;min-width:0}
-  .bdsess .st{font-size:12.5px;font-weight:600;line-height:1.4}
-  .bdsess .sm{font-size:11px;color:var(--dim,#8f9db3);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}
-  .bdfoot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid var(--line,rgba(255,255,255,.08))}
-  .bdfoot .dirinfo{font-size:11.5px;color:var(--dim,#8f9db3);display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
-  .bdfoot .dirinfo a{color:var(--accent,#5b9cff);cursor:pointer;text-decoration:none}
-  .bdempty{margin:auto;padding:22px 12px;text-align:center;color:var(--dim,#8f9db3);font-size:12.5px;line-height:1.6}
+  .bdsess .st{font-size:13px;font-weight:600;line-height:1.4}
+  .bdsess .sm{font-size:11.5px;color:var(--dim,#444746);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}
+  .bdfoot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:16px;padding-top:14px;border-top:1px solid var(--line,rgba(68,71,70,.15))}
+  .bdfoot .dirinfo{font-size:12px;color:var(--dim,#444746);display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+  .bdfoot .dirinfo a{color:var(--accent,#0b57d0);cursor:pointer;text-decoration:none;font-weight:600;padding:3px 8px;border-radius:999px;transition:background .15s}
+  .bdfoot .dirinfo a:hover{background:var(--accent-soft,#d3e3fd)}
+  .bdempty{margin:auto;padding:26px 16px;text-align:center;color:var(--dim,#444746);font-size:13px;line-height:1.65}
   @media (max-width:740px){
+    .bdbox{padding:18px 16px;border-radius:24px}
     .bdgrid{grid-template-columns:1fr;overflow:auto}
     .bdlist{max-height:28vh;min-height:140px}
   }
@@ -66,10 +80,10 @@
     modal.className = 'lgmodal';
     modal.innerHTML = `<div class="bdbox">
       <div class="bdhead">
-        <h2>📦 批量下载</h2>
+        <h2><svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7.53 12L9 10.5l1.4-1.41 2.07 2.08L17.6 6 19 7.41 12.47 14z" fill="currentColor"/></svg><span>批量下载</span></h2>
         <div class="bdacts">
-          <button class="bdbtn" id="bdGoQueue" type="button">⤓ 查看下载任务</button>
-          <button class="xbtn" id="bdClose" type="button" style="background:var(--panel2,#171c26);border:1px solid var(--line,rgba(255,255,255,.1));color:var(--dim,#8f9db3);border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:15px">×</button>
+          <button class="bdbtn tonal" id="bdGoQueue" type="button"><svg viewBox="0 0 24 24"><path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42l2.3 2.3V4a1 1 0 0 1 1-1zm-7 15a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z" fill="currentColor"/></svg><span>查看下载任务</span></button>
+          <button class="bdxbtn" id="bdClose" type="button" aria-label="关闭">×</button>
         </div>
       </div>
       <div class="bdgrid">
@@ -93,14 +107,14 @@
           </div>
         </div>
         <div class="bdcol">
-          <div id="bdCourseHead" style="margin-bottom:8px">
-            <div id="bdCourseTitle" style="font-size:14px;font-weight:700">未选择课程</div>
-            <div id="bdCourseMeta" style="font-size:11.5px;color:var(--dim,#8f9db3);margin-top:2px">点击左侧任意课程即可加载全部讲次</div>
+          <div id="bdCourseHead" style="margin-bottom:10px">
+            <div id="bdCourseTitle" style="font-size:15px;font-weight:600;color:var(--fg)">未选择课程</div>
+            <div id="bdCourseMeta" style="font-size:12px;color:var(--dim);margin-top:3px">点击左侧任意课程即可加载全部讲次</div>
           </div>
           <div class="bdtoolbar">
-            <button class="bdbtn" id="bdSelAll" type="button" disabled>☑ 全选本课所有讲</button>
-            <button class="bdbtn" id="bdSelNone" type="button" disabled>☐ 清空</button>
-            <select id="bdViewMode" title="批量下载选择的画面视角" style="margin-left:auto;background:var(--panel,#111622);border:1px solid var(--line,rgba(255,255,255,.12));color:var(--fg,#edf2f7);border-radius:8px;padding:5px 8px;font-size:12px">
+            <button class="bdbtn" id="bdSelAll" type="button" disabled>全选本课</button>
+            <button class="bdbtn" id="bdSelNone" type="button" disabled>清空</button>
+            <select id="bdViewMode" class="bdviewsel" title="批量下载选择的画面视角">
               <option value="camera">下载：教师 / 全景画面</option>
               <option value="screen">下载：课件画面</option>
               <option value="both">下载：教师 + 课件（分别保存 2 个文件）</option>
@@ -117,9 +131,9 @@
           <span id="bdSaveHint">正在读取保存位置…</span>
           <a id="bdOpenSet">修改保存目录 / 设置</a>
         </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          <span id="bdCountTxt" style="font-size:12px;color:var(--dim,#8f9db3)">已选 0 讲</span>
-          <button class="bdbtn pri" id="bdStartBtn" type="button" disabled>⤓ 批量开始下载</button>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span id="bdCountTxt" style="font-size:12.5px;font-weight:500;color:var(--dim)">已选 0 讲</span>
+          <button class="bdbtn pri" id="bdStartBtn" type="button" disabled><svg viewBox="0 0 24 24"><path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42l2.3 2.3V4a1 1 0 0 1 1-1zm-7 15a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z" fill="currentColor"/></svg><span class="bdlbl">批量开始下载</span></button>
         </div>
       </div>
     </div>`;
@@ -484,8 +498,12 @@
     const checkedN = sessions.filter(s => s.playable && s.checked).length;
     const tasks = buildTasksForSelection();
     modal.querySelector('#bdCountTxt').textContent = `已选 ${checkedN} 讲（${tasks.length} 个文件）`;
-    modal.querySelector('#bdStartBtn').disabled = tasks.length === 0;
-    modal.querySelector('#bdStartBtn').textContent = tasks.length > 0 ? `⤓ 批量开始下载（${tasks.length}）` : '⤓ 批量开始下载';
+    const startBtn = modal.querySelector('#bdStartBtn');
+    startBtn.disabled = tasks.length === 0;
+    const lbl = startBtn.querySelector('.bdlbl');
+    const txt = tasks.length > 0 ? `批量开始下载（${tasks.length}）` : '批量开始下载';
+    if (lbl) lbl.textContent = txt;
+    else startBtn.textContent = txt;
   }
 
   async function pumpBrowserQueue() {
@@ -525,9 +543,10 @@
     // 新版选择「双画面 / 全景+课件 / 仅课件」时，快速并发探一次实际存在的流，避免无课件讲次重复下或误选双画面
     if (activeCourse.platform === 'y2' && (vm === 'both' || vm === 'screen' || vm === 'dual')) {
       const btn = modal.querySelector('#bdStartBtn');
-      const oldTxt = btn.textContent;
+      const lbl = btn.querySelector('.bdlbl') || btn;
+      const oldTxt = lbl.textContent;
       btn.disabled = true;
-      btn.textContent = '正在核对可用画面…';
+      lbl.textContent = '正在核对可用画面…';
       let cursor = 0;
       const worker = async () => {
         while (cursor < picked.length) {
@@ -544,7 +563,7 @@
       };
       await Promise.all(Array.from({ length: Math.min(6, picked.length) }, worker));
       btn.disabled = false;
-      btn.textContent = oldTxt;
+      lbl.textContent = oldTxt;
     }
 
     const tasks = buildTasksForSelection(true);
