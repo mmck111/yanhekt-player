@@ -32,9 +32,10 @@
   .setwarn{background:var(--warn-soft,#feefc3);color:var(--on-warn-soft,#412100);border-radius:12px;padding:9px 12px;font-size:12px;line-height:1.55;margin-top:8px}
   .setfoot{display:flex;justify-content:flex-end;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line,rgba(68,71,70,.15))}
   .setscroll{min-height:0}
+  @keyframes setMobIn{from{opacity:0;transform:translate3d(0,12px,0)}to{opacity:1;transform:none}}
   @media (max-width:900px){
     #setClose{display:none}
-    .setbox{width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 14px;display:flex;flex-direction:column;animation:none}
+    .setbox{width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 14px;display:flex;flex-direction:column;animation:setMobIn .24s cubic-bezier(.05,.7,.1,1)}
     .setscroll{flex:1;overflow:auto;padding-right:2px}
     .setgrid{grid-template-columns:1fr}
     .setdir{flex-wrap:wrap}

@@ -522,6 +522,8 @@
 
   .mbreak,.mnav{display:none}
 
+  @keyframes mobTabIn{from{opacity:0;transform:translate3d(0,12px,0)}to{opacity:1;transform:none}}
+  @keyframes mnavPillPop{0%{transform:scale(.88)}65%{transform:scale(1.04)}100%{transform:scale(1)}}
   @media (max-width:900px){
     .wrap,.lgmodal,.mnav{--mnav-h:calc(64px + env(safe-area-inset-bottom))}
     .wrap{grid-template-columns:1fr;grid-template-rows:1fr;height:100dvh;padding-bottom:var(--mnav-h)}
@@ -529,8 +531,9 @@
     aside{display:none;position:fixed;left:0;top:0;right:0;bottom:var(--mnav-h);width:100%;max-width:none;height:auto;max-height:none;
       z-index:22;border-right:none;border-radius:0;box-shadow:none;transform:none;
       padding-top:env(safe-area-inset-top)}
-    .wrap.mob-courses aside{display:flex}
-    .wrap.mob-courses.mob-watching aside{display:none}
+    .wrap.mob-courses aside{display:flex;animation:mobTabIn .24s var(--ease-decel)}
+    .wrap.mob-courses.mob-watching aside{display:none;animation:none}
+    main.mob-pane-anim{animation:mobTabIn .24s var(--ease-decel)}
     main{overflow:hidden;min-height:0}
     .brand{padding:12px 16px 10px}
     .list{padding:10px 12px 18px}
@@ -591,9 +594,9 @@
     .ctrl .time{font-size:11.5px;padding:0 3px}
     .toast{left:16px;right:16px;top:auto;bottom:calc(74px + env(safe-area-inset-bottom));text-align:center}
     .lgmodal:not(#lgmodal){top:0;left:0;right:0;bottom:var(--mnav-h);padding:0;background:var(--bg);
-      backdrop-filter:none;z-index:26;align-items:stretch;justify-content:stretch;animation:none}
+      backdrop-filter:none;z-index:26;align-items:stretch;justify-content:stretch;animation:mdFade .16s var(--ease)}
     .lgmodal:not(#lgmodal) .login{width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:none;
-      box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 16px;animation:none}
+      box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 16px;animation:mobTabIn .24s var(--ease-decel)}
     .mnav{position:fixed;left:0;right:0;bottom:0;height:var(--mnav-h);padding:4px 4px env(safe-area-inset-bottom);
       background:var(--panel);border-top:1px solid var(--line);display:flex;align-items:stretch;
       justify-content:space-around;z-index:35;box-shadow:0 -2px 10px rgba(0,0,0,.04)}
@@ -604,7 +607,10 @@
     .mnav-pill{position:relative;width:54px;height:30px;border-radius:999px;display:inline-flex;align-items:center;
       justify-content:center;transition:background .18s var(--ease),color .18s var(--ease),transform .12s var(--ease)}
     .mnav-pill svg{width:20px;height:20px}
-    .mnav-btn.on .mnav-pill{background:var(--sec-soft);color:var(--on-sec-soft)}
+    .mnav-btn.on .mnav-pill{background:var(--sec-soft);color:var(--on-sec-soft);animation:mnavPillPop .24s var(--ease-decel)}
+    @media (prefers-reduced-motion:reduce){
+      .wrap.mob-courses aside,main.mob-pane-anim,.lgmodal:not(#lgmodal),.lgmodal:not(#lgmodal) .login,.mnav-btn.on .mnav-pill{animation:none!important}
+    }
     .mnav-btn.on .mnav-lbl{color:var(--fg);font-weight:700}
     .mnav-btn:active .mnav-pill{transform:scale(.94)}
     .mnav-lbl{font-size:11px;font-weight:500;line-height:1.15;white-space:nowrap}
@@ -3019,8 +3025,27 @@ function syncMobileControlDock(){
     }
   }
 }
+let mobLastKey = 'courses:0', mobPaneAnimTimer = 0;
+function pulseMobilePane(el){
+  if (!el || !el.classList || !isMobileUI()) return;
+  clearTimeout(mobPaneAnimTimer);
+  el.classList.remove('mob-pane-anim');
+  void el.offsetWidth;
+  el.classList.add('mob-pane-anim');
+  const done = () => {
+    clearTimeout(mobPaneAnimTimer);
+    mobPaneAnimTimer = 0;
+    if (el.removeEventListener) el.removeEventListener('animationend', done);
+    el.classList.remove('mob-pane-anim');
+  };
+  if (el.addEventListener) el.addEventListener('animationend', done);
+  mobPaneAnimTimer = setTimeout(done, 280);
+}
 function setMobileNavState(tab){
   if (!tab) return;
+  const nextKey = tab + ':' + (mobWatching ? 1 : 0);
+  const changed = nextKey !== mobLastKey;
+  mobLastKey = nextKey;
   mobTab = tab;
   if (tab === 'courses') mobContentTab = tab;
   if (wrapEl) {
@@ -3029,6 +3054,7 @@ function setMobileNavState(tab){
   }
   document.querySelectorAll('.mnav-btn').forEach(b => b.classList.toggle('on', b.dataset.mnav === tab));
   syncMobileControlDock();
+  if (changed && tab === 'courses' && mobWatching) pulseMobilePane($('#mainPane'));
 }
 function enterMobileWatch(){
   mobWatching = true;

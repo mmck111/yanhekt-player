@@ -1463,8 +1463,24 @@ public class MainActivity extends Activity {
     private void openDlPanel() {
         ui.post(new Runnable() { public void run() {
             if (dlPanel == null) return;
+            dlPanel.animate().cancel();
             rebuildDlRows();
-            dlPanel.setVisibility(android.view.View.VISIBLE);
+            boolean wasHidden = dlPanel.getVisibility() != android.view.View.VISIBLE;
+            if (wasHidden) {
+                dlPanel.setAlpha(0f);
+                dlPanel.setTranslationY(dp(14));
+                dlPanel.setVisibility(android.view.View.VISIBLE);
+                dlPanel.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(220)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.8f))
+                    .setListener(null)
+                    .start();
+            } else {
+                dlPanel.setAlpha(1f);
+                dlPanel.setTranslationY(0f);
+            }
             if (web != null) {
                 try { web.evaluateJavascript("window.__yhktDlOpened&&window.__yhktDlOpened()", null); } catch (Exception ignored) {}
             }
@@ -1570,7 +1586,12 @@ public class MainActivity extends Activity {
 
     private void closeDlPanel(final boolean notifyWeb) {
         ui.post(new Runnable() { public void run() {
-            if (dlPanel != null) dlPanel.setVisibility(android.view.View.GONE);
+            if (dlPanel != null) {
+                dlPanel.animate().cancel();
+                dlPanel.setAlpha(1f);
+                dlPanel.setTranslationY(0f);
+                dlPanel.setVisibility(android.view.View.GONE);
+            }
             if (notifyWeb && web != null) {
                 try { web.evaluateJavascript("window.__yhktDlClosed&&window.__yhktDlClosed()", null); } catch (Exception ignored) {}
             }
