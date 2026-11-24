@@ -51,9 +51,8 @@
   .bdempty{margin:auto;padding:26px 16px;text-align:center;color:var(--dim,#444746);font-size:13px;line-height:1.65}
   .bdstep{display:none}
   @media (max-width:900px){
+    #bdGoQueue,#bdClose{display:none}
     .bdbox{width:100%;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;padding:max(12px,env(safe-area-inset-top)) 14px 12px;animation:none}
-    .bdhead{padding-bottom:10px}
-    #bdGoQueue{display:none}
     .bdstep{display:grid;grid-template-columns:1fr 1fr;padding:3px;gap:3px;background:var(--panel,#f0f4f9);border:1px solid var(--line,rgba(68,71,70,.15));border-radius:999px;margin-top:10px;flex:none}
     .bdstep button{height:34px;border:none;border-radius:999px;background:transparent;color:var(--dim,#444746);font-size:12.5px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}
     .bdstep button.on{background:var(--sec-soft,#c2e7ff);color:var(--on-sec-soft,#001d35);box-shadow:var(--shadow-1,0 1px 2px rgba(0,0,0,.08))}

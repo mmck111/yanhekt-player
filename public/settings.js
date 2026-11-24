@@ -33,6 +33,7 @@
   .setfoot{display:flex;justify-content:flex-end;gap:10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line,rgba(68,71,70,.15))}
   .setscroll{min-height:0}
   @media (max-width:900px){
+    #setClose{display:none}
     .setbox{width:100%;max-width:none;height:100%;max-height:none;border-radius:0;border:none;box-shadow:none;padding:max(14px,env(safe-area-inset-top)) 16px 14px;display:flex;flex-direction:column;animation:none}
     .setscroll{flex:1;overflow:auto;padding-right:2px}
     .setgrid{grid-template-columns:1fr}

@@ -62,8 +62,11 @@ public class MainActivity extends Activity {
     private TextView dlTipView;
     private android.widget.Button dlOpenBtn;
     private android.widget.Button dlClearDoneBtn;
-    private android.widget.Button dlCloseBtn;
     private android.widget.Button cleanBtn;
+    private android.widget.LinearLayout loginBar;
+    private android.widget.Button loginBackBtn;
+    private TextView loginTipView;
+    private volatile boolean loginRedirecting = false;
     private volatile int ownedCount = -1;
     private volatile boolean darkTheme = false;
 
@@ -116,7 +119,9 @@ public class MainActivity extends Activity {
                 if (onPlayer) {
                     // 登录状态推给页面（顶栏的登录按钮据此显示「✓ 已登录」）
                     pushStatus();
-                    // 用户从登录页按返回键回来了：把底部那条提示收掉
+                    if (loginBar != null) loginBar.setVisibility(android.view.View.GONE);
+                    loginRedirecting = false;
+                    // 用户从登录页按返回键回来了：把提示收掉
                     if (loginSiteSeen && pendingLogin != null) {
                         loginSiteSeen = false;
                         pendingLogin = null;
@@ -125,6 +130,9 @@ public class MainActivity extends Activity {
                     }
                 } else {
                     loginSiteSeen = true;   // 已经真的站到官网登录页上了
+                    if (pendingLogin != null && loginBar != null) {
+                        loginBar.setVisibility(android.view.View.VISIBLE);
+                    }
                 }
             }
 
@@ -188,7 +196,31 @@ public class MainActivity extends Activity {
             }
         });
 
-        root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        android.widget.LinearLayout webWrap = new android.widget.LinearLayout(this);
+        webWrap.setOrientation(android.widget.LinearLayout.VERTICAL);
+
+        loginBar = new android.widget.LinearLayout(this);
+        loginBar.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        loginBar.setGravity(Gravity.CENTER_VERTICAL);
+        loginBar.setPadding(dp(12), dp(8), dp(14), dp(8));
+        loginBar.setVisibility(android.view.View.GONE);
+        loginBackBtn = mkBtn("← 返回播放器", 2, new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { backToPlayer(); }
+        });
+        loginBar.addView(loginBackBtn);
+        loginTipView = new TextView(this);
+        loginTipView.setText("请登录，成功后自动返回");
+        loginTipView.setTextSize(12.5f);
+        loginTipView.setPadding(dp(12), 0, 0, 0);
+        loginTipView.setSingleLine(true);
+        loginTipView.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        loginBar.addView(loginTipView, new android.widget.LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        webWrap.addView(loginBar, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        webWrap.addView(web, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        root.addView(webWrap, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         bar = new TextView(this);
         bar.setTextSize(13f);
@@ -206,20 +238,39 @@ public class MainActivity extends Activity {
         lp.gravity = Gravity.BOTTOM;
         root.addView(bar, lp);
 
-        // 下载面板（Material Design 3）：列出任务、排队状态、实时速度、重试/取消/清理
+        // 下载面板（Material Design 3）：列出任务、排队状态、实时速度、重试/取消/清理（留出底部 64dp 导航条）
         dlPanel = new android.widget.LinearLayout(this);
         dlPanel.setOrientation(android.widget.LinearLayout.VERTICAL);
-        dlPanel.setPadding(dp(18), dp(20), dp(18), dp(16));
+        dlPanel.setPadding(dp(18), dp(20), dp(18), dp(12));
         dlPanel.setVisibility(android.view.View.GONE);
         dlPanel.setClickable(true);
         if (Build.VERSION.SDK_INT >= 23) {
+            loginBar.setOnApplyWindowInsetsListener(new android.view.View.OnApplyWindowInsetsListener() {
+                @Override public android.view.WindowInsets onApplyWindowInsets(android.view.View v, android.view.WindowInsets ins) {
+                    v.setPadding(
+                        dp(12) + ins.getSystemWindowInsetLeft(),
+                        dp(8) + ins.getSystemWindowInsetTop(),
+                        dp(14) + ins.getSystemWindowInsetRight(),
+                        dp(8));
+                    return ins;
+                }
+            });
             dlPanel.setOnApplyWindowInsetsListener(new android.view.View.OnApplyWindowInsetsListener() {
                 @Override public android.view.WindowInsets onApplyWindowInsets(android.view.View v, android.view.WindowInsets ins) {
+                    ViewGroup.LayoutParams rawLp = v.getLayoutParams();
+                    if (rawLp instanceof FrameLayout.LayoutParams) {
+                        FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) rawLp;
+                        int wantBottom = dp(64) + ins.getSystemWindowInsetBottom();
+                        if (flp.bottomMargin != wantBottom) {
+                            flp.bottomMargin = wantBottom;
+                            v.setLayoutParams(flp);
+                        }
+                    }
                     v.setPadding(
                         dp(18) + ins.getSystemWindowInsetLeft(),
                         dp(20) + ins.getSystemWindowInsetTop(),
                         dp(18) + ins.getSystemWindowInsetRight(),
-                        dp(16) + ins.getSystemWindowInsetBottom());
+                        dp(12));
                     return ins;
                 }
             });
@@ -243,10 +294,6 @@ public class MainActivity extends Activity {
         dlTitleView.setTextSize(19f);
         dlTitleView.setTypeface(null, android.graphics.Typeface.BOLD);
         head.addView(dlTitleView, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        dlCloseBtn = mkBtn("关闭", new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) { closeDlPanel(); }
-        });
-        head.addView(dlCloseBtn);
         dlPanel.addView(head, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -289,8 +336,10 @@ public class MainActivity extends Activity {
         dlPanel.addView(dlScroll, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        root.addView(dlPanel, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        FrameLayout.LayoutParams dlRootLp = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        dlRootLp.bottomMargin = dp(64);
+        root.addView(dlPanel, dlRootLp);
         setContentView(root);
         applyNativeTheme();
         startEngine();
@@ -480,37 +529,59 @@ public class MainActivity extends Activity {
         lastLoginTarget = which;
         pendingLogin = which;
         loginSiteSeen = false;
+        loginRedirecting = false;
+        forceNext = false;
         capturedOld = null; capturedY2 = null;
-        bar.setVisibility(TextView.VISIBLE);
-        bar.setText(y2 ? "在新版登录页登录，登录好后按返回键回到播放器"
-                       : "在老平台登录页登录，登录好后按返回键回到播放器");
-        bar.setOnClickListener(new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) { backToPlayer(); }
-        });
+        bar.setOnClickListener(null);
+        bar.setVisibility(TextView.GONE);
+        if (loginTipView != null) {
+            loginTipView.setText(y2 ? "请登录新版延河，成功后自动返回" : "请登录老平台，成功后自动返回");
+        }
+        if (loginBar != null) loginBar.setVisibility(android.view.View.VISIBLE);
         web.loadUrl(y2 ? Y2_SITE + "/portal/" : OLD_SITE);
 
-        // 后台默默把登录态交给引擎；用户在网站那边登完、返回时已经生效
+        // 后台持续轮询直到成功捕获有效登录态，然后自动跳回播放器
         new Thread(new Runnable() { public void run() {
-            String tok = y2 ? waitY2Token(300000) : waitOldToken(300000);
-            if (tok == null) return;
-            String res = postLoginCandidates(y2 ? "/api/y2/login" : "/api/login", y2 ? "jwt" : "token", tok);
-            Log.i(TAG, "login(" + which + ") -> " + res);
-            if (!"OK".equals(res) && !y2) {
-                // 老平台的网页现在发的可能已经是新版登录态，静默再试一次
-                String r2 = postLoginCandidates("/api/y2/login", "jwt", tok);
-                Log.i(TAG, "login(old)->y2 -> " + r2);
-            }
-            final boolean okNow = "OK".equals(res);
-            ui.post(new Runnable() { public void run() {
-                if (onPlayerPage()) {
-                    pendingLogin = null;
-                    ensureSessionCookies();
-                    openPlayer(y2 ? "/y2" : "/");
-                    watchExpiry();
-                } else if (okNow && pendingLogin != null) {
-                    bar.setText("✓ 已获取登录态 — 按返回键或点此回到播放器");
+            long deadline = System.currentTimeMillis() + 300000L;
+            String lastRejected = "";
+            while (System.currentTimeMillis() < deadline && pendingLogin != null && !forceNext) {
+                String tok = y2 ? waitY2Token(1800) : waitOldToken(1800);
+                if (forceNext || pendingLogin == null) return;
+                if (tok == null || tok.equals(lastRejected)) {
+                    sleep(600);
+                    continue;
                 }
-            }});
+                String res = postLoginCandidates(y2 ? "/api/y2/login" : "/api/login", y2 ? "jwt" : "token", tok);
+                Log.i(TAG, "login(" + which + ") -> " + res);
+                boolean okRes = "OK".equals(res);
+                boolean okR2 = false;
+                if (!okRes && !y2) {
+                    String r2 = postLoginCandidates("/api/y2/login", "jwt", tok);
+                    Log.i(TAG, "login(old)->y2 -> " + r2);
+                    okR2 = "OK".equals(r2);
+                }
+                if (!okRes && !okR2) {
+                    lastRejected = tok;
+                    sleep(800);
+                    continue;
+                }
+                final boolean destY2 = y2 || okR2;
+                ui.post(new Runnable() { public void run() {
+                    if (loginRedirecting) return;
+                    loginRedirecting = true;
+                    pendingLogin = null;
+                    loginSiteSeen = false;
+                    forceNext = true;
+                    if (loginTipView != null) loginTipView.setText("✓ 登录成功，正在自动返回…");
+                    ui.postDelayed(new Runnable() { public void run() {
+                        if (loginBar != null) loginBar.setVisibility(android.view.View.GONE);
+                        ensureSessionCookies();
+                        openPlayer(destY2 ? "/y2" : "/");
+                        watchExpiry();
+                    }}, 180);
+                }});
+                return;
+            }
         }}).start();
     }
 
@@ -524,16 +595,19 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 从登录页回播放器（返回键 / 点底部提示条）：回来之前再抓一次登录态，别等后台轮询 */
+    /** 从登录页回播放器（返回键 / 点顶部返回按钮）：回来之前再抓一次登录态，别等后台轮询 */
     private void backToPlayer() {
         final String which = pendingLogin != null ? pendingLogin : lastLoginTarget;
         final boolean y2 = "y2".equals(which);
         pendingLogin = null;
         loginSiteSeen = false;
+        loginRedirecting = false;
         forceNext = true;              // 后台的等待循环可以停了
         bar.setOnClickListener(null);
         bar.setVisibility(TextView.GONE);
+        if (loginBar != null) loginBar.setVisibility(android.view.View.GONE);
         new Thread(new Runnable() { public void run() {
+            boolean useY2 = y2;
             if (which != null) {
                 String tok = null;
                 if (y2) {
@@ -546,12 +620,16 @@ public class MainActivity extends Activity {
                 if (tok != null) {
                     String res = postLoginCandidates(y2 ? "/api/y2/login" : "/api/login", y2 ? "jwt" : "token", tok);
                     Log.i(TAG, "back-login(" + which + ") -> " + res);
-                    if (!"OK".equals(res) && !y2) postLoginCandidates("/api/y2/login", "jwt", tok);
+                    if (!"OK".equals(res) && !y2) {
+                        String r2 = postLoginCandidates("/api/y2/login", "jwt", tok);
+                        if ("OK".equals(r2)) useY2 = true;
+                    }
                 }
             }
+            final boolean destY2 = useY2;
             ui.post(new Runnable() { public void run() {
                 ensureSessionCookies();
-                openPlayer(y2 ? "/y2" : "/");
+                openPlayer(destY2 ? "/y2" : "/");
                 watchExpiry();
             }});
         }}).start();
@@ -633,7 +711,7 @@ public class MainActivity extends Activity {
             // 2) 主要还是 localStorage.auth —— 电脑版去读 leveldb 拿的就是这个
             String js = jsEval(TOKEN_JS);
             if (js != null && js.length() > 20) return js;
-            sleep(1200);
+            sleep(450);
         }
         return null;
     }
@@ -670,7 +748,7 @@ public class MainActivity extends Activity {
             String all = (capturedY2 == null ? "" : capturedY2 + "\n") + jsEval(Y2_TOKEN_JS);
             String tk = all;
             if (tk != null && tk.length() > 40) return tk;
-            sleep(1200);
+            sleep(450);
         }
         return null;
     }
@@ -688,6 +766,7 @@ public class MainActivity extends Activity {
     private void openPlayer(final String path) {
         ui.post(new Runnable() { public void run() {
             bar.setVisibility(TextView.GONE);
+            if (loginBar != null) loginBar.setVisibility(android.view.View.GONE);
             // setCookie 是异步落盘的：先把会话 cookie 重新写一遍并读回确认，再导航，
             // 否则页面可能在 cookie 到位之前就请求 /api/status，显示"未登录"
             ensureSessionCookies();
@@ -815,16 +894,18 @@ public class MainActivity extends Activity {
     private void applyNativeTheme() {
         applySystemBars();
         if (rootView != null) rootView.setBackgroundColor(Color.parseColor(darkTheme ? "#131314" : "#f8fafd"));
+        if (loginBar != null) loginBar.setBackgroundColor(Color.parseColor(darkTheme ? "#1b1c1f" : "#f0f4f9"));
+        if (loginTipView != null) loginTipView.setTextColor(Color.parseColor(darkTheme ? "#c4c7c5" : "#444746"));
+        styleBtn(loginBackBtn, 2);
         if (bar != null) {
             bar.setBackgroundColor(Color.parseColor(darkTheme ? "#24262b" : "#d3e3fd"));
             bar.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#041e49"));
         }
-        if (dlPanel != null) dlPanel.setBackgroundColor(Color.parseColor(darkTheme ? "#fa131314" : "#faf8fafd"));
+        if (dlPanel != null) dlPanel.setBackgroundColor(Color.parseColor(darkTheme ? "#131314" : "#f8fafd"));
         if (dlTitleView != null) dlTitleView.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#1f1f1f"));
         if (dlTipView != null) dlTipView.setTextColor(Color.parseColor(darkTheme ? "#c4c7c5" : "#444746"));
         styleBtn(dlOpenBtn, 2);
         styleBtn(dlClearDoneBtn, 0);
-        styleBtn(dlCloseBtn, 0);
         styleBtn(cleanBtn, 3);
         if (cleanBtn != null) cleanBtn.setAlpha(ownedCount > 0 ? 1f : 0.45f);
         rebuildDlRows();
@@ -1374,11 +1455,19 @@ public class MainActivity extends Activity {
         openDlPanel();
     }
 
+    @JavascriptInterface
+    public void closeDownloads() {
+        closeDlPanel(false);
+    }
+
     private void openDlPanel() {
         ui.post(new Runnable() { public void run() {
             if (dlPanel == null) return;
             rebuildDlRows();
             dlPanel.setVisibility(android.view.View.VISIBLE);
+            if (web != null) {
+                try { web.evaluateJavascript("window.__yhktDlOpened&&window.__yhktDlOpened()", null); } catch (Exception ignored) {}
+            }
         }});
         refreshOwnedCount();
     }
@@ -1476,8 +1565,15 @@ public class MainActivity extends Activity {
     }
 
     private void closeDlPanel() {
+        closeDlPanel(true);
+    }
+
+    private void closeDlPanel(final boolean notifyWeb) {
         ui.post(new Runnable() { public void run() {
             if (dlPanel != null) dlPanel.setVisibility(android.view.View.GONE);
+            if (notifyWeb && web != null) {
+                try { web.evaluateJavascript("window.__yhktDlClosed&&window.__yhktDlClosed()", null); } catch (Exception ignored) {}
+            }
         }});
         updateChip();
     }
