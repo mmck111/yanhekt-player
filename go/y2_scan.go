@@ -255,7 +255,7 @@ func y2DatesBetween(from, to string, cap int) []string {
 func y2ScanDates(jwt, keyword string, dates []string, concurrency, maxEmpty int) (map[string][]y2Session, error) {
 	map_ := map[string][]y2Session{}
 	emptyStreak := 0
-	const batch = 7
+	const batch = 14
 
 	for base := 0; base < len(dates); base += batch {
 		end := base + batch

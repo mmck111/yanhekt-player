@@ -399,7 +399,7 @@ func y2ScheduleMap(jwt string, userId, days int) (map[string][]y2ScheduleRow, er
 		anyData := false
 		var firstErr error
 		var mu sync.Mutex
-		sem := make(chan struct{}, 4)
+		sem := make(chan struct{}, 10)
 		var wg sync.WaitGroup
 		for _, w := range wins {
 			wg.Add(1)
@@ -1108,14 +1108,13 @@ type y2CourseVideosResult struct {
 }
 
 // y2CourseVideos 一门课"到底有没有能看的录像"，以及这些录像的讲次列表。
-//
-// 判定顺序：
-//  1. 有 sub_status=6 的 → 逐个真取一次视频流，取到才算（状态不可靠，必须以流为准）
-//  2. 只有 5 / 未知 状态的 → 同样逐讲验流
-//  3. 只有 1/2/3（直播中/未开始/处理中）→ 没有录像
-//
-// 另外补一次教室名：讲次自带就用，没带就找 get-sub-info 要（只问最新一讲）。
 func y2CourseVideos(jwt, courseID, account string) (*y2CourseVideosResult, error) {
+	return y2CourseVideosMode(jwt, courseID, account, false)
+}
+
+// y2CourseVideosMode fastForOpen=true 时用于点开课程页面：若 detail 已返回 status=6 讲次则直接秒出表，
+// 省去阻塞的抽样验流与二次 get-sub-info 等待（仅在后台静默预热首讲流地址）。
+func y2CourseVideosMode(jwt, courseID, account string, fastForOpen bool) (*y2CourseVideosResult, error) {
 	d, err := y2CourseDetail(jwt, courseID, account)
 	if err != nil {
 		return nil, err
@@ -1127,24 +1126,47 @@ func y2CourseVideos(jwt, courseID, account string) (*y2CourseVideosResult, error
 	// 不能只看 status=6：实测常有一门课 5 讲里只有 1 讲是 6、其余是 5（已结束），
 	// 只看 6 就会把另外 4 讲（其实也有录像）漏掉，卡片写 5 讲、点进去只剩 1 讲。
 	candidates := []y2Session{}
+	hasStatus6 := false
 	for _, s := range all {
+		if y2IsRecordingStatus(s.Status) {
+			hasStatus6 = true
+		}
 		if y2IsRecordingStatus(s.Status) || y2MaybeRecording(s.Status) {
 			candidates = append(candidates, s)
 		}
 	}
 	probed := len(candidates) > 0
 
+	if fastForOpen && len(candidates) > 0 && hasStatus6 {
+		// 直接返回完整候选列表，并在后台静默预热最新一讲的流信息，实现打开课程讲次零阻塞
+		go func(j, cid, sid string) {
+			_, _ = y2SubInfoOf(j, cid, sid)
+		}(jwt, courseID, candidates[0].SubID)
+		return &y2CourseVideosResult{
+			courseID:      courseID,
+			title:         d.title,
+			termName:      d.termName,
+			sessions:      candidates,
+			candidates:    candidates,
+			videoCount:    len(candidates),
+			totalSessions: len(all),
+			room:          candidates[0].Room,
+			latestDate:    candidates[0].Date,
+			probed:        true,
+			verified:      true,
+			countExact:    true,
+		}, nil
+	}
+
 	sessions := []y2Session{}
 	verified := true
-	// 逐讲验流很贵：一门课 12 讲就是十几次请求，几十门课一起验会被限流，
-	// 用户也要等一分钟。判断"有没有录像"抽 4 讲就够；讲次 ≤ 4 的课才是准数。
 	probeLimit := 0
 	if len(candidates) > 3 {
 		probeLimit = 3
 	}
 	countExact := probeLimit == 0
 	if len(candidates) > 0 {
-		playable, failed, n := y2VerifySessions(jwt, courseID, candidates, probeLimit, 8)
+		playable, failed, n := y2VerifySessions(jwt, courseID, candidates, probeLimit, 10)
 		sessions = playable
 		// 全部请求都失败（网络/权限）→ 退回状态判断，但标记未验证
 		if len(sessions) == 0 && failed > 0 && failed == n {
@@ -1153,12 +1175,12 @@ func y2CourseVideos(jwt, courseID, account string) (*y2CourseVideosResult, error
 		}
 	}
 
-	// 教室：先用讲次自带的，没有就问 get-sub-info（只问最新一讲）
+	// 教室：先用讲次自带的，没有且不是点开快速路径才去问 get-sub-info
 	room := ""
 	if len(sessions) > 0 {
 		room = sessions[0].Room
 	}
-	if room == "" && len(sessions) > 0 {
+	if room == "" && !fastForOpen && len(sessions) > 0 {
 		if info, err := y2SubInfoOf(jwt, courseID, sessions[0].SubID); err == nil && info != nil {
 			room = info.Room
 		}

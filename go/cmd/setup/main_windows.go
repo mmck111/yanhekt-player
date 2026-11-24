@@ -458,7 +458,7 @@ func drawCheckboxItem(s *setupState, di *winDrawItemStruct) uintptr {
 		dpi = 96
 	}
 	checked := s.chkDesktopOn
-	label := "创建桌面与开始菜单快捷方式（默认不选）"
+	label := "创建桌面与开始菜单快捷方式"
 	if di.CtlID == idChkLaunch {
 		checked = s.chkLaunchOn
 		label = "安装完成后立即启动 延河课堂在线播放器"

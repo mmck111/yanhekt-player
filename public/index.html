@@ -1573,24 +1573,8 @@ function backToCourseList({ fromPop = false } = {}){
 function rowBack(title){
   const el = document.createElement('div');
   el.className = 'backrow';
-  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (title ? '<b>' + esc(title) + '</b>' : '')
-    + '<button class="dlcancel" id="rowBatchBtn" type="button" style="flex:none;margin-left:6px;background:rgba(52,211,153,.16);color:#9bf2cd;border-color:rgba(52,211,153,.4)">📦 批量下载</button>';
+  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (title ? '<b>' + esc(title) + '</b>' : '');
   el.onclick = () => { backToCourseList(); };
-  const bb = el.querySelector('#rowBatchBtn');
-  if (bb) bb.onclick = e => {
-    e.stopPropagation();
-    closeDrawer();
-    if (window.yhktBatch && curCourse && curCourse.course) {
-      const c = curCourse.course;
-      window.yhktBatch.open({
-        platform: 'old',
-        id: String(c.id),
-        title: c.name || ('课程 ' + c.id),
-        teacher: (c.professors || []).join('、'),
-        term: c.year ? (c.year + ' 第' + c.semester + '学期') : '',
-      });
-    }
-  };
   return el;
 }
 
@@ -2330,6 +2314,7 @@ function applyAppSettings(s){
           title: c.name || ('课程 ' + c.id),
           teacher: (c.professors || []).join('、'),
           term: c.year ? (c.year + ' 第' + c.semester + '学期') : '',
+          sessions: curCourse.sessions || [],
         };
       },
     });

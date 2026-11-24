@@ -299,7 +299,7 @@ func y2ScanWindows(jwt, q string, windows []y2WindowFull) (map[string][]y2Sessio
 		if len(dates) == 0 {
 			continue
 		}
-		part, err := y2ScanDates(jwt, q, dates, 10, 30)
+		part, err := y2ScanDates(jwt, q, dates, 14, 30)
 		if err != nil {
 			return nil, err
 		}
@@ -380,11 +380,12 @@ func y2VerifySessions(jwt, courseID string, sessions []y2Session, limit, conc in
 	if probed == 0 {
 		return playable, 0, 0
 	}
-	if conc <= 0 {
-		conc = 6
-	}
 	var mu sync.Mutex
-	sem := make(chan struct{}, conc)
+	sem := make(chan struct{}, 12)
+	if conc > 12 {
+		sem = make(chan struct{}, conc)
+	}
+	_ = conc
 	var wg sync.WaitGroup
 	for _, s := range list {
 		wg.Add(1)
@@ -419,24 +420,39 @@ func probeStream(jwt, courseID, subID string) bool {
 // 有流的情况很常见，所以这里逐讲真取一次视频流，取到才算。全部请求都失败
 // （网络/权限）时退回状态判断，别把故障当成"没录像"。
 func pickPlayable(jwt, courseID string, rows []y2Session) []y2Session {
+	return pickPlayableMode(jwt, courseID, rows, false)
+}
+
+func pickPlayableMode(jwt, courseID string, rows []y2Session, fastForOpen bool) []y2Session {
 	if len(rows) == 0 {
 		return []y2Session{}
 	}
 	six := []y2Session{}
+	recorded := []y2Session{}
 	for _, r := range rows {
-		if y2IsRecordingStatus(r.Status) || y2MaybeRecording(r.Status) {
+		if y2IsRecordingStatus(r.Status) {
 			six = append(six, r)
 		}
+		if y2IsRecordingStatus(r.Status) || y2MaybeRecording(r.Status) {
+			recorded = append(recorded, r)
+		}
 	}
-	cand := six
+	if fastForOpen && len(six) > 0 {
+		sort.SliceStable(recorded, func(i, j int) bool { return recorded[i].StartAt > recorded[j].StartAt })
+		if len(recorded) > 0 {
+			go func(j, cid, sid string) { _, _ = y2SubInfoOf(j, cid, sid) }(jwt, courseID, recorded[0].SubID)
+		}
+		return recorded
+	}
+	cand := recorded
 	if len(cand) == 0 {
 		cand = rows
 	}
-	playable, failed, probed := y2VerifySessions(jwt, courseID, cand, 0, 6)
+	playable, failed, probed := y2VerifySessions(jwt, courseID, cand, 0, 12)
 	if len(playable) > 0 || failed < probed {
 		return playable
 	}
-	return six
+	return recorded
 }
 
 // ---------------------------------------------------------------- 一门课的录像
@@ -460,7 +476,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 	var detail *y2CourseVideosResult
 
 	// 1. 讲次直读
-	d, err := y2CourseVideos(jwt, courseID, id.account)
+	d, err := y2CourseVideosMode(jwt, courseID, id.account, deep)
 	if err == nil {
 		detail = d
 		// 点开课程（deep）：要展示**完整讲次表**，不能只给探过流的那几讲。
@@ -498,9 +514,9 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 		notes = append(notes, "讲次直读："+err.Error())
 	}
 
-	// 2. 自己的课表：一次拉 150 天（约 3 秒，之后走缓存）。
+	// 2. 自己的课表：一次拉 150 天（登录后已后台预热，命中缓存可 0ms 返回）。
 	//    只有"详情接口没给讲次"（没权限 / 接口没数据）时才需要它；详情已经给出
-	//    完整讲次表就不用拉，省 3 秒。
+	//    完整讲次表就不用等，省数秒。
 	needSchedule := detail == nil || len(detail.sessions) == 0
 	if needSchedule {
 		if mp, serr := y2Schedule(jwt, id); serr == nil {
@@ -509,7 +525,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 			for _, s := range list {
 				rows = append(rows, y2ScheduleToSession(s))
 			}
-			playable := pickPlayable(jwt, courseID, rows)
+			playable := pickPlayableMode(jwt, courseID, rows, deep)
 			if len(playable) > 0 {
 				return y2RememberIf(deep, key, &y2VideosData{
 					source: "schedule-table", verified: true, note: strings.Join(notes, "；"),
@@ -532,7 +548,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 				windows := []y2WindowFull{{key: w.from + "~" + w.to, from: w.from, to: w.to}}
 				if mp, err := y2ScanWindows(jwt, q, windows); err == nil {
 					if rows := mp[courseID]; len(rows) > 0 {
-						list := pickPlayable(jwt, courseID, rows)
+						list := pickPlayableMode(jwt, courseID, rows, deep)
 						return y2RememberIf(deep, key, &y2VideosData{
 							source: "schedule-keyword", verified: len(list) > 0, note: strings.Join(notes, "；"),
 							sessions: list, room: firstRoom(list),
@@ -540,9 +556,9 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 						}), nil
 					}
 				}
-			} else if mp, err := y2ScanByKeyword(jwt, q, 100, 8, 21); err == nil {
+			} else if mp, err := y2ScanByKeyword(jwt, q, 100, 12, 21); err == nil {
 				if rows := mp[courseID]; len(rows) > 0 {
-					list := pickPlayable(jwt, courseID, rows)
+					list := pickPlayableMode(jwt, courseID, rows, deep)
 					return y2RememberIf(deep, key, &y2VideosData{
 						source: "schedule-keyword", verified: len(list) > 0, note: strings.Join(notes, "；"),
 						sessions: list, room: firstRoom(list),
@@ -554,7 +570,7 @@ func y2Videos(jwt string, id *y2Identity, courseID string, allowScan bool, q, te
 		// 3b. 单独扫这门课
 		raw, err := y2ScanSessions(jwt, courseID, "", 60, 30)
 		if err == nil {
-			list := pickPlayable(jwt, courseID, y2FilterRecordings(raw))
+			list := pickPlayableMode(jwt, courseID, y2FilterRecordings(raw), deep)
 			if len(list) > 0 {
 				return y2RememberIf(deep, key, &y2VideosData{
 					source: "schedule", verified: true, note: strings.Join(notes, "；"),

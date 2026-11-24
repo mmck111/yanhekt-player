@@ -1169,23 +1169,8 @@ window.addEventListener('popstate', () => {
 function rowBack(c){
   const el = document.createElement('div');
   el.className = 'backrow';
-  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (c && c.title ? '<b>' + esc(c.title) + '</b>' : '')
-    + '<button class="dlcancel" id="rowBatchBtn" type="button" style="flex:none;margin-left:6px;background:rgba(52,211,153,.16);color:#9bf2cd;border-color:rgba(52,211,153,.4)">📦 批量下载</button>';
+  el.innerHTML = '<span>←</span><span class="bk">返回课程列表</span>' + (c && c.title ? '<b>' + esc(c.title) + '</b>' : '');
   el.onclick = () => { backToCourseList(); };
-  const bb = el.querySelector('#rowBatchBtn');
-  if (bb) bb.onclick = e => {
-    e.stopPropagation();
-    closeDrawer();
-    if (window.yhktBatch && curCourse) {
-      window.yhktBatch.open({
-        platform: 'y2',
-        id: String(curCourse.courseId),
-        title: curCourse.title || ('课程 ' + curCourse.courseId),
-        teacher: curCourse.teacher || '',
-        term: curCourse.termName || '',
-      });
-    }
-  };
   return el;
 }
 
@@ -1215,7 +1200,7 @@ async function loadSessions(c, el, opts){
   $('#now').textContent = c.title || '读取中…';
   $('#nowSub').textContent = [c.teacher, c.termName].filter(Boolean).join(' · ') || '正在读取讲次列表…';
   $('#fsTitle').textContent = $('#now').textContent;
-  $('#list').innerHTML = '<div class="splash"><span>正在取讲次…<br><span class="tiny">新版接口直接列全量；拿不到时退回扫课表，约 2~10 秒</span></span></div>';
+  $('#list').innerHTML = '<div class="splash"><span>正在读取讲次列表…<br><span class="tiny">优先从详情接口秒取；必要时自动补全课表记录</span></span></div>';
   try{
     const url = '/api/y2/sessions?courseId=' + encodeURIComponent(c.courseId)
       + '&q=' + encodeURIComponent(curQuery)
@@ -2208,6 +2193,7 @@ function applyAppSettings(s){
           title: curCourse.title || ('课程 ' + curCourse.courseId),
           teacher: curCourse.teacher || '',
           term: curCourse.termName || '',
+          sessions: curCourse._sessions || [],
         };
       },
     });

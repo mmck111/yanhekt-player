@@ -84,6 +84,34 @@ type y2StatusResp struct {
 	ExpiresAt int64 `json:"expiresAt"`
 }
 
+var (
+	y2SchedWarmMu sync.Mutex
+	y2SchedWarm   = map[string]bool{}
+)
+
+func y2WarmScheduleAsync(jwt string, id *y2Identity) {
+	if jwt == "" || id == nil {
+		return
+	}
+	if _, ok := y2ScheduleCachedOnly(jwt); ok {
+		return
+	}
+	k := y2JwtTail(jwt)
+	y2SchedWarmMu.Lock()
+	if y2SchedWarm[k] {
+		y2SchedWarmMu.Unlock()
+		return
+	}
+	y2SchedWarm[k] = true
+	y2SchedWarmMu.Unlock()
+	go func() {
+		_, _ = y2Schedule(jwt, id)
+		y2SchedWarmMu.Lock()
+		delete(y2SchedWarm, k)
+		y2SchedWarmMu.Unlock()
+	}()
+}
+
 func handleY2Status(w http.ResponseWriter, r *http.Request) {
 	jwt := y2Token(r)
 	id := y2Who(jwt)
@@ -91,6 +119,7 @@ func handleY2Status(w http.ResponseWriter, r *http.Request) {
 	if id != nil {
 		resp.UserID = id.userId
 		resp.ExpiresAt = y2JwtExp(jwt)
+		y2WarmScheduleAsync(jwt, id)
 	}
 	writeJSON(w, 200, resp)
 }

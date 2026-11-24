@@ -204,6 +204,7 @@
     }
     const seq = ++searchSeq;
     const box = modal.querySelector('#bdCourseList');
+    box.dataset.fromCur = '0';
     box.innerHTML = '<div class="bdempty">正在检索课程…</div>';
 
     const jobs = [];
@@ -273,6 +274,40 @@
     }
   }
 
+  function mapY2Session(s, idx) {
+    return {
+      id: String(s.subId),
+      date: s.date || '',
+      title: (s.date || '—') + (s.period ? ' ' + s.period : '') + (s.title && s.title !== s.period ? ' · ' + s.title : ''),
+      subText: [s.duration ? Math.round(s.duration / 60) + ' 分钟' : '', s.room || ''].filter(Boolean).join(' · '),
+      hasMain: true,
+      hasVga: true,
+      playable: true,
+      checked: false,
+      idx,
+    };
+  }
+
+  function mapOldSession(s, idx) {
+    const hm = !!s.main;
+    const hv = !!s.vga;
+    return {
+      id: String(s.id),
+      date: s.date || '',
+      title: (s.date || '—') + (s.week ? ' 第' + s.week + '周' : '') + (s.title ? ' · ' + s.title : ''),
+      subText: [
+        s.duration ? Math.round(s.duration / 60) + ' 分钟' : (hm || hv ? '可播' : '无录像'),
+        hv && hm ? '全景+课件' : (hm ? '仅全景' : (hv ? '仅课件' : '')),
+        s.location || '',
+      ].filter(Boolean).join(' · '),
+      hasMain: hm,
+      hasVga: hv,
+      playable: hm || hv,
+      checked: false,
+      idx,
+    };
+  }
+
   async function loadCourseSessions(course) {
     activeCourse = course;
     sessions = [];
@@ -284,6 +319,13 @@
     modal.querySelector('#bdSelAll').disabled = true;
     modal.querySelector('#bdSelNone').disabled = true;
     updateCounts();
+
+    if (Array.isArray(course.sessions) && course.sessions.length > 0) {
+      sessions = course.sessions.map((s, idx) => (course.platform === 'y2' ? mapY2Session(s, idx) : mapOldSession(s, idx)));
+      renderSessions();
+      return;
+    }
+
     sBox.innerHTML = '<div class="bdempty">正在读取课程讲次列表…</div>';
 
     if (course.platform === 'y2') {
@@ -302,18 +344,7 @@
           sBox.innerHTML = `<div class="bdempty">读取失败：${esc(j.error || '未知错误')}</div>`;
           return;
         }
-        const rawList = j.sessions || [];
-        sessions = rawList.map((s, idx) => ({
-          id: String(s.subId),
-          date: s.date || '',
-          title: (s.date || '—') + (s.period ? ' ' + s.period : '') + (s.title && s.title !== s.period ? ' · ' + s.title : ''),
-          subText: [s.duration ? Math.round(s.duration / 60) + ' 分钟' : '', s.room || ''].filter(Boolean).join(' · '),
-          hasMain: true,
-          hasVga: true,
-          playable: true,
-          checked: false,
-          idx,
-        }));
+        sessions = (j.sessions || []).map((s, idx) => mapY2Session(s, idx));
       } catch (e) {
         sBox.innerHTML = `<div class="bdempty">请求失败：${esc(e.message)}</div>`;
         return;
@@ -332,26 +363,7 @@
           sBox.innerHTML = `<div class="bdempty">读取失败：${esc(j.error || '未知错误')}</div>`;
           return;
         }
-        const rawList = j.sessions || [];
-        sessions = rawList.map((s, idx) => {
-          const hm = !!s.main;
-          const hv = !!s.vga;
-          return {
-            id: String(s.id),
-            date: s.date || '',
-            title: (s.date || '—') + (s.week ? ' 第' + s.week + '周' : '') + (s.title ? ' · ' + s.title : ''),
-            subText: [
-              s.duration ? Math.round(s.duration / 60) + ' 分钟' : (hm || hv ? '可播' : '无录像'),
-              hv && hm ? '全景+课件' : (hm ? '仅全景' : (hv ? '仅课件' : '')),
-              s.location || '',
-            ].filter(Boolean).join(' · '),
-            hasMain: hm,
-            hasVga: hv,
-            playable: hm || hv,
-            checked: false,
-            idx,
-          };
-        });
+        sessions = (j.sessions || []).map((s, idx) => mapOldSession(s, idx));
       } catch (e) {
         sBox.innerHTML = `<div class="bdempty">请求失败：${esc(e.message)}</div>`;
         return;
@@ -582,6 +594,21 @@
     if (platEl && optsCfg.defaultPlatform) platEl.value = optsCfg.defaultPlatform;
     modal.style.display = 'flex';
     if (preCourse && preCourse.id) {
+      const box = modal.querySelector('#bdCourseList');
+      if (box && (!box.querySelector('.bdrow') || box.querySelector('.bdempty') || box.dataset.fromCur === '1')) {
+        box.dataset.fromCur = '1';
+        box.innerHTML = '';
+        const row = document.createElement('div');
+        row.className = 'bdrow on';
+        row.innerHTML = `<div class="t"><span class="bdtag ${preCourse.platform}">${preCourse.platform === 'y2' ? '新版' : '老平台'}</span><span>${esc(preCourse.title)}</span><span class="bdtag">当前课程</span></div>`
+          + `<div class="m">${preCourse.term ? `<span>${esc(preCourse.term)}</span>` : ''}${preCourse.teacher ? `<span>${esc(preCourse.teacher)}</span>` : ''}</div>`;
+        row.onclick = () => {
+          box.querySelectorAll('.bdrow').forEach(x => x.classList.remove('on'));
+          row.classList.add('on');
+          loadCourseSessions(preCourse);
+        };
+        box.appendChild(row);
+      }
       loadCourseSessions(preCourse);
     } else {
       const inp = modal.querySelector('#bdSearchInp');
