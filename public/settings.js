@@ -144,9 +144,16 @@
   function renderForm(){
     if (!modal) return;
     const desk = !!(isDesktop || (window.yhktApp && window.yhktApp.isDesktop));
+    const androidApp = !desk && !!(window.yhktApp && window.yhktApp.login);
     modal.querySelector('#setDesktopSec').style.display = desk ? '' : 'none';
     modal.querySelector('#setResetDir').style.display = desk ? '' : 'none';
-    modal.querySelector('#setBrowserNote').style.display = desk ? 'none' : '';
+    const noteEl = modal.querySelector('#setBrowserNote');
+    noteEl.style.display = desk ? 'none' : '';
+    if (androidApp) {
+      noteEl.textContent = '当前为手机应用模式，视频默认保存至系统「内部存储/Download」（可在「下载管理」查看与播放）；播放偏好对老/新版页面同时生效。';
+    } else {
+      noteEl.textContent = '当前为浏览器模式，下载路径由浏览器自身设置管理；播放偏好对老/新版页面同时生效。';
+    }
     modal.querySelector('#setDirInput').value = state.downloadDir || '';
     modal.querySelector('#setDirEff').textContent = effectiveDir ? ('当前实际保存目录：' + effectiveDir) : '';
     const lowEl = modal.querySelector('#setLowIlWarn');

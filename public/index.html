@@ -728,6 +728,7 @@ function applyTheme(t, persist){
   const eff = getEffectiveTheme();
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', eff === 'dark' ? '#1b1c1f' : '#f0f4f9');
+  try { if (window.yhktApp && window.yhktApp.setTheme) window.yhktApp.setTheme(eff); } catch(e){}
 }
 (() => {
   let saved = '';
@@ -2365,11 +2366,13 @@ function startDownloadKind(kind){
   if (kind === 'both') {
     if (!cur.main || !cur.vga) { toast('这一讲缺少全景或课件画面', 3000); return; }
     const tMain = makeReq('main'), tVga = makeReq('vga');
-    if (window.yhktApp && window.yhktApp.downloadBatch) {
-      window.yhktApp.downloadBatch([
-        { url: tMain.url, title: tMain.title },
-        { url: tVga.url, title: tVga.title },
-      ]);
+    const batchItems = [
+      { url: tMain.url, title: tMain.title },
+      { url: tVga.url, title: tVga.title },
+    ];
+    if (window.yhktApp && (window.yhktApp.downloadBatch || window.yhktApp.downloadBatchJson)) {
+      if (window.yhktApp.downloadBatch) window.yhktApp.downloadBatch(batchItems);
+      else window.yhktApp.downloadBatchJson(JSON.stringify(batchItems));
     } else {
       window.open(tMain.url, '_blank');
       setTimeout(() => window.open(tVga.url, '_blank'), 850);

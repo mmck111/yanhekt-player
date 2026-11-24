@@ -52,13 +52,20 @@ public class MainActivity extends Activity {
     private volatile String pendingLogin = null;   // 正在跳官网登录的平台（"old"/"y2"）
     private volatile boolean loginSiteSeen = false; // 是否已经站到官网登录页上了
     private String pendingUrl = null;
+    private String pendingBatchJson = null;
     private final java.util.List<String> sessionCookies = new java.util.ArrayList<String>();
     private FrameLayout rootView;
     private android.widget.LinearLayout dlPanel;
     private android.widget.LinearLayout dlList;
     private android.widget.ScrollView dlScroll;
+    private TextView dlTitleView;
+    private TextView dlTipView;
+    private android.widget.Button dlOpenBtn;
+    private android.widget.Button dlClearDoneBtn;
+    private android.widget.Button dlCloseBtn;
     private android.widget.Button cleanBtn;
     private volatile int ownedCount = -1;
+    private volatile boolean darkTheme = false;
 
 
     private volatile String lastReqDump = "";
@@ -80,9 +87,13 @@ public class MainActivity extends Activity {
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
 
+        darkTheme = (getResources().getConfiguration().uiMode
+            & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+            == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+
         FrameLayout root = new FrameLayout(this);
         rootView = root;
-        root.setBackgroundColor(Color.parseColor("#0f1115"));
+        root.setBackgroundColor(Color.parseColor(darkTheme ? "#131314" : "#f8fafd"));
 
         web = new WebView(this);
         WebSettings s = web.getSettings();
@@ -180,11 +191,9 @@ public class MainActivity extends Activity {
         root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         bar = new TextView(this);
-        bar.setTextColor(Color.parseColor("#9aa3b2"));
         bar.setTextSize(13f);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(14), dp(10), dp(14), dp(10));
-        bar.setBackgroundColor(Color.parseColor("#2a1f1f"));
+        bar.setPadding(dp(16), dp(11), dp(16), dp(11));
         bar.setText("正在启动本地引擎…");
         // 长按底栏看诊断（接口原文 / 拦截到的 token / cookie / 引擎 status），平时不占地方
         bar.setOnLongClickListener(new android.view.View.OnLongClickListener() {
@@ -197,21 +206,19 @@ public class MainActivity extends Activity {
         lp.gravity = Gravity.BOTTOM;
         root.addView(bar, lp);
 
-        // 下载进度条（含取消按钮）：浮在底栏上方，不占页面空间
-        // 下载面板（盖住整页）：列出任务、进度、取消
+        // 下载面板（Material Design 3）：列出任务、排队状态、实时速度、重试/取消/清理
         dlPanel = new android.widget.LinearLayout(this);
         dlPanel.setOrientation(android.widget.LinearLayout.VERTICAL);
-        dlPanel.setBackgroundColor(Color.parseColor("#f70b0d12"));
-        dlPanel.setPadding(dp(16), dp(22), dp(16), dp(16));
+        dlPanel.setPadding(dp(18), dp(20), dp(18), dp(16));
         dlPanel.setVisibility(android.view.View.GONE);
         dlPanel.setClickable(true);
         if (Build.VERSION.SDK_INT >= 23) {
             dlPanel.setOnApplyWindowInsetsListener(new android.view.View.OnApplyWindowInsetsListener() {
                 @Override public android.view.WindowInsets onApplyWindowInsets(android.view.View v, android.view.WindowInsets ins) {
                     v.setPadding(
-                        dp(16) + ins.getSystemWindowInsetLeft(),
-                        dp(22) + ins.getSystemWindowInsetTop(),
-                        dp(16) + ins.getSystemWindowInsetRight(),
+                        dp(18) + ins.getSystemWindowInsetLeft(),
+                        dp(20) + ins.getSystemWindowInsetTop(),
+                        dp(18) + ins.getSystemWindowInsetRight(),
                         dp(16) + ins.getSystemWindowInsetBottom());
                     return ins;
                 }
@@ -219,10 +226,10 @@ public class MainActivity extends Activity {
             bar.setOnApplyWindowInsetsListener(new android.view.View.OnApplyWindowInsetsListener() {
                 @Override public android.view.WindowInsets onApplyWindowInsets(android.view.View v, android.view.WindowInsets ins) {
                     v.setPadding(
-                        dp(14) + ins.getSystemWindowInsetLeft(),
-                        dp(10),
-                        dp(14) + ins.getSystemWindowInsetRight(),
-                        dp(10) + ins.getSystemWindowInsetBottom());
+                        dp(16) + ins.getSystemWindowInsetLeft(),
+                        dp(11),
+                        dp(16) + ins.getSystemWindowInsetRight(),
+                        dp(11) + ins.getSystemWindowInsetBottom());
                     return ins;
                 }
             });
@@ -231,38 +238,48 @@ public class MainActivity extends Activity {
         android.widget.LinearLayout head = new android.widget.LinearLayout(this);
         head.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = new TextView(this);
-        title.setText("下载管理");
-        title.setTextColor(Color.parseColor("#eef2f7"));
-        title.setTextSize(17f);
-        title.setTypeface(null, android.graphics.Typeface.BOLD);
-        head.addView(title, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        android.widget.Button openBtn = mkBtn("打开目录", new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) { openDownloadFolder(); }
-        });
-        head.addView(openBtn);
-        android.widget.Space hsp = new android.widget.Space(this);
-        head.addView(hsp, new android.widget.LinearLayout.LayoutParams(dp(8), 1));
-        android.widget.Button closeBtn = mkBtn("关闭", new android.view.View.OnClickListener() {
+        dlTitleView = new TextView(this);
+        dlTitleView.setText("下载管理");
+        dlTitleView.setTextSize(19f);
+        dlTitleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        head.addView(dlTitleView, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        dlCloseBtn = mkBtn("关闭", new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) { closeDlPanel(); }
         });
-        head.addView(closeBtn);
+        head.addView(dlCloseBtn);
         dlPanel.addView(head, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        TextView tip = new TextView(this);
-        tip.setText("文件保存在 内部存储/Download · 已下载的点击「打开」可直接唤起播放器。");
-        tip.setTextColor(Color.parseColor("#8f99ac"));
-        tip.setTextSize(11.5f);
-        tip.setPadding(0, dp(8), 0, dp(10));
-        dlPanel.addView(tip);
+        dlTipView = new TextView(this);
+        dlTipView.setText("自动双路并发保存至 内部存储/Download · 点击「打开播放」可调用播放器");
+        dlTipView.setTextSize(12f);
+        dlTipView.setPadding(0, dp(8), 0, dp(10));
+        dlPanel.addView(dlTipView);
+
+        android.widget.LinearLayout actBar = new android.widget.LinearLayout(this);
+        actBar.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        actBar.setGravity(Gravity.CENTER_VERTICAL);
+        dlOpenBtn = mkBtn("打开目录", new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { openDownloadFolder(); }
+        });
+        actBar.addView(dlOpenBtn, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        android.widget.Space sp1 = new android.widget.Space(this);
+        actBar.addView(sp1, new android.widget.LinearLayout.LayoutParams(dp(8), 1));
+        dlClearDoneBtn = mkBtn("清空已完成", new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) { clearDoneTasks(); }
+        });
+        actBar.addView(dlClearDoneBtn, new android.widget.LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        dlPanel.addView(actBar, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 一键清理：把这台手机里本 App 下载过的文件全删掉（老版本留下的也在内）
         cleanBtn = mkBtn("清理本 App 下载的文件", new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) { confirmCleanAll(); }
         });
-        dlPanel.addView(cleanBtn, new android.widget.LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        android.widget.LinearLayout.LayoutParams cleanLp = new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cleanLp.setMargins(0, dp(8), 0, dp(4));
+        dlPanel.addView(cleanBtn, cleanLp);
 
         dlScroll = new android.widget.ScrollView(this);
         dlList = new android.widget.LinearLayout(this);
@@ -275,6 +292,7 @@ public class MainActivity extends Activity {
         root.addView(dlPanel, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
+        applyNativeTheme();
         startEngine();
     }
 
@@ -563,11 +581,18 @@ public class MainActivity extends Activity {
             final String st2 = tryHttp(BASE + "/api/y2/status", null);
             ui.post(new Runnable() { public void run() {
                 StringBuilder h = new StringBuilder();
+                String bg = darkTheme ? "#131314" : "#f8fafd";
+                String fg = darkTheme ? "#e3e3e3" : "#1f1f1f";
+                String dim = darkTheme ? "#c4c7c5" : "#444746";
+                String card = darkTheme ? "#1e2025" : "#ffffff";
+                String line = darkTheme ? "rgba(227,227,227,.14)" : "rgba(68,71,70,.16)";
                 h.append("<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>")
-                 .append("<style>body{background:#0f1115;color:#e8eaed;font:13px/1.6 -apple-system,system-ui;margin:0;padding:14px}")
-                 .append("h3{font-size:13px;margin:14px 0 5px;color:#9aa3b2}")
-                 .append("pre{white-space:pre-wrap;word-break:break-all;background:#171a21;border:1px solid #2a2f3a;")
-                 .append("border-radius:8px;padding:9px;font:11.5px/1.5 ui-monospace,Consolas,monospace;margin:0}</style></head><body>")
+                 .append("<style>body{background:").append(bg).append(";color:").append(fg)
+                 .append(";font:13px/1.6 -apple-system,system-ui;margin:0;padding:16px}")
+                 .append("h3{font-size:13px;margin:14px 0 6px;color:").append(dim).append("}")
+                 .append("pre{white-space:pre-wrap;word-break:break-all;background:").append(card)
+                 .append(";border:1px solid ").append(line).append(";")
+                 .append("border-radius:14px;padding:11px;font:11.5px/1.5 ui-monospace,Consolas,monospace;margin:0}</style></head><body>")
                  .append("<h3>引擎返回</h3><pre>").append(esc(err)).append("</pre>")
                  .append("<h3>当前页面</h3><pre>").append(esc(cut(where, 200))).append("</pre>")
                  .append("<h3>最近一次接口请求</h3><pre>").append(esc(cut(lastReqDump, 300))).append("</pre>")
@@ -760,6 +785,51 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- 工具
 
+    @JavascriptInterface
+    public void setTheme(final String mode) {
+        final boolean next = "dark".equalsIgnoreCase(mode);
+        if (darkTheme == next && rootView != null) {
+            ui.post(new Runnable() { public void run() { applySystemBars(); } });
+            return;
+        }
+        darkTheme = next;
+        ui.post(new Runnable() { public void run() { applyNativeTheme(); } });
+    }
+
+    private void applySystemBars() {
+        if (customView != null) return;
+        try {
+            if (Build.VERSION.SDK_INT >= 21) {
+                android.view.Window w = getWindow();
+                w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+                w.setStatusBarColor(Color.parseColor(darkTheme ? "#1b1c1f" : "#f0f4f9"));
+                w.setNavigationBarColor(Color.parseColor(darkTheme ? "#131314" : "#f8fafd"));
+            }
+            int flags = 0;
+            if (!darkTheme && Build.VERSION.SDK_INT >= 23) flags |= android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (!darkTheme && Build.VERSION.SDK_INT >= 26) flags |= 0x00000010; // SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            getWindow().getDecorView().setSystemUiVisibility(flags);
+        } catch (Exception ignored) {}
+    }
+
+    private void applyNativeTheme() {
+        applySystemBars();
+        if (rootView != null) rootView.setBackgroundColor(Color.parseColor(darkTheme ? "#131314" : "#f8fafd"));
+        if (bar != null) {
+            bar.setBackgroundColor(Color.parseColor(darkTheme ? "#24262b" : "#d3e3fd"));
+            bar.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#041e49"));
+        }
+        if (dlPanel != null) dlPanel.setBackgroundColor(Color.parseColor(darkTheme ? "#fa131314" : "#faf8fafd"));
+        if (dlTitleView != null) dlTitleView.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#1f1f1f"));
+        if (dlTipView != null) dlTipView.setTextColor(Color.parseColor(darkTheme ? "#c4c7c5" : "#444746"));
+        styleBtn(dlOpenBtn, 2);
+        styleBtn(dlClearDoneBtn, 0);
+        styleBtn(dlCloseBtn, 0);
+        styleBtn(cleanBtn, 3);
+        if (cleanBtn != null) cleanBtn.setAlpha(ownedCount > 0 ? 1f : 0.45f);
+        rebuildDlRows();
+    }
+
     private void exitFullscreen() {
         if (customView == null) return;
         try { rootView.removeView(customView); } catch (Exception ignored) {}
@@ -767,7 +837,7 @@ public class MainActivity extends Activity {
         if (web != null) web.setVisibility(android.view.View.VISIBLE);
         getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
         setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-        try { getWindow().getDecorView().setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_VISIBLE); } catch (Exception ignored) {}
+        applySystemBars();
         if (customCb != null) { customCb.onCustomViewHidden(); customCb = null; }
     }
 
@@ -933,15 +1003,16 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- 下载
     // ---------------------------------------------------------------- 下载
 
-    /** 一个下载任务：面板里能看到进度，也能取消 */
+    /** 一个下载任务：支持排队、双路并发、实时速度与自动重试 */
     static class DlTask {
+        String url = "";
         String name = "准备中…";
         String mime = "video/mp4";
-        volatile long done = 0, total = -1;
-        volatile boolean cancel = false, doneOk = false, failed = false;
+        volatile long done = 0, total = -1, speedBps = 0;
+        volatile boolean running = false, cancel = false, doneOk = false, failed = false;
+        volatile boolean fromBatch = false;
         volatile String error = null;
         volatile HttpURLConnection conn = null;
-        volatile Thread th = null;
         volatile Uri target = null;     // Android 10+：MediaStore 里的那一行
         volatile File file = null;      // Android 9 及以下：直接写出去的文件
         TextView line = null;
@@ -952,7 +1023,14 @@ public class MainActivity extends Activity {
         return String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0);
     }
 
+    private static String fmtSpeed(long bps) {
+        if (bps <= 0) return "";
+        if (bps >= 1024L * 1024L) return String.format(java.util.Locale.US, " · %.1f MB/s", bps / 1048576.0);
+        return String.format(java.util.Locale.US, " · %d KB/s", Math.max(1L, bps / 1024L));
+    }
+
     private final java.util.List<DlTask> tasks = new java.util.concurrent.CopyOnWriteArrayList<DlTask>();
+    private final java.util.concurrent.ExecutorService dlPool = java.util.concurrent.Executors.newFixedThreadPool(2);
     private volatile DlTask lastTask = null;
 
     /**
@@ -967,45 +1045,185 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 41);
             return;
         }
-        startDownload(url);
+        startDownload(url, null, false, true);
+    }
+
+    /** 批量下载 / 双画分别保存：接收前端传来的 [{url, title}, ...] JSON，走 2 路并发队列 */
+    @JavascriptInterface
+    public void downloadBatchJson(final String jsonStr) {
+        Log.i(TAG, "downloadBatchJson len=" + (jsonStr == null ? 0 : jsonStr.length()));
+        if (jsonStr == null || jsonStr.trim().isEmpty()) return;
+        if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != 0) {
+            pendingBatchJson = jsonStr;
+            requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 43);
+            return;
+        }
+        enqueueBatchJson(jsonStr);
+    }
+
+    @JavascriptInterface
+    public void openDownloadDir(final String dir) {
+        openDownloadFolder();
+    }
+
+    private void enqueueBatchJson(final String jsonStr) {
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray(jsonStr);
+            int added = 0;
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject obj = arr.optJSONObject(i);
+                if (obj == null) continue;
+                String u = obj.optString("url", "").trim();
+                if (u.isEmpty()) continue;
+                if (u.startsWith("/")) u = BASE + u;
+                String title = obj.optString("title", "").trim();
+                startDownload(u, title, true, false);
+                added++;
+            }
+            if (added > 0) {
+                final int count = added;
+                ui.post(new Runnable() { public void run() {
+                    Toast.makeText(MainActivity.this,
+                        count > 1 ? ("已加入 " + count + " 个下载任务（双路并发排队下载）") : "已开始下载任务",
+                        Toast.LENGTH_SHORT).show();
+                    if (count <= 2) openDlPanel();
+                }});
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "enqueueBatchJson failed", e);
+            ui.post(new Runnable() { public void run() {
+                Toast.makeText(MainActivity.this, "加入批量下载失败：" + e.getMessage(), Toast.LENGTH_SHORT).show();
+            }});
+        }
     }
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] granted) {
         super.onRequestPermissionsResult(req, perms, granted);
         if (req == 41 && pendingUrl != null) {
             String u = pendingUrl; pendingUrl = null;
-            if (granted.length > 0 && granted[0] == 0) startDownload(u);
+            if (granted.length > 0 && granted[0] == 0) startDownload(u, null, false, true);
+            else say("没有存储权限，下载不了");
+        } else if (req == 43 && pendingBatchJson != null) {
+            String bj = pendingBatchJson; pendingBatchJson = null;
+            if (granted.length > 0 && granted[0] == 0) enqueueBatchJson(bj);
             else say("没有存储权限，下载不了");
         }
     }
 
-    private void startDownload(final String url) {
+    private void startDownload(final String url, final String hintTitle, final boolean fromBatch, final boolean openPanelNow) {
         final DlTask t = new DlTask();
+        t.url = url;
+        t.fromBatch = fromBatch;
+        if (hintTitle != null && !hintTitle.isEmpty()) {
+            t.name = sanitizeName(hintTitle);
+        } else {
+            String parsedTitle = queryParam(url, "title");
+            if (parsedTitle != null && !parsedTitle.isEmpty()) t.name = sanitizeName(parsedTitle);
+        }
         tasks.add(t);
         lastTask = t;
         updateChip();
-        openDlPanel();
-        t.th = new Thread(new Runnable() { public void run() { runDownload(url, t); } });
-        t.th.start();
+        if (openPanelNow) openDlPanel();
+        else if (dlPanel != null && dlPanel.getVisibility() == android.view.View.VISIBLE) {
+            ui.post(new Runnable() { public void run() { rebuildDlRows(); } });
+        }
+        submitDownloadTask(t);
     }
 
-    private void runDownload(final String url, final DlTask t) {
+    private void submitDownloadTask(final DlTask t) {
+        dlPool.submit(new Runnable() { public void run() { runDownloadWithRetry(t); } });
+    }
+
+    private void runDownloadWithRetry(final DlTask t) {
+        if (t.cancel) return;
+        t.running = true;
+        t.failed = false;
+        t.error = null;
+        refreshTaskRow(t);
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (t.cancel) break;
+            if (attempt > 0) {
+                t.done = 0; t.total = -1; t.speedBps = 0;
+                t.failed = false; t.error = null;
+                t.target = null; t.file = null;
+                refreshTaskRow(t);
+                sleep(1200L * attempt);
+                if (t.cancel) break;
+            }
+            boolean retryable = runDownloadOnce(t);
+            if (t.doneOk || t.cancel || !retryable) break;
+        }
+        t.running = false;
+        t.speedBps = 0;
+        final String fName = t.name;
+        final long total = t.done;
+        boolean leftover = false;
+        if (!t.doneOk && (t.cancel || t.failed)) leftover = hardDelete(t);
+        final boolean fLeft = leftover;
+        if (t.cancel) {
+            tasks.remove(t);
+            ui.post(new Runnable() { public void run() { rebuildDlRows(); } });
+            updateChip();
+        } else {
+            refreshTaskRow(t);
+            updateChip();
+        }
+        final boolean batchAllDone = t.doneOk && t.fromBatch && activeCount() == 0;
+        ui.post(new Runnable() { public void run() {
+            if (t.doneOk) {
+                if (!t.fromBatch) {
+                    Toast.makeText(MainActivity.this,
+                        "下载完成：" + fName + "\n" + fmtMB(total) + " → 内部存储/Download",
+                        Toast.LENGTH_LONG).show();
+                } else if (batchAllDone) {
+                    Toast.makeText(MainActivity.this,
+                        "全部下载任务已完成 → 内部存储/Download",
+                        Toast.LENGTH_LONG).show();
+                }
+                refreshOwnedCount();
+            } else if (t.cancel) {
+                if (fLeft) {
+                    Toast.makeText(MainActivity.this,
+                        "已取消。部分缓存可能尚未清理，可点「打开目录」查看",
+                        Toast.LENGTH_LONG).show();
+                    showLeftoverHint();
+                } else if (!t.fromBatch) {
+                    Toast.makeText(MainActivity.this, "已取消下载并清理临时文件", Toast.LENGTH_SHORT).show();
+                }
+            } else if (!t.fromBatch) {
+                say("下载失败：" + t.error);
+            }
+        }});
+    }
+
+    /** 执行一次下载；返回 true 表示属于可重试的瞬时网络中断 */
+    private boolean runDownloadOnce(final DlTask t) {
         HttpURLConnection c = null;
         OutputStream os = null;
-        String name = null;
         try {
-            c = (HttpURLConnection) new URL(url).openConnection();
+            c = (HttpURLConnection) new URL(t.url).openConnection();
             t.conn = c;
             String cookie = CookieManager.getInstance().getCookie(BASE);
             if (cookie != null) c.setRequestProperty("Cookie", cookie);
-            c.setConnectTimeout(6000);
-            c.setReadTimeout(60000);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(180000);
             c.setRequestProperty("Accept-Encoding", "identity");
             int code = c.getResponseCode();
-            if (code >= 400) throw new java.io.IOException("HTTP " + code);
+            if (code >= 400) {
+                t.failed = true;
+                t.error = "HTTP " + code;
+                return code >= 500 || code == 429;
+            }
             t.total = c.getContentLength();
-            name = fileName(c.getHeaderField("content-disposition"));
-            if (name == null) name = "lecture_" + System.currentTimeMillis() + ".mp4";
+            String name = fileName(c.getHeaderField("content-disposition"));
+            if (name == null || name.isEmpty()) {
+                String base = (t.name != null && !t.name.equals("准备中…")) ? t.name : ("lecture_" + System.currentTimeMillis());
+                if (!base.endsWith(".mp4") && !base.endsWith(".ts")) {
+                    base += t.url.contains("/dl?") ? ".ts" : ".mp4";
+                }
+                name = base;
+            }
+            name = sanitizeName(name);
             t.name = name;
             String mime = name.endsWith(".ts") ? "video/mp2t" : "video/mp4";
             t.mime = mime;
@@ -1021,72 +1239,77 @@ public class MainActivity extends Activity {
             } else {
                 File dir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
                 if (!dir.exists()) dir.mkdirs();
-                t.file = new File(dir, name);
+                t.file = uniqueLegacyFile(dir, name);
                 os = new java.io.FileOutputStream(t.file);
             }
             if (os == null) throw new java.io.IOException("写不了文件");
             java.io.InputStream in = c.getInputStream();
             byte[] buf = new byte[64 * 1024];
-            long lastPush = 0;
+            long lastPush = 0, winAt = System.currentTimeMillis(), winBytes = 0;
             int n;
             while ((n = in.read(buf)) > 0) {
                 if (t.cancel) throw new java.io.IOException("已取消");
                 os.write(buf, 0, n);
                 t.done += n;
                 long now = System.currentTimeMillis();
+                if (now - winAt >= 800) {
+                    t.speedBps = (t.done - winBytes) * 1000L / Math.max(1L, now - winAt);
+                    winAt = now; winBytes = t.done;
+                }
                 if (now - lastPush > 400) { lastPush = now; refreshTaskRow(t); }
             }
             if (t.cancel) throw new java.io.IOException("已取消");
             os.flush();
             t.doneOk = true;
+            if (Build.VERSION.SDK_INT >= 29 && t.target != null) {
+                android.content.ContentValues done = new android.content.ContentValues();
+                done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
+                try { getContentResolver().update(t.target, done, null, null); } catch (Exception ignored) {}
+            }
+            return false;
         } catch (Exception e) {
-            if (t.cancel) t.error = "已取消"; else { t.failed = true; t.error = e.getMessage(); }
+            if (t.cancel) {
+                t.error = "已取消";
+                return false;
+            }
+            t.failed = true;
+            t.error = e.getMessage();
             Log.e(TAG, "download failed", e);
+            return (e instanceof java.io.IOException);
         } finally {
             try { if (os != null) os.close(); } catch (Exception ignored) {}
             if (c != null) c.disconnect();
             t.conn = null;
+            if (!t.doneOk && !t.cancel) hardDelete(t);
         }
-        final String fName = t.name;
-        final long total = t.done;
-        if (t.doneOk && Build.VERSION.SDK_INT >= 29 && t.target != null) {
-            android.content.ContentValues done = new android.content.ContentValues();
-            done.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0);
-            try { getContentResolver().update(t.target, done, null, null); } catch (Exception ignored) {}
+    }
+
+    private static String sanitizeName(String s) {
+        if (s == null) return "lecture";
+        String out = s.replaceAll("[\\\\/:*?\"<>|\\x00-\\x1f]", "_").trim();
+        return out.isEmpty() ? "lecture" : out;
+    }
+
+    private static String queryParam(String rawUrl, String key) {
+        try {
+            Uri u = Uri.parse(rawUrl);
+            return u.getQueryParameter(key);
+        } catch (Exception e) {
+            return null;
         }
-        // 取消 / 失败：半截文件必须当场删干净，不能留在 Download 里越攒越多；
-        // 系统偶尔不让删，返回值告诉调用方"可能还有残留"
-        boolean leftover = false;
-        if (!t.doneOk && (t.cancel || t.failed)) leftover = hardDelete(t);
-        final boolean fLeft = leftover;
-        if (t.cancel) {
-            // 列表里对应的那条也直接拿掉
-            tasks.remove(t);
-            ui.post(new Runnable() { public void run() { rebuildDlRows(); } });
-            updateChip();
-        } else {
-            refreshTaskRow(t);
-            updateChip();
+    }
+
+    private static File uniqueLegacyFile(File dir, String name) {
+        File f = new File(dir, name);
+        if (!f.exists()) return f;
+        int dot = name.lastIndexOf('.');
+        String stem = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        for (int i = 1; i < 100; i++) {
+            File alt = new File(dir, stem + " (" + i + ")" + ext);
+            if (!alt.exists()) return alt;
         }
-        ui.post(new Runnable() { public void run() {
-            if (t.doneOk) {
-                Toast.makeText(MainActivity.this,
-                    "下载完成：" + fName + "\n" + fmtMB(total) + " → 内部存储/Download",
-                    Toast.LENGTH_LONG).show();
-                refreshOwnedCount();
-            } else if (t.cancel) {
-                if (fLeft) {
-                    Toast.makeText(MainActivity.this,
-                        "已取消。部分缓存可能尚未清理，可点「打开目录」查看",
-                        Toast.LENGTH_LONG).show();
-                    showLeftoverHint();
-                } else {
-                    Toast.makeText(MainActivity.this, "已取消下载并清理临时文件", Toast.LENGTH_SHORT).show();
-                }
-            } else {
-                say("下载失败：" + t.error);
-            }
-        }});
+        return f;
     }
 
     /** 取消后系统没让删干净：留一条能直接跳到下载目录的提示 */
@@ -1121,11 +1344,13 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {}
             }
             Log.i(TAG, "delete mediastore row -> " + n);
+            t.target = null;
         }
         File f = t.file;
         if (f != null && f.exists()) {
             boolean ok = f.delete();
             Log.i(TAG, "delete file " + f.getAbsolutePath() + " -> " + ok);
+            t.file = null;
         }
         // 回头验一遍：还在不在（有些 ROM 删了也留着影子，得靠这个判断告诉用户）
         boolean left = false;
@@ -1158,6 +1383,25 @@ public class MainActivity extends Activity {
         refreshOwnedCount();
     }
 
+    /** 清空已完成 / 失败的任务记录（不删磁盘文件） */
+    private void clearDoneTasks() {
+        int removed = 0;
+        java.util.Iterator<DlTask> it = tasks.iterator();
+        java.util.List<DlTask> drop = new java.util.ArrayList<DlTask>();
+        while (it.hasNext()) {
+            DlTask t = it.next();
+            if (t.doneOk || t.failed || t.cancel) { drop.add(t); removed++; }
+        }
+        if (removed == 0) {
+            Toast.makeText(this, "没有可清理的已完成或失败记录", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        tasks.removeAll(drop);
+        rebuildDlRows();
+        updateChip();
+        Toast.makeText(this, "已清空 " + removed + " 条记录（文件仍保留在下载目录）", Toast.LENGTH_SHORT).show();
+    }
+
     /** 数一下本 App 在 Downloads 里还留着多少个文件（老版本留下的也算） */
     private void refreshOwnedCount() {
         new Thread(new Runnable() { public void run() {
@@ -1167,6 +1411,7 @@ public class MainActivity extends Activity {
                 if (cleanBtn == null) return;
                 cleanBtn.setText(n > 0 ? "清理本 App 下载的文件（" + n + " 个）" : "清理本 App 下载的文件");
                 cleanBtn.setEnabled(n > 0);
+                cleanBtn.setAlpha(n > 0 ? 1f : 0.45f);
             }});
         }}).start();
     }
@@ -1198,7 +1443,7 @@ public class MainActivity extends Activity {
 
     private void confirmCleanAll() {
         int running = activeCount();
-        if (running > 0) { say("还有 " + running + " 个下载在跑，先等它下完或取消再清理"); return; }
+        if (running > 0) { Toast.makeText(this, "还有 " + running + " 个下载在跑，先等下完或取消再清理", Toast.LENGTH_SHORT).show(); return; }
         if (ownedCount <= 0) { refreshOwnedCount(); return; }
         new android.app.AlertDialog.Builder(this)
             .setTitle("清理下载文件")
@@ -1224,7 +1469,7 @@ public class MainActivity extends Activity {
             ui.post(new Runnable() { public void run() {
                 rebuildDlRows();
                 updateChip();
-                if (cleanBtn != null) { cleanBtn.setText("清理本 App 下载的文件"); cleanBtn.setEnabled(false); }
+                if (cleanBtn != null) { cleanBtn.setText("清理本 App 下载的文件"); cleanBtn.setEnabled(false); cleanBtn.setAlpha(0.45f); }
                 Toast.makeText(MainActivity.this, "已清理 " + fn + " 个文件", Toast.LENGTH_SHORT).show();
             }});
         }}).start();
@@ -1291,30 +1536,57 @@ public class MainActivity extends Activity {
         dlList.removeAllViews();
         if (tasks.isEmpty()) {
             TextView tv = new TextView(this);
-            tv.setText("还没有下载任务。在播放页点「下载」后，这里会出现进度。");
-            tv.setTextColor(Color.parseColor("#8f99ac"));
+            tv.setText("还没有下载任务。播放界面点「下载」或打开「批量下载」即可自动排队保存。");
+            tv.setTextColor(Color.parseColor(darkTheme ? "#c4c7c5" : "#444746"));
             tv.setTextSize(13f);
-            tv.setPadding(dp(4), dp(16), dp(4), dp(16));
+            tv.setPadding(dp(6), dp(22), dp(6), dp(22));
             dlList.addView(tv);
             return;
         }
         for (DlTask t : tasks) dlList.addView(rowOf(t));
     }
 
+    private void styleBtn(android.widget.Button b, int variant) {
+        if (b == null) return;
+        int bg, fg, stroke;
+        if (variant == 1) { // M3 Primary pill
+            bg = Color.parseColor(darkTheme ? "#a8c7fa" : "#0b57d0");
+            fg = Color.parseColor(darkTheme ? "#062e6f" : "#ffffff");
+            stroke = bg;
+        } else if (variant == 2) { // M3 Tonal pill
+            bg = Color.parseColor(darkTheme ? "#0842a0" : "#d3e3fd");
+            fg = Color.parseColor(darkTheme ? "#d3e3fd" : "#041e49");
+            stroke = bg;
+        } else if (variant == 3) { // M3 Error tonal pill
+            bg = Color.parseColor(darkTheme ? "#601410" : "#f9dedc");
+            fg = Color.parseColor(darkTheme ? "#f9dedc" : "#410e0b");
+            stroke = bg;
+        } else { // M3 Secondary / Outlined pill
+            bg = Color.parseColor(darkTheme ? "#24262b" : "#e9eef6");
+            fg = Color.parseColor(darkTheme ? "#e3e3e3" : "#1f1f1f");
+            stroke = Color.parseColor(darkTheme ? "#33e3e3e3" : "#26444746");
+        }
+        android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
+        gd.setColor(bg);
+        gd.setCornerRadius(dp(999));
+        if (variant == 0) gd.setStroke(dp(1), stroke);
+        b.setBackground(gd);
+        b.setTextColor(fg);
+    }
+
     private android.widget.Button mkBtn(String text, android.view.View.OnClickListener l) {
+        return mkBtn(text, 0, l);
+    }
+
+    private android.widget.Button mkBtn(String text, int variant, android.view.View.OnClickListener l) {
         android.widget.Button b = new android.widget.Button(this);
         b.setText(text);
-        b.setTextSize(12f);
+        b.setTextSize(12.5f);
         b.setAllCaps(false);
-        b.setTextColor(Color.parseColor("#eef2f7"));
-        android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
-        gd.setColor(Color.parseColor("#181e2a"));
-        gd.setCornerRadius(dp(8));
-        gd.setStroke(dp(1), Color.parseColor("#2d374a"));
-        b.setBackground(gd);
-        b.setPadding(dp(12), dp(6), dp(12), dp(6));
-        b.setMinimumHeight(dp(34));
-        b.setMinHeight(dp(34));
+        b.setPadding(dp(16), dp(6), dp(16), dp(6));
+        b.setMinimumHeight(dp(36));
+        b.setMinHeight(dp(36));
+        styleBtn(b, variant);
         b.setOnClickListener(l);
         return b;
     }
@@ -1322,51 +1594,74 @@ public class MainActivity extends Activity {
     private android.view.View rowOf(final DlTask t) {
         android.widget.LinearLayout box = new android.widget.LinearLayout(this);
         box.setOrientation(android.widget.LinearLayout.VERTICAL);
-        box.setPadding(dp(12), dp(10), dp(12), dp(10));
+        box.setPadding(dp(14), dp(12), dp(14), dp(12));
         android.graphics.drawable.GradientDrawable cardBg = new android.graphics.drawable.GradientDrawable();
-        cardBg.setColor(Color.parseColor("#12161f"));
-        cardBg.setCornerRadius(dp(10));
-        cardBg.setStroke(dp(1), Color.parseColor("#252d3d"));
+        cardBg.setColor(Color.parseColor(darkTheme ? "#1e2025" : "#ffffff"));
+        cardBg.setCornerRadius(dp(18));
+        cardBg.setStroke(dp(1), Color.parseColor(darkTheme ? "#1ee3e3e3" : "#24444746"));
         box.setBackground(cardBg);
         android.widget.LinearLayout.LayoutParams cardLp = new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        cardLp.setMargins(0, dp(8), 0, 0);
+        cardLp.setMargins(0, dp(10), 0, 0);
         box.setLayoutParams(cardLp);
 
         TextView line = new TextView(this);
-        line.setTextColor(Color.parseColor("#eef2f7"));
+        line.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#1f1f1f"));
         line.setTextSize(13f);
-        line.setLineSpacing(dp(2), 1.0f);
+        line.setLineSpacing(dp(3), 1.0f);
         t.line = line;
         box.addView(line, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         android.widget.ProgressBar pb = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         pb.setMax(100);
+        if (Build.VERSION.SDK_INT >= 21) {
+            pb.setProgressTintList(android.content.res.ColorStateList.valueOf(
+                Color.parseColor(darkTheme ? "#a8c7fa" : "#0b57d0")));
+        }
         t.bar = pb;
         android.widget.LinearLayout.LayoutParams pbLp = new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
-        pbLp.setMargins(0, dp(6), 0, dp(8));
+        pbLp.setMargins(0, dp(8), 0, dp(10));
         box.addView(pb, pbLp);
 
         android.widget.LinearLayout row = new android.widget.LinearLayout(this);
         row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         final boolean active = !t.doneOk && !t.failed && !t.cancel;
         if (active) {
-            row.addView(mkBtn("取消", new android.view.View.OnClickListener() {
+            row.addView(mkBtn("取消", 3, new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) { cancelTask(t); }
             }));
         } else if (t.doneOk) {
-            row.addView(mkBtn("打开播放", new android.view.View.OnClickListener() {
+            row.addView(mkBtn("打开播放", 1, new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) { openDownloadedTask(t); }
             }));
             android.widget.Space sp = new android.widget.Space(this);
             row.addView(sp, new android.widget.LinearLayout.LayoutParams(dp(8), 1));
-            row.addView(mkBtn("删除", new android.view.View.OnClickListener() {
+            row.addView(mkBtn("删除", 3, new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) { confirmDelete(t); }
             }));
+        } else if (t.failed) {
+            row.addView(mkBtn("重试", 2, new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    t.failed = false; t.error = null; t.done = 0; t.total = -1; t.speedBps = 0;
+                    t.running = false;
+                    rebuildDlRows();
+                    updateChip();
+                    submitDownloadTask(t);
+                }
+            }));
+            android.widget.Space sp = new android.widget.Space(this);
+            row.addView(sp, new android.widget.LinearLayout.LayoutParams(dp(8), 1));
+            row.addView(mkBtn("移除", 0, new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    tasks.remove(t);
+                    rebuildDlRows();
+                    updateChip();
+                }
+            }));
         } else {
-            row.addView(mkBtn("移除", new android.view.View.OnClickListener() {
+            row.addView(mkBtn("移除", 0, new android.view.View.OnClickListener() {
                 @Override public void onClick(android.view.View v) {
                     tasks.remove(t);
                     rebuildDlRows();
@@ -1449,24 +1744,33 @@ public class MainActivity extends Activity {
     private void fillRowText(final DlTask t) {
         if (t.line == null) return;
         String txt;
+        String spd = fmtSpeed(t.speedBps);
         if (t.doneOk) txt = t.name + "\n已完成 · " + fmtMB(t.done) + " → 内部存储/Download";
         else if (t.cancel) txt = t.name + "\n已取消";
         else if (t.failed) txt = t.name + "\n失败：" + t.error;
-        else if (t.total > 0) txt = t.name + "\n" + (t.done * 100 / t.total) + "%（" + fmtMB(t.done) + " / " + fmtMB(t.total) + "）";
-        else txt = t.name + "\n已下载 " + fmtMB(t.done);
+        else if (!t.running) txt = t.name + "\n排队中（等待双路空位）";
+        else if (t.total > 0) txt = t.name + "\n下载中 " + (t.done * 100 / t.total) + "% · " + fmtMB(t.done) + " / " + fmtMB(t.total) + spd;
+        else txt = t.name + "\n已下载 " + fmtMB(t.done) + spd;
         final String f = txt;
         ui.post(new Runnable() { public void run() {
             if (t.line != null) t.line.setText(f);
             if (t.bar != null) {
                 if (t.doneOk) {
+                    t.bar.setVisibility(android.view.View.VISIBLE);
                     t.bar.setIndeterminate(false);
                     t.bar.setProgress(100);
                 } else if (t.failed || t.cancel) {
                     t.bar.setVisibility(android.view.View.GONE);
+                } else if (!t.running) {
+                    t.bar.setVisibility(android.view.View.VISIBLE);
+                    t.bar.setIndeterminate(false);
+                    t.bar.setProgress(0);
                 } else if (t.total > 0) {
+                    t.bar.setVisibility(android.view.View.VISIBLE);
                     t.bar.setIndeterminate(false);
                     t.bar.setProgress((int) Math.min(100, t.done * 100 / t.total));
                 } else {
+                    t.bar.setVisibility(android.view.View.VISIBLE);
                     t.bar.setIndeterminate(true);
                 }
             }
@@ -1529,6 +1833,7 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        try { dlPool.shutdownNow(); } catch (Exception ignored) {}
         try { if (proc != null) proc.destroy(); } catch (Exception ignored) {}
         if (web != null) { web.loadUrl("about:blank"); web.destroy(); }
         super.onDestroy();

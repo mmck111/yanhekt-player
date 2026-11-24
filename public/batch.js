@@ -168,6 +168,8 @@
         const d = j.effectiveDownloadDir || (j.settings && j.settings.downloadDir) || '默认下载目录';
         const ask = j.settings && j.settings.askSavePath;
         el.textContent = ask ? '保存位置：下载前选择一次文件夹' : ('自动保存到：' + d);
+      } else if (window.yhktApp && window.yhktApp.login) {
+        el.textContent = '手机应用模式：自动双路排队保存至「内部存储/Download」';
       } else {
         el.textContent = '浏览器模式：按浏览器默认下载目录排队保存';
       }
@@ -572,8 +574,9 @@
       toastMsg('所选讲次暂无对应画面');
       return;
     }
-    if (window.yhktApp && window.yhktApp.downloadBatch) {
-      window.yhktApp.downloadBatch(tasks);
+    if (window.yhktApp && (window.yhktApp.downloadBatch || window.yhktApp.downloadBatchJson)) {
+      if (window.yhktApp.downloadBatch) window.yhktApp.downloadBatch(tasks);
+      else window.yhktApp.downloadBatchJson(JSON.stringify(tasks));
       closeModal();
       if (optsCfg.openDownloads) setTimeout(() => optsCfg.openDownloads(), 350);
     } else {

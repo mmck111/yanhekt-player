@@ -657,6 +657,7 @@ function applyTheme(t, persist){
   const eff = getEffectiveTheme();
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', eff === 'dark' ? '#1b1c1f' : '#f0f4f9');
+  try { if (window.yhktApp && window.yhktApp.setTheme) window.yhktApp.setTheme(eff); } catch(e){}
 }
 (() => {
   let saved = '';
@@ -2237,11 +2238,13 @@ function startY2DownloadKind(dlKind){
   if (dlKind === 'both') {
     if (!hasCam || !hasScreen) { toast('这一讲缺少教师或课件画面', 3000); return; }
     const tCam = makeReq(camKind), tScr = makeReq('screen');
-    if (window.yhktApp && window.yhktApp.downloadBatch) {
-      window.yhktApp.downloadBatch([
-        { url: tCam.url, title: tCam.title },
-        { url: tScr.url, title: tScr.title },
-      ]);
+    const batchItems = [
+      { url: tCam.url, title: tCam.title },
+      { url: tScr.url, title: tScr.title },
+    ];
+    if (window.yhktApp && (window.yhktApp.downloadBatch || window.yhktApp.downloadBatchJson)) {
+      if (window.yhktApp.downloadBatch) window.yhktApp.downloadBatch(batchItems);
+      else window.yhktApp.downloadBatchJson(JSON.stringify(batchItems));
     } else {
       window.open(tCam.url, '_blank');
       setTimeout(() => window.open(tScr.url, '_blank'), 850);
