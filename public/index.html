@@ -258,7 +258,7 @@
     margin:0 20px 10px;border-radius:20px;overflow:hidden;background:#0b0c10;border:1px solid var(--line);box-shadow:var(--shadow-2)}
   .playerbox:fullscreen,.playerbox:-webkit-full-screen{margin:0;border-radius:0;border:none;box-shadow:none;background:#000}
   .stagewrap{flex:1;display:flex;min-height:0;position:relative;overflow:hidden;background:#0b0c10}
-  .stage{flex:1;min-height:0;background:#0b0c10;display:grid;gap:2px;position:relative;cursor:pointer}
+  .stage{flex:1;min-height:0;background:#0b0c10;display:grid;gap:2px;position:relative}
   .stage.single{grid-template-columns:1fr}
   .stage.dual{grid-template-columns:1fr 1fr}
   .stage.pip{display:block}
@@ -1578,15 +1578,10 @@ $('#playerBox').addEventListener('touchstart', wakeHud, { passive: true });
 document.addEventListener('fullscreenchange', wakeHud);
 document.addEventListener('webkitfullscreenchange', wakeHud);
 
-let hudWokeFromIdle = false, lastStageTouchMs = 0, lastStageTap = null, stageTapTimer = 0, stageTouchPt = null;
+let lastStageTouchMs = 0, lastStageTap = null, stageTouchPt = null;
 $('#playerBox').addEventListener('touchstart', e => {
   if (e.touches && e.touches.length === 1) stageTouchPt = { x: e.touches[0].clientX, y: e.touches[0].clientY };
   else stageTouchPt = null;
-  if ($('#playerBox').classList.contains('idle') && e.target.closest('#stage')
-      && !e.target.closest('.ctrldeck') && !e.target.closest('.fshud')) {
-    hudWokeFromIdle = true;
-    setTimeout(() => { hudWokeFromIdle = false; }, 500);
-  }
 }, { passive: true, capture: true });
 $('#stage').addEventListener('touchend', e => {
   if (e.target.closest('.perr')) return;
@@ -1598,21 +1593,18 @@ $('#stage').addEventListener('touchend', e => {
   }
   stageTouchPt = null;
   lastStageTouchMs = Date.now();
-  if (hudWokeFromIdle) { hudWokeFromIdle = false; lastStageTap = null; clearTimeout(stageTapTimer); return; }
   const now = Date.now();
   const rect = $('#stage').getBoundingClientRect();
   if (lastStageTap && now - lastStageTap.t < 280
       && Math.hypot(t.clientX - lastStageTap.x, t.clientY - lastStageTap.y) < 56) {
-    clearTimeout(stageTapTimer); lastStageTap = null;
+    lastStageTap = null;
     const ratio = rect.width > 0 ? (t.clientX - rect.left) / rect.width : 0.5;
-    if (ratio < 0.35) { const b = document.querySelector('[data-jump="-15"]'); if (b) b.click(); }
-    else if (ratio > 0.65) { const b = document.querySelector('[data-jump="15"]'); if (b) b.click(); }
-    else { $('#btnFs').click(); }
+    if (ratio < 0.25) { const b = document.querySelector('[data-jump="-15"]'); if (b) b.click(); }
+    else if (ratio > 0.75) { const b = document.querySelector('[data-jump="15"]'); if (b) b.click(); }
+    else { $('#btnPlay').click(); }
     return;
   }
   lastStageTap = { t: now, x: t.clientX, y: t.clientY };
-  clearTimeout(stageTapTimer);
-  stageTapTimer = setTimeout(() => { lastStageTap = null; $('#btnPlay').click(); }, 250);
 }, { passive: true });
 $('#stage').addEventListener('click', e => {
   if (e.target.closest('.perr')) return;
@@ -1620,8 +1612,6 @@ $('#stage').addEventListener('click', e => {
     const sub = e.target.closest('.pip-sub');
     if (sub) { dualSwapped = !dualSwapped; renderStage(); return; }
   }
-  if (Date.now() - lastStageTouchMs < 600) return;
-  $('#btnPlay').click();
 });
 $('#stage').addEventListener('dblclick', e => {
   if (e.target.closest('.perr') || e.target.closest('.pip-sub')) return;
