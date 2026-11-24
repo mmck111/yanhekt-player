@@ -360,6 +360,7 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("/api/downloads/remove", safe(handleDownloadsRemove))
 	mux.HandleFunc("/api/downloads/clear", safe(handleDownloadsClear))
 	mux.HandleFunc("/api/settings", safe(handleSettings))
+	mux.HandleFunc("/api/favorites", safe(handleFavorites))
 
 	// ---- 直播 ----
 	mux.HandleFunc("/api/live", safe(func(w http.ResponseWriter, r *http.Request) {

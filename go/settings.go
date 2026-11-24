@@ -93,19 +93,19 @@ func sanitizeAppSettings(in appSettings) appSettings {
 	return in
 }
 
-func settingsFilePaths() []string {
-	if settingsPathOverride != "" {
-		return []string{settingsPathOverride}
+func yanhektCachePaths(filename, override string) []string {
+	if override != "" {
+		return []string{override}
 	}
 	var raw []string
 	if dir, err := os.UserCacheDir(); err == nil && dir != "" {
-		raw = append(raw, filepath.Join(dir, "yanhekt", "settings.json"))
+		raw = append(raw, filepath.Join(dir, "yanhekt", filename))
 	}
 	if t := os.TempDir(); t != "" {
-		raw = append(raw, filepath.Join(t, "yanhekt", "settings.json"))
+		raw = append(raw, filepath.Join(t, "yanhekt", filename))
 	}
 	if exe, err := os.Executable(); err == nil && exe != "" {
-		raw = append(raw, filepath.Join(filepath.Dir(exe), ".yanhekt-cache", "settings.json"))
+		raw = append(raw, filepath.Join(filepath.Dir(exe), ".yanhekt-cache", filename))
 	}
 	out := make([]string, 0, len(raw))
 	seen := map[string]bool{}
@@ -117,6 +117,10 @@ func settingsFilePaths() []string {
 		}
 	}
 	return out
+}
+
+func settingsFilePaths() []string {
+	return yanhektCachePaths("settings.json", settingsPathOverride)
 }
 
 func loadAppSettings() appSettings {

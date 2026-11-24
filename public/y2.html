@@ -132,6 +132,22 @@
     border-radius:12px;padding:0 12px;font-size:12.5px;outline:none;cursor:pointer;transition:border-color .16s var(--ease)}
   .filters select:hover{border-color:var(--line-strong)}
   .filters select:focus{border-color:var(--accent)}
+  .favpill{height:36px;padding:0 11px;border-radius:12px;border:1px solid var(--line);background:var(--input-bg);
+    color:var(--dim);font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;
+    flex:none;white-space:nowrap;transition:background .16s var(--ease),border-color .16s var(--ease),color .16s var(--ease)}
+  .favpill:hover{border-color:var(--line-strong);color:var(--fg);background:var(--hover)}
+  .favpill svg{width:15px;height:15px;flex:none}
+  .favpill .s-on{display:none}
+  .favpill.has-items svg{color:var(--warn)}
+  .favpill.on{background:var(--warn-soft);color:var(--on-warn-soft);border-color:transparent}
+  .favpill.on svg{color:var(--warn)}
+  .favpill.on .s-off{display:none}
+  .favpill.on .s-on{display:block}
+  .favcnt{font-size:11px;font-weight:700;padding:0 5px;height:17px;line-height:17px;border-radius:999px;
+    background:var(--panel2);color:var(--dim);display:none}
+  .favcnt.show{display:inline-block}
+  .favpill.on .favcnt{background:rgba(0,0,0,.1);color:var(--on-warn-soft)}
+  :root[data-theme="dark"] .favpill.on .favcnt{background:rgba(255,255,255,.14)}
 
   /* M3 Account & Platform Strip */
   .userline{padding:9px 16px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--line);
@@ -198,6 +214,34 @@
   .morebtn{width:100%;margin-top:8px;padding:9px 14px;border-radius:999px;border:1px solid var(--line);background:var(--surface-card);
     color:var(--accent);font-size:12.5px;font-weight:600;cursor:pointer;transition:background .15s var(--ease)}
   .morebtn:hover{background:var(--accent-soft);color:var(--on-accent-soft);border-color:transparent}
+
+  .item.hasfav{padding-right:42px}
+  .favbtn{position:absolute;top:8px;right:8px;width:30px;height:30px;border-radius:50%;border:none;background:transparent;
+    color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0;
+    transition:background .15s var(--ease),color .15s var(--ease),transform .12s var(--ease)}
+  .favbtn:hover{background:var(--hover);color:var(--fg)}
+  .favbtn:active{transform:scale(.92)}
+  .favbtn svg{width:18px;height:18px}
+  .favbtn .s-on{display:none}
+  .favbtn.on{color:var(--warn)}
+  .favbtn.on .s-off{display:none}
+  .favbtn.on .s-on{display:block}
+  .backrow .backfav{position:static;flex:none;width:28px;height:28px;margin-left:4px;color:var(--on-accent-soft)}
+  .backrow .backfav:hover{background:rgba(0,0,0,.07);color:var(--on-accent-soft)}
+  :root[data-theme="dark"] .backrow .backfav:hover{background:rgba(255,255,255,.12)}
+  .backrow .backfav.on{color:var(--warn)}
+  .favsec{padding:2px 0 8px}
+  .fav-plat{font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:6px;background:var(--accent-soft);color:var(--on-accent-soft);flex:none}
+  .favhdr{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:var(--surface-card);
+    color:var(--dim);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0;flex:none;
+    transition:background .16s var(--ease),border-color .16s var(--ease),color .16s var(--ease),transform .12s var(--ease)}
+  .favhdr:hover{background:var(--hover);border-color:var(--line-strong);color:var(--fg)}
+  .favhdr:active{transform:scale(.94)}
+  .favhdr svg{width:18px;height:18px}
+  .favhdr .s-on{display:none}
+  .favhdr.on{background:var(--warn-soft);border-color:transparent;color:var(--warn)}
+  .favhdr.on .s-off{display:none}
+  .favhdr.on .s-on{display:block}
 
   .histbox{padding:6px 4px}
   .histtitle{font-size:11.5px;font-weight:600;color:var(--muted);margin:4px 6px 10px;display:flex;align-items:center;justify-content:space-between;letter-spacing:.02em}
@@ -461,6 +505,8 @@
     .hd{padding:12px 16px 10px}
     .list{padding:10px 12px 18px}
     .item{padding:12px 14px;border-radius:16px;margin-bottom:6px}
+    .item.hasfav{padding-right:46px}
+    .favbtn{top:9px;right:8px;width:34px;height:34px}
     .bar{padding:max(8px,env(safe-area-inset-top)) 12px 8px;gap:6px;flex-wrap:wrap;min-height:48px}
     .bar .who{min-width:120px}
     .bar .t{font-size:14px}
@@ -546,6 +592,11 @@
       </div>
       <div class="filters">
         <select id="term" title="按学期筛选"><option value="">全部学期</option></select>
+        <button id="btnFavList" class="favpill" type="button" title="查看已收藏的常用课程">
+          <svg viewBox="0 0 24 24"><path class="s-off" d="m12 15.39-3.76 2.27.99-4.28-3.32-2.88 4.38-.37L12 6.1l1.71 4.04 4.38.37-3.32 2.88.99 4.28L12 15.39zM22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24z" fill="currentColor"/><path class="s-on" d="M12 17.27 16.15 19.78c.76.46 1.69-.22 1.49-1.08l-1.1-4.72 3.67-3.18c.67-.58.31-1.68-.57-1.75l-4.83-.41-1.89-4.46c-.34-.81-1.5-.81-1.84 0L9.19 8.63l-4.83.41c-.88.07-1.24 1.17-.57 1.75l3.67 3.18-1.1 4.72c-.2.86.73 1.54 1.49 1.08L12 17.27z" fill="currentColor"/></svg>
+          <span>收藏</span>
+          <span class="favcnt" id="favCnt"></span>
+        </button>
       </div>
     </div>
     <div class="userline">
@@ -572,6 +623,9 @@
         <span class="t" id="now">延河课堂新版播放器</span>
         <span class="subt" id="nowSub">搜索课程或选择左侧讲次开始播放</span>
       </div>
+      <button class="favhdr" id="btnFavCur" type="button" title="收藏当前课程" aria-label="收藏当前课程" style="display:none">
+        <svg viewBox="0 0 24 24"><path class="s-off" d="m12 15.39-3.76 2.27.99-4.28-3.32-2.88 4.38-.37L12 6.1l1.71 4.04 4.38.37-3.32 2.88.99 4.28L12 15.39zM22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24z" fill="currentColor"/><path class="s-on" d="M12 17.27 16.15 19.78c.76.46 1.69-.22 1.49-1.08l-1.1-4.72 3.67-3.18c.67-.58.31-1.68-.57-1.75l-4.83-.41-1.89-4.46c-.34-.81-1.5-.81-1.84 0L9.19 8.63l-4.83.41c-.88.07-1.24 1.17-.57 1.75l3.67 3.18-1.1 4.72c-.2.86.73 1.54 1.49 1.08L12 17.27z" fill="currentColor"/></svg>
+      </button>
       <div class="tabs">
         <button class="tab on" data-k="camera">教师画面</button>
         <button class="tab" data-k="screen">课件画面</button>
@@ -832,6 +886,247 @@ function getSessionProg(cid, sid){
   return m && m.sessions ? m.sessions[String(sid)] : null;
 }
 
+const LS_FAVS = 'yhkt_favs_v1';
+const STAR_SVG = '<svg viewBox="0 0 24 24"><path class="s-off" d="m12 15.39-3.76 2.27.99-4.28-3.32-2.88 4.38-.37L12 6.1l1.71 4.04 4.38.37-3.32 2.88.99 4.28L12 15.39zM22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24z" fill="currentColor"/><path class="s-on" d="M12 17.27 16.15 19.78c.76.46 1.69-.22 1.49-1.08l-1.1-4.72 3.67-3.18c.67-.58.31-1.68-.57-1.75l-4.83-.41-1.89-4.46c-.34-.81-1.5-.81-1.84 0L9.19 8.63l-4.83.41c-.88.07-1.24 1.17-.57 1.75l3.67 3.18-1.1 4.72c-.2.86.73 1.54 1.49 1.08L12 17.27z" fill="currentColor"/></svg>';
+let favItems = loadFavsLocal(), favView = false, favPrevList = null, favPrevScroll = 0, favPrevWasHist = false, favPrevFmeta = '';
+
+function loadFavsLocal(){
+  try {
+    const a = JSON.parse(localStorage.getItem(LS_FAVS) || '[]');
+    return Array.isArray(a) ? a.filter(x => x && x.id && x.plat) : [];
+  } catch(e){ return []; }
+}
+function saveFavsLocal(items){
+  favItems = Array.isArray(items) ? items : [];
+  try { localStorage.setItem(LS_FAVS, JSON.stringify(favItems)); } catch(e){}
+}
+function favItemFromY2(c){
+  const id = String((c && c.courseId) || '').trim();
+  if (!id) return null;
+  const tn = c.termName || (c.termId && typeof termName === 'function' ? termName(c.termId) : '');
+  const title = c.title || ('课程 ' + id);
+  return {
+    key: 'y2:' + id, plat: 'y2', id,
+    title,
+    teacher: c.teacher || '',
+    term: tn,
+    room: c.room || '',
+    ts: Date.now(),
+    raw: {
+      courseId: id,
+      title,
+      teacher: c.teacher || '',
+      termName: tn,
+      termId: c.termId || '',
+      room: c.room || '',
+    },
+  };
+}
+function favItemFromOld(c){
+  const id = String((c && c.id) || '').trim();
+  if (!id) return null;
+  return {
+    key: 'old:' + id, plat: 'old', id,
+    title: c.name || c.title || ('课程 ' + id),
+    teacher: c.teacher || '',
+    term: c.term || '',
+    code: c.code || '',
+    room: c.room || '',
+    ts: Date.now(),
+  };
+}
+function isFavKey(key){ return favItems.some(x => x.key === key); }
+function makeFavBtn(item, extraClass){
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'favbtn' + (extraClass ? ' ' + extraClass : '');
+  btn.dataset.favKey = item.key;
+  btn.innerHTML = STAR_SVG;
+  const on = isFavKey(item.key);
+  btn.classList.toggle('on', on);
+  btn.title = on ? '取消收藏' : '收藏课程';
+  btn.setAttribute('aria-label', btn.title);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  btn.onclick = e => { e.stopPropagation(); toggleFav(item); };
+  return btn;
+}
+function syncFavUI(){
+  const cnt = $('#favCnt'), pill = $('#btnFavList'), curBtn = $('#btnFavCur');
+  if (cnt) {
+    cnt.textContent = favItems.length > 99 ? '99+' : String(favItems.length);
+    cnt.classList.toggle('show', favItems.length > 0);
+  }
+  if (pill) {
+    pill.classList.toggle('has-items', favItems.length > 0);
+    pill.classList.toggle('on', favView);
+  }
+  if (curBtn) {
+    const c = (curCourse && curCourse.courseId) ? favItemFromY2(curCourse) : null;
+    curBtn.style.display = c ? '' : 'none';
+    if (c) {
+      const on = isFavKey(c.key);
+      curBtn.classList.toggle('on', on);
+      curBtn.title = on ? '取消收藏当前课程' : '收藏当前课程';
+      curBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  document.querySelectorAll('.favbtn[data-fav-key]').forEach(btn => {
+    const on = isFavKey(btn.dataset.favKey);
+    btn.classList.toggle('on', on);
+    btn.title = on ? '取消收藏' : '收藏课程';
+    btn.setAttribute('aria-label', btn.title);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+function renderFavCards(container){
+  favItems.forEach(f => {
+    const el = document.createElement('div');
+    const isCur = f.plat === 'y2' && curCourse && String(curCourse.courseId) === String(f.id);
+    el.className = 'item hasfav' + (isCur ? ' on' : '');
+    const meta = [];
+    if (f.plat === 'old') meta.push('<span class="fav-plat">老平台</span>');
+    if (f.term) meta.push('<span class="badge">' + esc(f.term) + '</span>');
+    if (f.teacher) meta.push('<span>' + esc(f.teacher) + '</span>');
+    if (f.room) meta.push('<span>' + esc(f.room) + '</span>');
+    el.innerHTML = '<div class="d">' + esc(f.title) + '</div>'
+      + '<div class="m">' + (meta.join('') || '<span>课程 ' + esc(f.id) + '</span>') + '</div>';
+    el.appendChild(makeFavBtn(f));
+    el.onclick = () => openFavCourse(f);
+    container.appendChild(el);
+  });
+}
+function openFavCourse(f){
+  if (!f || !f.id) return;
+  if (f.plat === 'old') {
+    location.href = '/old?course=' + encodeURIComponent(f.id);
+    return;
+  }
+  if (!isLoggedIn) { showLogin('点播该课程录像前请先登录新版平台'); return; }
+  const cObj = Object.assign({
+    courseId: f.id,
+    title: f.title || ('课程 ' + f.id),
+    teacher: f.teacher || '',
+    termName: f.term || '',
+    termId: '',
+    room: f.room || '',
+  }, f.raw || {});
+  exitFavView({ restoreList: !curCourse });
+  loadSessions(cObj, null);
+}
+function renderFavView(){
+  const list = $('#list');
+  const box = document.createElement('div');
+  box.className = 'favview';
+  const canBack = !!(curCourse || (favPrevList && favPrevList.childNodes.length && !favPrevWasHist));
+  box.innerHTML = '<div class="histtitle"><span>收藏课程' + (favItems.length ? ' · ' + favItems.length + ' 门' : '') + '</span>'
+    + (canBack ? '<a id="favBack">返回</a>' : '') + '</div>';
+  if (canBack) {
+    box.querySelector('#favBack').onclick = () => exitFavView({ restoreList: true });
+  }
+  $('#fmeta').textContent = favItems.length ? ('已收藏 ' + favItems.length + ' 门常用课程') : '';
+  if (!favItems.length) {
+    const em = document.createElement('div');
+    em.className = 'splash';
+    em.innerHTML = '<span style="font-size:12px">还没有收藏任何课程<br>搜课或播放课程时点击 ★ 即可收藏</span>';
+    box.appendChild(em);
+  } else {
+    renderFavCards(box);
+  }
+  list.innerHTML = '';
+  list.appendChild(box);
+  list.scrollTop = 0;
+  syncFavUI();
+}
+function enterFavView(){
+  if (favView) { exitFavView({ restoreList: true }); return; }
+  const list = $('#list');
+  favPrevWasHist = Boolean(list.querySelector('.histbox') || list.querySelector('.favsec'));
+  favPrevFmeta = $('#fmeta').textContent;
+  favPrevList = document.createDocumentFragment();
+  favPrevScroll = list.scrollTop;
+  if (!favPrevWasHist && list.firstChild) {
+    while (list.firstChild) favPrevList.appendChild(list.firstChild);
+  }
+  favView = true;
+  renderFavView();
+}
+function exitFavView({ restoreList = true } = {}){
+  if (!favView) return;
+  favView = false;
+  const list = $('#list');
+  if (restoreList) {
+    if (favPrevWasHist) {
+      favPrevList = null;
+      renderHist();
+    } else if (favPrevList && favPrevList.childNodes.length) {
+      list.innerHTML = '';
+      list.appendChild(favPrevList);
+      $('#fmeta').textContent = favPrevFmeta;
+      list.scrollTop = favPrevScroll || 0;
+      favPrevList = null;
+    } else {
+      favPrevList = null;
+      if (!curCourse) renderHist();
+    }
+  } else {
+    favPrevList = null;
+  }
+  favPrevWasHist = false;
+  favPrevFmeta = '';
+  syncFavUI();
+}
+function refreshVisibleFavList(){
+  if (favView) renderFavView();
+  else if ($('#list').querySelector('.histbox') || $('#list').querySelector('.favsec') || $('#list').querySelector('.favempty')) renderHist();
+}
+async function toggleFav(rawItem){
+  const item = Object.assign({ ts: Date.now() }, rawItem || {});
+  if (!item.plat || !item.id) return;
+  item.id = String(item.id);
+  item.key = item.plat + ':' + item.id;
+  const exists = isFavKey(item.key);
+  const next = exists ? favItems.filter(x => x.key !== item.key) : [item, ...favItems.filter(x => x.key !== item.key)].slice(0, 100);
+  saveFavsLocal(next);
+  syncFavUI();
+  refreshVisibleFavList();
+  toast(exists ? '已取消收藏' : ('已收藏「' + item.title + '」'), 2000);
+  try {
+    const r = await fetch('/api/favorites', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ op: 'toggle', item }),
+    });
+    const j = await r.json();
+    if (j && j.ok && Array.isArray(j.items)) {
+      saveFavsLocal(j.items);
+      syncFavUI();
+      refreshVisibleFavList();
+    }
+  } catch(e){}
+}
+async function syncFavFromServer(){
+  try {
+    const r = await fetch('/api/favorites');
+    const j = await r.json();
+    if (!j || !j.ok || !Array.isArray(j.items)) return;
+    const serverKeys = new Set(j.items.map(x => x.key));
+    const hasLocalOnly = favItems.some(x => !serverKeys.has(x.key));
+    let finalItems = j.items;
+    if (hasLocalOnly && favItems.length) {
+      const mr = await fetch('/api/favorites', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ op: 'merge', items: favItems }),
+      });
+      const mj = await mr.json();
+      if (mj && mj.ok && Array.isArray(mj.items)) finalItems = mj.items;
+    }
+    saveFavsLocal(finalItems);
+    syncFavUI();
+    refreshVisibleFavList();
+  } catch(e){}
+}
+
 function getHist(){
   try { return JSON.parse(localStorage.getItem(LS_HIST) || '[]') || []; } catch(e){ return []; }
 }
@@ -842,26 +1137,37 @@ function pushHist(q){
 }
 function renderHist(){
   const list = $('#list');
-  if (curCourse) return;
+  if (curCourse || favView) return;
   $('#fmeta').textContent = '';
   const h = getHist();
-  if (!h.length) {
-    list.innerHTML = '<div class="splash"><span style="font-size:12px">上面输入课程名或教师名开始，例如「数值分析」「孙新」</span></div>';
+  if (!h.length && !favItems.length) {
+    list.innerHTML = '<div class="splash favempty"><span style="font-size:12px">上面输入课程名或教师名开始，例如「数值分析」「孙新」；点击 ★ 可收藏</span></div>';
+    syncFavUI();
     return;
   }
-  const box = document.createElement('div');
-  box.className = 'histbox';
-  box.innerHTML = '<div class="histtitle"><span>最近搜索</span><a id="clrHist">清空</a></div><div class="chips"></div>';
-  const chips = box.querySelector('.chips');
-  h.forEach(q => {
-    const b = document.createElement('button');
-    b.type = 'button'; b.className = 'qchip'; b.textContent = q;
-    b.onclick = () => { $('#q').value = q; syncClearBtn(); doFind(); };
-    chips.appendChild(b);
-  });
-  box.querySelector('#clrHist').onclick = () => { try { localStorage.removeItem(LS_HIST); } catch(e){} renderHist(); };
   list.innerHTML = '';
-  list.appendChild(box);
+  if (favItems.length) {
+    const fsec = document.createElement('div');
+    fsec.className = 'favsec';
+    fsec.innerHTML = '<div class="histtitle"><span>收藏课程</span><span style="font-weight:500">' + favItems.length + ' 门</span></div>';
+    renderFavCards(fsec);
+    list.appendChild(fsec);
+  }
+  if (h.length) {
+    const box = document.createElement('div');
+    box.className = 'histbox';
+    box.innerHTML = '<div class="histtitle"><span>最近搜索</span><a id="clrHist">清空</a></div><div class="chips"></div>';
+    const chips = box.querySelector('.chips');
+    h.forEach(q => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'qchip'; b.textContent = q;
+      b.onclick = () => { $('#q').value = q; syncClearBtn(); doFind(); };
+      chips.appendChild(b);
+    });
+    box.querySelector('#clrHist').onclick = () => { try { localStorage.removeItem(LS_HIST); } catch(e){} renderHist(); };
+    list.appendChild(box);
+  }
+  syncFavUI();
 }
 
 // ---------------- 登录 ----------------
@@ -1217,7 +1523,9 @@ async function doFind(limitOverride){
 
   curQuery = q;
   curSearchLimit = limitOverride || 20;
+  exitFavView({ restoreList: false });
   courseListBackup = null; curCourse = null;
+  syncFavUI();
   updateOldLink();
 
   if (searchAbort) { try { searchAbort.abort(); } catch(e){} }
@@ -1263,7 +1571,7 @@ async function doFind(limitOverride){
     oldSlot.appendChild(section('老平台课程（点开切换老平台）'));
     oldOnes.forEach(c=>{
       const el = document.createElement('div');
-      el.className='item';
+      el.className='item hasfav';
       el.innerHTML = '<div class="d">' + esc(c.name) + '<span class="badge" style="margin-left:6px">课号 ' + esc(c.id) + '</span></div>'
         + '<div class="m">'
         + (c.term ? '<span class="badge">' + esc(c.term) + '</span>' : '')
@@ -1274,6 +1582,8 @@ async function doFind(limitOverride){
         + (c.videoCount ? '<span class="badge rec">' + c.videoCount + ' 讲有录像</span>' : '')
         + (c.tag && c.tag !== '未确认' ? '<span class="badge" title="' + esc(c.note||'') + '">' + esc(c.tag) + '</span>' : '')
         + '</div>';
+      const favItem = favItemFromOld(c);
+      if (favItem) el.appendChild(makeFavBtn(favItem));
       el.onclick = ()=>{ location.href = '/old?course=' + encodeURIComponent(c.id); };
       oldSlot.appendChild(el);
     });
@@ -1301,7 +1611,7 @@ async function doFind(limitOverride){
       const pending = [];
       newOnes.forEach(c=>{
         const el = document.createElement('div');
-        el.className='item';
+        el.className='item hasfav';
         el.dataset.cid = c.courseId;
         const tn = c.termName || (c.termId ? termName(c.termId) : '');
         el.innerHTML = '<div class="d">' + esc(c.title || '（未命名课程）') + '</div>'
@@ -1313,6 +1623,8 @@ async function doFind(limitOverride){
           + (c.room ? '<span>教室 ' + esc(c.room) + '</span>' : '')
           + '<span class="bd">' + badges(c) + '</span>'
           + '</div>';
+        const favItem = favItemFromY2(c);
+        if (favItem) el.appendChild(makeFavBtn(favItem));
         el.onclick = ()=>{ loadSessions(c, el); };
         list.appendChild(el);
         if (isLoggedIn && c.verified !== true) pending.push({ c, el });
@@ -1411,7 +1723,7 @@ let courseListBackup = null, fmetaBackup = '';
 function pushCourseList(){
   if (courseListBackup || curCourse) return;
   const list = $('#list');
-  if (!list.firstElementChild || list.querySelector('.histbox') || list.querySelector('.splash') || list.querySelector('.backrow')) return;
+  if (!list.firstElementChild || list.querySelector('.histbox') || list.querySelector('.favsec') || list.querySelector('.favview') || list.querySelector('.splash') || list.querySelector('.backrow')) return;
   listScrollBackup = list.scrollTop;
   courseListBackup = document.createElement('div');
   courseListBackup.style.display = 'none';
@@ -1425,11 +1737,13 @@ function backToCourseList({ fromPop = false } = {}){
     history.back();
     return;
   }
+  exitFavView({ restoreList: false });
   const list = $('#list');
   if (!courseListBackup) {
     curCourse = null;
     $('#fmeta').textContent = '输入课程名或教师名开始搜课';
     renderHist();
+    syncFavUI();
     return;
   }
   list.innerHTML = '';
@@ -1439,6 +1753,7 @@ function backToCourseList({ fromPop = false } = {}){
   curCourse = null;
   $('#fmeta').textContent = fmetaBackup;
   list.scrollTop = listScrollBackup || 0;
+  syncFavUI();
 }
 
 window.addEventListener('popstate', () => {
@@ -1449,6 +1764,8 @@ function rowBack(c){
   const el = document.createElement('div');
   el.className = 'backrow';
   el.innerHTML = '<svg viewBox="0 0 24 24"><path d="M19 11H7.83l4.88-4.88c.39-.39.39-1.03 0-1.42a.996.996 0 0 0-1.41 0l-6.59 6.59a.996.996 0 0 0 0 1.41l6.59 6.59a.996.996 0 1 0 1.41-1.41L7.83 13H19c.55 0 1-.45 1-1s-.45-1-1-1z" fill="currentColor"/></svg><span class="bk">返回课程列表</span>' + (c && c.title ? '<b>' + esc(c.title) + '</b>' : '');
+  const favItem = favItemFromY2(c);
+  if (favItem) el.appendChild(makeFavBtn(favItem, 'backfav'));
   el.onclick = () => { backToCourseList(); };
   return el;
 }
@@ -1469,11 +1786,13 @@ async function loadSessions(c, el, opts){
     return;
   }
   const wasSameCourse = curCourse && String(curCourse.courseId) === String(c.courseId);
+  exitFavView({ restoreList: false });
   pushCourseList();
   try {
     if (!wasSameCourse && courseListBackup) history.pushState({ y2course: c.courseId }, '', '?course=' + encodeURIComponent(c.courseId));
   } catch(e) {}
   curCourse = c;
+  syncFavUI();
   if (el) document.querySelectorAll('.item').forEach(x=>x.classList.toggle('on', x===el));
   remember(c, curQuery);
   $('#now').textContent = c.title || '读取中…';
@@ -2461,7 +2780,13 @@ $('#fs').onclick = () => {
 };
 
 $('#go').onclick = () => doFind();
-$('#qClr').onclick = () => { $('#q').value = ''; syncClearBtn(); $('#q').focus(); if (!curCourse) renderHist(); };
+$('#qClr').onclick = () => { $('#q').value = ''; syncClearBtn(); $('#q').focus(); exitFavView({ restoreList: false }); if (!curCourse) renderHist(); };
+$('#btnFavList').onclick = enterFavView;
+$('#btnFavCur').onclick = () => {
+  if (!curCourse || !curCourse.courseId) return;
+  const item = favItemFromY2(curCourse);
+  if (item) toggleFav(item);
+};
 $('#q').addEventListener('input', syncClearBtn);
 $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doFind(); });
 $('#term').onchange = () => {
@@ -2666,6 +2991,8 @@ function applyAppSettings(s){
   } catch (e) {}
   isLoggedIn = logged;
   await refreshY2Status();
+  syncFavUI();
+  syncFavFromServer();
   if (APP) { window.__yhktRefresh(); setTimeout(window.__yhktRefresh, 1200); setTimeout(window.__yhktRefresh, 5000); }
 
   await loadTerms();
