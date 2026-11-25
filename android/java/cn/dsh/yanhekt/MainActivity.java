@@ -66,7 +66,6 @@ public class MainActivity extends Activity {
     private android.widget.Button cleanBtn;
     private android.widget.LinearLayout loginBar;
     private android.widget.Button loginBackBtn;
-    private android.widget.Button loginSsoBtn;
     private TextView loginTipView;
     private FrameLayout splashOverlay;
     private android.widget.LinearLayout splashCard;
@@ -152,6 +151,11 @@ public class MainActivity extends Activity {
                     if (pendingLogin != null && loginBar != null) {
                         loginBar.setVisibility(android.view.View.VISIBLE);
                     }
+                    if (pendingLogin != null && url != null && url.startsWith(Y2_SITE + "/portal")) {
+                        v.evaluateJavascript(
+                            "(function(){try{var m=document.querySelector('meta[name=viewport]');if(m)m.setAttribute('content','width=device-width,initial-scale=1.0,user-scalable=yes');if(!document.getElementById('yhkt-portal-fix')){var st=document.createElement('style');st.id='yhkt-portal-fix';st.textContent='.bit-login-dialog{width:min(456px,92vw)!important;max-width:92vw!important;margin-top:8vh!important}.bit-login-dialog .el-dialog__body{padding:16px 14px!important}';(document.head||document.documentElement).appendChild(st);}}catch(e){}})()",
+                            null);
+                    }
                     if (pendingLogin != null && url != null && url.contains("sso.bit.edu.cn/cas/login") && !ssoReloadedOnce) {
                         final String targetUrl = url;
                         ui.postDelayed(new Runnable() { public void run() {
@@ -169,7 +173,7 @@ public class MainActivity extends Activity {
                                         }
                                     }
                                 });
-                        }}, 1800);
+                        }}, 3500);
                     }
                 }
             }
@@ -256,20 +260,11 @@ public class MainActivity extends Activity {
         loginTipView = new TextView(this);
         loginTipView.setText("请登录，成功后自动返回");
         loginTipView.setTextSize(12.5f);
-        loginTipView.setPadding(dp(10), 0, dp(8), 0);
+        loginTipView.setPadding(dp(12), 0, 0, 0);
         loginTipView.setSingleLine(true);
         loginTipView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         loginBar.addView(loginTipView, new android.widget.LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        loginSsoBtn = mkBtn("北理工认证", 0, new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) {
-                if (web == null) return;
-                ssoReloadedOnce = false;
-                web.loadUrl(Y2_SITE + "/casapi/index.php?r=auth/login&auType=cas&tenant_code=21&forward=" + Uri.encode(Y2_SITE + "/portal/"));
-            }
-        });
-        loginSsoBtn.setVisibility(android.view.View.GONE);
-        loginBar.addView(loginSsoBtn);
         webWrap.addView(loginBar, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         webWrap.addView(web, new android.widget.LinearLayout.LayoutParams(
@@ -705,13 +700,10 @@ public class MainActivity extends Activity {
         bar.setOnClickListener(null);
         bar.setVisibility(TextView.GONE);
         if (loginTipView != null) {
-            loginTipView.setText(y2 ? "选「北京理工大学」登录，或点右侧「北理工认证」" : "请登录老平台，成功后自动返回");
-        }
-        if (loginSsoBtn != null) {
-            loginSsoBtn.setVisibility(y2 ? android.view.View.VISIBLE : android.view.View.GONE);
+            loginTipView.setText(y2 ? "请登录新版延河，成功后自动返回" : "请登录老平台，成功后自动返回");
         }
         if (loginBar != null) loginBar.setVisibility(android.view.View.VISIBLE);
-        web.loadUrl(y2 ? (Y2_SITE + "/yjlogin/#/?tenant_code=21&forward=" + Uri.encode(Y2_SITE + "/portal/")) : OLD_SITE);
+        web.loadUrl(y2 ? Y2_SITE + "/portal/" : OLD_SITE);
 
         // 后台持续轮询直到成功捕获有效登录态，然后自动跳回播放器
         new Thread(new Runnable() { public void run() {
@@ -1132,7 +1124,6 @@ public class MainActivity extends Activity {
         if (loginBar != null) loginBar.setBackgroundColor(Color.parseColor(darkTheme ? "#1b1c1f" : "#f0f4f9"));
         if (loginTipView != null) loginTipView.setTextColor(Color.parseColor(darkTheme ? "#c4c7c5" : "#444746"));
         styleBtn(loginBackBtn, 2);
-        styleBtn(loginSsoBtn, 0);
         if (bar != null) {
             bar.setBackgroundColor(Color.parseColor(darkTheme ? "#24262b" : "#d3e3fd"));
             bar.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#041e49"));
