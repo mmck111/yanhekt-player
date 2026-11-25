@@ -552,7 +552,7 @@
     .lgbtn{height:30px;padding:0 11px;font-size:11.5px}
     .playerbox{margin:0;border-radius:0;border:none;box-shadow:none}
     .playerbox:not(.is-fs){flex:none;width:100%;aspect-ratio:16/9;max-height:42dvh}
-    .playerbox:not(.is-fs).is-dual-split{aspect-ratio:4/3;max-height:46dvh}
+    .playerbox:not(.is-fs).is-dual-split{aspect-ratio:16/7.5;max-height:40dvh}
     .playerbox:not(.is-fs) .ctrldeck{
       position:absolute;left:0;right:0;bottom:0;z-index:8;border-top:none;padding:18px 10px 6px;gap:2px;color-scheme:dark;
       background:linear-gradient(0deg,rgba(10,11,14,.88) 28%,transparent);
@@ -576,7 +576,8 @@
     .mob-sess-hd{font-size:12px;font-weight:600;color:var(--muted);padding:2px 4px 8px;display:flex;align-items:center;justify-content:space-between}
     #dlClose{display:none}
     .dualbar{padding:0 12px 6px}
-    .stage.dual{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+    .stage.dual{grid-template-columns:1fr 1fr;grid-template-rows:1fr;gap:1px}
+    .stage.dual .pane .tag{left:6px;top:6px;font-size:10px;padding:2px 7px}
     .stage.pip .pane.pip-sub{width:42%;right:10px;bottom:10px}
     .inpbox input{font-size:16px}
     .scrub{height:28px}
@@ -639,7 +640,7 @@
         <h1><span class="dot off" id="sdot"></span><span>延河课堂 · 新版平台</span></h1>
         <div class="brand-act">
           <span class="fasttag">新版</span>
-          <button class="lgbtn" id="sbLgBtn" type="button" style="display:none" title="登录 / 切换平台">登录</button>
+          <button class="lgbtn" id="sbLgBtn" type="button" style="display:none" title="登录 / 切换平台">未登录</button>
           <button class="icobtn" id="btnTheme" type="button" title="切换浅色 / 深色主题" aria-label="切换浅色 / 深色主题">
             <svg class="ico-moon" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z" fill="currentColor"/></svg>
             <svg class="ico-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><path d="M12 2v2.5M12 19.5V22M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -686,7 +687,7 @@
         <span>选课</span>
       </button>
       <button class="menu" id="menu" type="button" title="课程列表"><svg viewBox="0 0 24 24"><path d="M4 6h16a1 1 0 0 1 0 2H4a1 1 0 0 1 0-2zm0 5h16a1 1 0 0 1 0 2H4a1 1 0 0 1 0-2zm0 5h16a1 1 0 0 1 0 2H4a1 1 0 0 1 0-2z" fill="currentColor"/></svg></button>
-      <button class="lgbtn" id="lgbtn" type="button" style="display:none" title="登录 / 切换平台">登录</button>
+      <button class="lgbtn" id="lgbtn" type="button" style="display:none" title="登录 / 切换平台">未登录</button>
       <div class="who">
         <span class="t" id="now">延河课堂新版播放器</span>
         <span class="subt" id="nowSub">搜索课程或选择左侧讲次开始播放</span>
@@ -1315,19 +1316,22 @@ const DESKTOP_APP = !!(window.yhktApp && window.yhktApp.isDesktop);
 const NATIVE_DL = !!(window.yhktApp && window.yhktApp.openDownloads);
 let y2ok = false, oldok = false;
 
-window.__yhktStat = (ao, bo) => {
-  const prevA = window.__yhktStat._ao, prevB = window.__yhktStat._bo;
-  y2ok = !!bo; oldok = !!ao; isLoggedIn = !!bo;
-  window.__yhktStat._ao = ao ? 1 : 0; window.__yhktStat._bo = bo ? 1 : 0;
-  const n = (ao ? 1 : 0) + (bo ? 1 : 0);
-  const txt = n === 0 ? '登录' : n === 2 ? '✓ 已登录' : (ao ? '✓ 老平台' : '✓ 新版');
+function syncPlatformLoginBtns(ok){
+  const on = !!ok;
+  const txt = on ? '✓ 已登录' : '未登录';
   ['lgbtn', 'sbLgBtn'].forEach(id => {
     const lg = document.getElementById(id);
     if (lg) {
       lg.textContent = txt;
-      lg.classList.toggle('on', n > 0);
+      lg.classList.toggle('on', on);
     }
   });
+}
+window.__yhktStat = (ao, bo) => {
+  const prevA = window.__yhktStat._ao, prevB = window.__yhktStat._bo;
+  y2ok = !!bo; oldok = !!ao; isLoggedIn = !!bo;
+  window.__yhktStat._ao = ao ? 1 : 0; window.__yhktStat._bo = bo ? 1 : 0;
+  syncPlatformLoginBtns(!!bo);
   if (bo) $('#sdot').classList.remove('off');
   const md = document.getElementById('lgmodal');
   if (md && md.style.display === 'flex' && APP
@@ -1520,6 +1524,7 @@ async function doLogin(tokenFromHash, rawCookie, hint){
     $('#sdot').classList.remove('off');
     $('#btnLogout').style.display = '';
     $('#btnSetup').textContent = '重登';
+    syncPlatformLoginBtns(true);
     await loadTerms();
     refreshY2Status();
     if (!curCourse) await resumeLast();
@@ -1532,6 +1537,7 @@ async function refreshY2Status(){
   try{
     const st = await (await fetch('/api/y2/status')).json();
     isLoggedIn = !!(st && st.loggedIn);
+    if (typeof syncPlatformLoginBtns === 'function') syncPlatformLoginBtns(isLoggedIn);
     if (!isLoggedIn) {
       $('#sdot').classList.add('off');
       $('#btnLogout').style.display = 'none';
