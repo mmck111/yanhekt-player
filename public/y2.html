@@ -88,6 +88,7 @@
   .hd{padding:14px 16px 12px;border-bottom:1px solid var(--line)}
   .brandhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
   .hd h1{margin:0;font-size:15px;color:var(--fg);font-weight:600;letter-spacing:.01em;display:flex;align-items:center;gap:9px;min-width:0}
+  .hd h1 span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hd h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft);flex:none;transition:background .25s var(--ease),box-shadow .25s var(--ease)}
   .hd h1 .dot.off{background:var(--muted);box-shadow:none}
   .brand-act{display:flex;align-items:center;gap:6px;flex:none}
@@ -505,6 +506,7 @@
   .lgbtn{height:32px;padding:0 13px;border-radius:999px;border:none;background:var(--accent-soft);color:var(--on-accent-soft);
     font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;flex:none;transition:filter .15s}
   .lgbtn.on{background:var(--ok-soft);color:var(--on-ok-soft)}
+  .brand-act .lgbtn{height:28px;padding:0 10px;font-size:11.5px}
 
   @media (max-width:1140px){
     #btnAutoNext span,#dl span,#fs span{display:none}
@@ -633,6 +635,7 @@
         <h1><span class="dot off" id="sdot"></span><span>延河课堂 · 新版平台</span></h1>
         <div class="brand-act">
           <span class="fasttag">新版</span>
+          <button class="lgbtn" id="sbLgBtn" type="button" style="display:none" title="登录 / 切换平台">登录</button>
           <button class="icobtn" id="btnTheme" type="button" title="切换浅色 / 深色主题" aria-label="切换浅色 / 深色主题">
             <svg class="ico-moon" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z" fill="currentColor"/></svg>
             <svg class="ico-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><path d="M12 2v2.5M12 19.5V22M4.93 4.93l1.77 1.77M17.3 17.3l1.77 1.77M2 12h2.5M19.5 12H22M4.93 19.07l1.77-1.77M17.3 6.7l1.77-1.77" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -1311,12 +1314,15 @@ window.__yhktStat = (ao, bo) => {
   const prevA = window.__yhktStat._ao, prevB = window.__yhktStat._bo;
   y2ok = !!bo; oldok = !!ao; isLoggedIn = !!bo;
   window.__yhktStat._ao = ao ? 1 : 0; window.__yhktStat._bo = bo ? 1 : 0;
-  const lg = document.getElementById('lgbtn');
-  if (lg) {
-    const n = (ao ? 1 : 0) + (bo ? 1 : 0);
-    lg.textContent = n === 0 ? '登录' : n === 2 ? '✓ 已登录' : (ao ? '✓ 老平台' : '✓ 新版');
-    lg.classList.toggle('on', n > 0);
-  }
+  const n = (ao ? 1 : 0) + (bo ? 1 : 0);
+  const txt = n === 0 ? '登录' : n === 2 ? '✓ 已登录' : (ao ? '✓ 老平台' : '✓ 新版');
+  ['lgbtn', 'sbLgBtn'].forEach(id => {
+    const lg = document.getElementById(id);
+    if (lg) {
+      lg.textContent = txt;
+      lg.classList.toggle('on', n > 0);
+    }
+  });
   if (bo) $('#sdot').classList.remove('off');
   const md = document.getElementById('lgmodal');
   if (md && md.style.display === 'flex' && APP
@@ -2593,7 +2599,7 @@ function toggleHud(){
   else hideHud();
 }
 $('#playerBox').addEventListener('mousemove', () => {
-  if (Date.now() - lastStageTouchMs < 700) return;
+  if ((typeof isMobileUI === 'function' && isMobileUI()) || stageTouchPt || stageLongPressActive || speedBoostActive || stageSwipe || Date.now() - lastStageTouchMs < 1000) return;
   wakeHud();
 });
 if ($('#ctrldeck')) $('#ctrldeck').addEventListener('touchstart', wakeHud, { passive: true });
@@ -2607,6 +2613,7 @@ let lastStageTouchMs = 0, lastStageTap = null, stageTouchPt = null, stageTouchWa
 let stageLongPressTimer = 0, stageLongPressActive = false, stageSingleTapTimer = 0;
 $('#stage').addEventListener('touchstart', e => {
   clearTimeout(stageLongPressTimer); stageLongPressTimer = 0;
+  lastStageTouchMs = Date.now();
   stageTouchWasIdle = $('#playerBox').classList.contains('idle');
   if (e.target.closest('.perr')) { stageTouchPt = null; return; }
   if (kind === 'dual' && dualPip && e.target.closest('.pip-sub')) { stageTouchPt = null; return; }
@@ -2633,6 +2640,7 @@ $('#stage').addEventListener('touchstart', e => {
   }, 380);
 }, { passive: true });
 $('#stage').addEventListener('touchmove', e => {
+  lastStageTouchMs = Date.now();
   if (!stageTouchPt || !e.touches || e.touches.length !== 1) return;
   if (stageLongPressActive) return;
   const t = e.touches[0];
@@ -2653,7 +2661,7 @@ $('#stage').addEventListener('touchmove', e => {
   if (stageSwipe) {
     const rect = $('#stage').getBoundingClientRect();
     const w = Math.max(240, (rect && rect.width) || 360);
-    const spanSec = Math.min(180, Math.max(60, stageSwipe.dur * 0.12));
+    const spanSec = Math.min(600, Math.max(150, stageSwipe.dur * 0.25));
     const deltaSec = Math.round(((t.clientX - stageSwipe.startX) / w) * spanSec);
     const target = Math.max(0, Math.min(stageSwipe.dur, stageSwipe.baseTime + deltaSec));
     stageSwipe.targetTime = target;
@@ -3117,9 +3125,13 @@ if ($('#dlnk')) $('#dlnk').onclick = (e) => {
 };
 
 if (APP) {
-  const so = document.getElementById('btnSetup'); if (so) so.style.display = 'none';
-  const lg = document.getElementById('lgbtn');
-  if (lg) { lg.style.display = 'inline-block'; lg.onclick = () => { closeDrawer(); showLoginModal(); }; }
+  ['lgbtn', 'sbLgBtn'].forEach(id => {
+    const lg = document.getElementById(id);
+    if (lg) {
+      lg.style.display = 'inline-block';
+      lg.onclick = () => { closeDrawer(); showLoginModal(); };
+    }
+  });
 }
 
 $('#fs').onclick = () => {

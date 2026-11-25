@@ -105,10 +105,14 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
+        s.setJavaScriptCanOpenWindowsAutomatically(true);
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        s.setUserAgentString(s.getUserAgentString());
+        String ua = s.getUserAgentString();
+        if (ua != null && ua.contains("; wv)")) {
+            s.setUserAgentString(ua.replace("; wv)", ")"));
+        }
         s.setSupportMultipleWindows(false);
         cm.setAcceptThirdPartyCookies(web, true);
 
@@ -154,7 +158,7 @@ public class MainActivity extends Activity {
                         String k = e.getKey() == null ? "" : e.getKey().toLowerCase();
                         String val = e.getValue();
                         if (val == null || val.length() < 20) continue;
-                        if (!(k.contains("authorization") || k.contains("token"))) continue;
+                        if (!(k.contains("authorization") || k.contains("blade") || k.contains("token"))) continue;
                         String t = val.replace("Bearer ", "").replace("bearer ", "").trim();
                         if (t.length() < 20) continue;
                         if (host.contains("aita")) { if (capturedY2 == null) capturedY2 = t; }
@@ -164,12 +168,19 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {}
                 return null;
             }
-            @Override public boolean shouldOverrideUrlLoading(WebView v, String url) {
+            private boolean handleOverrideUrl(String url) {
                 if (url == null) return false;
-                boolean ours = url.startsWith(BASE) || url.contains("yanhekt.cn");
+                boolean ours = url.startsWith(BASE) || url.contains("yanhekt.cn") || url.contains("bit.edu.cn")
+                    || (pendingLogin != null && (url.startsWith("http://") || url.startsWith("https://")));
                 if (ours) return false;
                 try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (Exception ignored) {}
                 return true;
+            }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, android.webkit.WebResourceRequest req) {
+                return handleOverrideUrl(req == null || req.getUrl() == null ? null : req.getUrl().toString());
+            }
+            @Override public boolean shouldOverrideUrlLoading(WebView v, String url) {
+                return handleOverrideUrl(url);
             }
         });
         // HTML5 全屏：WebView 自己不会处理 requestFullscreen，必须接这两个回调
@@ -538,6 +549,9 @@ public class MainActivity extends Activity {
         loginRedirecting = false;
         forceNext = false;
         capturedOld = null; capturedY2 = null;
+        if (dlPanel != null && dlPanel.getVisibility() == android.view.View.VISIBLE) {
+            closeDlPanel(false);
+        }
         bar.setOnClickListener(null);
         bar.setVisibility(TextView.GONE);
         if (loginTipView != null) {
@@ -617,7 +631,7 @@ public class MainActivity extends Activity {
             if (which != null) {
                 String tok = null;
                 if (y2) {
-                    String all = (capturedY2 == null ? "" : capturedY2 + "\n") + jsEval(Y2_TOKEN_JS);
+                    String all = collectY2Tokens();
                     if (all.length() > 40) tok = all;
                 } else {
                     String all = (capturedOld == null ? "" : capturedOld + "\n") + jsEval(TOKEN_JS);
@@ -744,15 +758,45 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String collectY2Tokens() {
+        java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<String>();
+        if (capturedY2 != null && capturedY2.length() > 20) set.add(capturedY2);
+        try {
+            String ck = CookieManager.getInstance().getCookie(Y2_SITE);
+            if (ck != null && ck.length() > 0) {
+                String rawTok = cookieValue(ck, "_token");
+                String decCk = Uri.decode(ck);
+                String decTok = rawTok == null ? null : Uri.decode(rawTok);
+                for (String src : new String[]{ ck, decCk, rawTok, decTok }) {
+                    if (src == null || src.length() < 20) continue;
+                    java.util.regex.Matcher mp = java.util.regex.Pattern.compile("_token\";i:\\d+;s:\\d+:\"(.+?)\"").matcher(src);
+                    while (mp.find()) set.add(mp.group(1));
+                    java.util.regex.Matcher mj = java.util.regex.Pattern.compile("(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)").matcher(src);
+                    while (mj.find()) set.add(mj.group(1));
+                }
+                if (decTok != null && decTok.length() > 40) set.add(decTok);
+            }
+        } catch (Exception ignored) {}
+        String js = jsEval(Y2_TOKEN_JS);
+        if (js != null && js.length() > 0) {
+            for (String line : js.split("\n")) {
+                line = line.trim();
+                if (line.length() > 20) set.add(line);
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String item : set) {
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(item);
+        }
+        return sb.toString();
+    }
+
     private String waitY2Token(int ms) {
         long t0 = System.currentTimeMillis();
-        int tick = 0;
         while (System.currentTimeMillis() - t0 < ms) {
             if (forceNext) { forceNext = false; return null; }
-            // _token 是 PHP 序列化串，里面有分号 —— 当 cookie header 发会被截断，
-            // 所以在页面里按官网 getToken 的逻辑把 JWT 抠出来
-            String all = (capturedY2 == null ? "" : capturedY2 + "\n") + jsEval(Y2_TOKEN_JS);
-            String tk = all;
+            String tk = collectY2Tokens();
             if (tk != null && tk.length() > 40) return tk;
             sleep(450);
         }
@@ -1070,15 +1114,17 @@ public class MainActivity extends Activity {
     // 按官网 getToken 的正则抠 JWT；同样返回候选列表。
     private static final String Y2_TOKEN_JS =
         "(function(){var out=[];"
-        + "function add(v){if(!v)return;v=String(v);"
+        + "function add(v){if(!v)return;v=String(v);try{v=decodeURIComponent(v)}catch(e){}"
         + "var m=/\\{i:\\d+;s:\\d+:\"_token\";i:\\d+;s:\\d+:\"(.+?)\";\\}/.exec(v);"
         + "if(m&&out.indexOf(m[1])<0)out.push(m[1]);"
         + "var j=/(eyJ[\\w-]+\\.[\\w-]+\\.[\\w-]*)/.exec(v);"
         + "if(j&&out.indexOf(j[1])<0)out.push(j[1]);}"
         + "var ck='';try{ck=document.cookie||''}catch(e){}"
         + "add(ck);"
-        + "try{add(localStorage.getItem('_token')||'')}catch(e){}"
-        + "try{add(localStorage.getItem('token')||'')}catch(e){}"
+        + "function scan(st){try{for(var i=0;i<st.length;i++){var k=st.key(i),v=st.getItem(k)||'';"
+        + "if(/token|auth|user/i.test(k)){add(v);try{var o=JSON.parse(v);"
+        + "if(o){add(o.token);add(o.accessToken);add(o.jwt);if(o.auth)add(o.auth.token);}}catch(e){}}}}catch(e){}}"
+        + "scan(localStorage);scan(sessionStorage);"
         + "return out.join(String.fromCharCode(10));})()";
 
     // 诊断用：把当前页面的存储键名列出来
