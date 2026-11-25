@@ -2199,6 +2199,7 @@ function attachStream(vid, paneSel, st, { seekTo = 0, autoPlay = true, isSub = f
       manifestLoadingMaxRetry: 4,
       startFragPrefetch: false,
       liveDurationInfinity: !!(info && info.kind === 'live'),
+      backBufferLength: (info && info.kind === 'live') ? 180 : Infinity,
       startPosition: needSeek ? needSeek : -1,
       abortLoadingOnSeek: true,
     });
@@ -2496,22 +2497,44 @@ function updatePlayUI(){
   $('#playTxt').textContent = paused ? '播放' : '暂停';
   updateProgressUI();
 }
+function seekRange(vid){
+  if (!vid) return null;
+  if (isFinite(vid.duration) && vid.duration > 0) {
+    return { min: 0, max: vid.duration, dur: vid.duration, finite: true };
+  }
+  try {
+    if (vid.seekable && vid.seekable.length > 0) {
+      const min = vid.seekable.start(0);
+      const max = vid.seekable.end(vid.seekable.length - 1);
+      if (isFinite(min) && isFinite(max) && max - min > 1) {
+        return { min, max, dur: max - min, finite: false };
+      }
+    }
+  } catch(e){}
+  return null;
+}
 function updateProgressUI(){
   if (dragging || stageSwipe) return;
-  const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : (curSub && Number(curSub.duration)) || 0;
+  const rng = seekRange(v);
   const curT = v.currentTime || 0;
-  $('#timeTxt').textContent = fmt(curT) + ' / ' + (dur > 0 ? fmt(dur) : '--:--');
-  const pct = dur > 0 ? Math.min(100, Math.max(0, curT / dur * 100)) : 0;
+  const fallbackDur = !rng && curSub ? (Number(curSub.duration) || 0) : 0;
+  const dur = rng ? rng.dur : fallbackDur;
+  const minT = rng ? rng.min : 0;
+  const relCur = rng ? Math.max(0, Math.min(dur, curT - minT)) : curT;
+  $('#timeTxt').textContent = fmt(relCur) + ' / ' + (dur > 0 ? fmt(dur) : '--:--');
+  const pct = dur > 0 ? Math.min(100, Math.max(0, relCur / dur * 100)) : 0;
   $('#scrubFill').style.width = pct + '%';
   $('#scrubThumb').style.left = pct + '%';
   let bufPct = 0;
-  try { if (dur > 0 && v.buffered && v.buffered.length) bufPct = Math.min(100, v.buffered.end(v.buffered.length-1)/dur*100); } catch(e){}
+  try { if (dur > 0 && v.buffered && v.buffered.length) bufPct = Math.min(100, Math.max(0, (v.buffered.end(v.buffered.length-1) - minT)/dur*100)); } catch(e){}
   $('#scrubBuf').style.width = bufPct + '%';
 }
 function seekToFraction(frac){
-  if (!isFinite(v.duration) || v.duration <= 0) return;
+  const rng = seekRange(v);
+  if (!rng) return;
   pendingSeekGuard = 0; suppressProgressSave = false;
-  const target = Math.max(0, Math.min(v.duration, frac * v.duration));
+  const f = Math.max(0, Math.min(1, frac));
+  const target = Math.max(rng.min, Math.min(rng.max, rng.min + f * rng.dur));
   v.currentTime = target;
   if (kind === 'dual') { try { vSub.currentTime = target; } catch(e){} }
   if (auxAudioActive && vAux) { try { vAux.currentTime = target; } catch(e){} }
@@ -2521,14 +2544,15 @@ function seekToFraction(frac){
   const sc = $('#scrub'), tip = $('#scrubTip');
   const fracOf = ev => { const r = sc.getBoundingClientRect(); return Math.max(0, Math.min(1, (ev.clientX - r.left) / Math.max(1, r.width))); };
   const showTip = ev => {
-    if (!isFinite(v.duration) || v.duration <= 0) return;
+    const rng = seekRange(v);
+    if (!rng) return;
     const f = fracOf(ev);
-    tip.textContent = fmt(f * v.duration);
+    tip.textContent = fmt(f * rng.dur);
     tip.style.left = (f * 100) + '%';
     tip.classList.add('show');
   };
   sc.addEventListener('pointerdown', ev => {
-    if (!isFinite(v.duration) || v.duration <= 0) return;
+    if (!seekRange(v)) return;
     dragging = true; sc.classList.add('drag'); sc.setPointerCapture(ev.pointerId);
     const f = fracOf(ev);
     $('#scrubFill').style.width = (f * 100) + '%'; $('#scrubThumb').style.left = (f * 100) + '%';
@@ -2708,12 +2732,12 @@ $('#stage').addEventListener('touchmove', e => {
     if (Math.hypot(dx, dy) > 14) {
       clearTimeout(stageLongPressTimer); stageLongPressTimer = 0;
     }
-    const dur = (v && isFinite(v.duration) && v.duration > 0) ? v.duration : 0;
-    if (dur > 0 && Math.abs(dx) > 16 && Math.abs(dx) > Math.abs(dy) * 1.35) {
+    const rng = seekRange(v);
+    if (rng && rng.dur > 1 && Math.abs(dx) > 16 && Math.abs(dx) > Math.abs(dy) * 1.35) {
       clearTimeout(stageSingleTapTimer); stageSingleTapTimer = 0;
       lastStageTap = null;
-      const baseTime = Math.max(0, Math.min(dur, v.currentTime || 0));
-      stageSwipe = { kind: 'seek', startX: stageTouchPt.x + (dx > 0 ? 14 : -14), baseTime, dur, targetTime: baseTime };
+      const baseTime = Math.max(rng.min, Math.min(rng.max, v.currentTime || 0));
+      stageSwipe = { kind: 'seek', startX: stageTouchPt.x + (dx > 0 ? 14 : -14), baseTime, min: rng.min, max: rng.max, dur: rng.dur, finite: rng.finite, targetTime: baseTime };
     } else if (Math.abs(dy) > 16 && Math.abs(dy) > Math.abs(dx) * 1.35) {
       clearTimeout(stageSingleTapTimer); stageSingleTapTimer = 0;
       lastStageTap = null;
@@ -2736,23 +2760,24 @@ $('#stage').addEventListener('touchmove', e => {
     if (stageSwipe.kind === 'seek') {
       const rect = $('#stage').getBoundingClientRect();
       const w = Math.max(240, (rect && rect.width) || 360);
-      const spanSec = Math.min(600, Math.max(150, stageSwipe.dur * 0.25));
+      const spanSec = stageSwipe.finite ? Math.min(600, Math.max(150, stageSwipe.dur * 0.25)) : Math.min(600, Math.max(30, stageSwipe.dur));
       const deltaSec = Math.round(((t.clientX - stageSwipe.startX) / w) * spanSec);
-      const target = Math.max(0, Math.min(stageSwipe.dur, stageSwipe.baseTime + deltaSec));
+      const target = Math.max(stageSwipe.min, Math.min(stageSwipe.max, stageSwipe.baseTime + deltaSec));
       stageSwipe.targetTime = target;
       const diff = Math.round(target - stageSwipe.baseTime);
+      const relTarget = target - stageSwipe.min;
       const spw = $('#swipePill');
       if (spw) {
         const bEl = spw.querySelector('b'), sEl = spw.querySelector('span');
-        if (bEl) bEl.textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
+        if (bEl) bEl.textContent = fmt(relTarget) + ' / ' + fmt(stageSwipe.dur);
         if (sEl) sEl.textContent = (diff >= 0 ? '快进 +' : '快退 ') + diff + 's';
         spw.classList.remove('meter');
         spw.classList.add('on');
       }
-      const pct = (target / stageSwipe.dur) * 100;
+      const pct = ((target - stageSwipe.min) / stageSwipe.dur) * 100;
       if ($('#scrubFill')) $('#scrubFill').style.width = pct + '%';
       if ($('#scrubThumb')) $('#scrubThumb').style.left = pct + '%';
-      if ($('#timeTxt')) $('#timeTxt').textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
+      if ($('#timeTxt')) $('#timeTxt').textContent = fmt(relTarget) + ' / ' + fmt(stageSwipe.dur);
     } else {
       const minVal = stageSwipe.kind === 'bright' ? 0.05 : 0;
       const delta = -(t.clientY - stageSwipe.startY) / stageSwipe.spanY;
@@ -2786,7 +2811,7 @@ const endStageTouch = e => {
     const spw = $('#swipePill'); if (spw) spw.classList.remove('on', 'meter');
     if (sw.kind === 'seek') {
       if (e.type !== 'touchcancel' && sw.dur > 0) {
-        seekToFraction(sw.targetTime / sw.dur);
+        seekToFraction((sw.targetTime - sw.min) / sw.dur);
         if (!stageTouchWasIdle) wakeHud();
       } else {
         updateProgressUI();

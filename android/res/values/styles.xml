@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/launch_bg</item>
+        <item name="android:statusBarColor">#f8fafd</item>
+        <item name="android:navigationBarColor">#f8fafd</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

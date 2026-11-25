@@ -66,7 +66,17 @@ public class MainActivity extends Activity {
     private android.widget.Button cleanBtn;
     private android.widget.LinearLayout loginBar;
     private android.widget.Button loginBackBtn;
+    private android.widget.Button loginSsoBtn;
     private TextView loginTipView;
+    private FrameLayout splashOverlay;
+    private android.widget.LinearLayout splashCard;
+    private android.widget.LinearLayout splashPill;
+    private TextView splashTitleView;
+    private TextView splashSubView;
+    private TextView splashStatusView;
+    private TextView splashBrandView;
+    private volatile boolean splashDismissed = false;
+    private volatile boolean ssoReloadedOnce = false;
     private volatile boolean loginRedirecting = false;
     private volatile int ownedCount = -1;
     private volatile boolean darkTheme = false;
@@ -123,6 +133,8 @@ public class MainActivity extends Activity {
                 v.evaluateJavascript(DL_HOOK, null);
                 boolean onPlayer = url != null && url.startsWith(BASE);
                 if (onPlayer) {
+                    ssoReloadedOnce = false;
+                    dismissSplash();
                     // 登录状态推给页面（顶栏的登录按钮据此显示「✓ 已登录」）
                     pushStatus();
                     if (loginBar != null) loginBar.setVisibility(android.view.View.GONE);
@@ -135,9 +147,29 @@ public class MainActivity extends Activity {
                         bar.setVisibility(TextView.GONE);
                     }
                 } else {
+                    dismissSplash();
                     loginSiteSeen = true;   // 已经真的站到官网登录页上了
                     if (pendingLogin != null && loginBar != null) {
                         loginBar.setVisibility(android.view.View.VISIBLE);
+                    }
+                    if (pendingLogin != null && url != null && url.contains("sso.bit.edu.cn/cas/login") && !ssoReloadedOnce) {
+                        final String targetUrl = url;
+                        ui.postDelayed(new Runnable() { public void run() {
+                            if (ssoReloadedOnce || pendingLogin == null || web == null) return;
+                            String curU = web.getUrl();
+                            if (curU == null || !curU.contains("sso.bit.edu.cn/cas/login")) return;
+                            web.evaluateJavascript(
+                                "(function(){return (document.querySelectorAll('input,button').length===0 && (document.body?document.body.innerText:'').trim().length<5)?'empty':'ok';})()",
+                                new android.webkit.ValueCallback<String>() {
+                                    @Override public void onReceiveValue(String val) {
+                                        if (val != null && val.contains("empty") && !ssoReloadedOnce && web != null) {
+                                            ssoReloadedOnce = true;
+                                            Log.w(TAG, "sso.bit.edu.cn blank mobile shell detected, reloading: " + targetUrl);
+                                            web.reload();
+                                        }
+                                    }
+                                });
+                        }}, 1800);
                     }
                 }
             }
@@ -224,11 +256,20 @@ public class MainActivity extends Activity {
         loginTipView = new TextView(this);
         loginTipView.setText("请登录，成功后自动返回");
         loginTipView.setTextSize(12.5f);
-        loginTipView.setPadding(dp(12), 0, 0, 0);
+        loginTipView.setPadding(dp(10), 0, dp(8), 0);
         loginTipView.setSingleLine(true);
         loginTipView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         loginBar.addView(loginTipView, new android.widget.LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        loginSsoBtn = mkBtn("北理工认证", 0, new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View v) {
+                if (web == null) return;
+                ssoReloadedOnce = false;
+                web.loadUrl(Y2_SITE + "/casapi/index.php?r=auth/login&auType=cas&tenant_code=21&forward=" + Uri.encode(Y2_SITE + "/portal/"));
+            }
+        });
+        loginSsoBtn.setVisibility(android.view.View.GONE);
+        loginBar.addView(loginSsoBtn);
         webWrap.addView(loginBar, new android.widget.LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         webWrap.addView(web, new android.widget.LinearLayout.LayoutParams(
@@ -240,6 +281,7 @@ public class MainActivity extends Activity {
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(16), dp(11), dp(16), dp(11));
         bar.setText("正在启动本地引擎…");
+        bar.setVisibility(android.view.View.GONE);
         // 长按底栏看诊断（接口原文 / 拦截到的 token / cookie / 引擎 status），平时不占地方
         bar.setOnLongClickListener(new android.view.View.OnLongClickListener() {
             @Override public boolean onLongClick(android.view.View v) {
@@ -358,6 +400,108 @@ public class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         dlRootLp.bottomMargin = dp(64);
         root.addView(dlPanel, dlRootLp);
+
+        // 开幕画面（仿哔哩哔哩启动页：居中图标 + 标题 + 副标题 + 底部引擎状态胶囊）
+        splashOverlay = new FrameLayout(this);
+        splashOverlay.setClickable(true);
+        splashOverlay.setFocusable(true);
+
+        android.widget.LinearLayout splashCenter = new android.widget.LinearLayout(this);
+        splashCenter.setOrientation(android.widget.LinearLayout.VERTICAL);
+        splashCenter.setGravity(Gravity.CENTER_HORIZONTAL);
+        splashCard = new android.widget.LinearLayout(this);
+        splashCard.setGravity(Gravity.CENTER);
+        splashCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+        if (Build.VERSION.SDK_INT >= 21) splashCard.setElevation(dp(8));
+        android.widget.ImageView splashLogo = new android.widget.ImageView(this);
+        int icoId = getResources().getIdentifier("ic_launcher", "mipmap", getPackageName());
+        if (icoId != 0) {
+            splashLogo.setImageResource(icoId);
+        } else {
+            try { splashLogo.setImageDrawable(getPackageManager().getApplicationIcon(getApplicationInfo())); } catch (Exception ignored) {}
+        }
+        splashLogo.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        splashCard.addView(splashLogo, new android.widget.LinearLayout.LayoutParams(dp(64), dp(64)));
+        splashCenter.addView(splashCard, new android.widget.LinearLayout.LayoutParams(dp(88), dp(88)));
+
+        splashTitleView = new TextView(this);
+        splashTitleView.setText("延河课堂");
+        splashTitleView.setTextSize(24f);
+        splashTitleView.setTypeface(null, android.graphics.Typeface.BOLD);
+        if (Build.VERSION.SDK_INT >= 21) splashTitleView.setLetterSpacing(0.06f);
+        android.widget.LinearLayout.LayoutParams stLp = new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stLp.topMargin = dp(18);
+        splashCenter.addView(splashTitleView, stLp);
+
+        splashSubView = new TextView(this);
+        splashSubView.setText("北京理工大学课程播放助手");
+        splashSubView.setTextSize(13f);
+        android.widget.LinearLayout.LayoutParams ssLp = new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ssLp.topMargin = dp(6);
+        splashCenter.addView(splashSubView, ssLp);
+
+        FrameLayout.LayoutParams centerLp = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        centerLp.gravity = Gravity.CENTER;
+        centerLp.bottomMargin = dp(28);
+        splashOverlay.addView(splashCenter, centerLp);
+
+        android.widget.LinearLayout splashFoot = new android.widget.LinearLayout(this);
+        splashFoot.setOrientation(android.widget.LinearLayout.VERTICAL);
+        splashFoot.setGravity(Gravity.CENTER_HORIZONTAL);
+        splashPill = new android.widget.LinearLayout(this);
+        splashPill.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        splashPill.setGravity(Gravity.CENTER_VERTICAL);
+        splashPill.setPadding(dp(14), dp(7), dp(14), dp(7));
+        android.widget.ProgressBar splashProg = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleSmall);
+        android.widget.LinearLayout.LayoutParams pgLp = new android.widget.LinearLayout.LayoutParams(dp(14), dp(14));
+        pgLp.rightMargin = dp(8);
+        splashPill.addView(splashProg, pgLp);
+        splashStatusView = new TextView(this);
+        splashStatusView.setText("正在启动本地引擎…");
+        splashStatusView.setTextSize(12f);
+        splashPill.addView(splashStatusView);
+        splashPill.setOnLongClickListener(new android.view.View.OnLongClickListener() {
+            @Override public boolean onLongClick(android.view.View v) {
+                dismissSplash();
+                showDiag("启动诊断");
+                return true;
+            }
+        });
+        splashFoot.addView(splashPill, new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        splashBrandView = new TextView(this);
+        splashBrandView.setText("YANHEKT · PLAYER");
+        splashBrandView.setTextSize(10.5f);
+        if (Build.VERSION.SDK_INT >= 21) splashBrandView.setLetterSpacing(0.14f);
+        android.widget.LinearLayout.LayoutParams sbLp = new android.widget.LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sbLp.topMargin = dp(10);
+        splashFoot.addView(splashBrandView, sbLp);
+
+        FrameLayout.LayoutParams footLp = new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        footLp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+        footLp.bottomMargin = dp(42);
+        splashOverlay.addView(splashFoot, footLp);
+        if (Build.VERSION.SDK_INT >= 23) {
+            splashOverlay.setOnApplyWindowInsetsListener(new android.view.View.OnApplyWindowInsetsListener() {
+                @Override public android.view.WindowInsets onApplyWindowInsets(android.view.View v, android.view.WindowInsets ins) {
+                    v.setPadding(
+                        ins.getSystemWindowInsetLeft(),
+                        ins.getSystemWindowInsetTop(),
+                        ins.getSystemWindowInsetRight(),
+                        ins.getSystemWindowInsetBottom());
+                    return ins;
+                }
+            });
+        }
+        root.addView(splashOverlay, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         setContentView(root);
         applyNativeTheme();
         startEngine();
@@ -480,6 +624,9 @@ public class MainActivity extends Activity {
         boolean newOk = newSt != null && newSt.indexOf("\"loggedIn\":true") >= 0;
         Log.i(TAG, "loggedIn old=" + oldOk + " y2=" + newOk);
         // 不再先跑登录页：直接进播放器。要登录就点页面里的按钮，登录完自动回来
+        ui.post(new Runnable() { public void run() {
+            if (splashStatusView != null) splashStatusView.setText("正在加载界面…");
+        }});
         if (newOk) { openPlayer("/y2"); watchExpiry(); }
         else if (oldOk) { openPlayer("/"); watchExpiry(); }
         else openPlayer("/y2");
@@ -542,6 +689,8 @@ public class MainActivity extends Activity {
 
     private void startLoginSite(final String which) {
         final boolean y2 = "y2".equals(which);
+        dismissSplash();
+        ssoReloadedOnce = false;
         String curUrl = web == null ? null : web.getUrl();
         if (curUrl != null && curUrl.startsWith(BASE)) lastPlayerUrl = curUrl;
         lastLoginTarget = which;
@@ -556,10 +705,13 @@ public class MainActivity extends Activity {
         bar.setOnClickListener(null);
         bar.setVisibility(TextView.GONE);
         if (loginTipView != null) {
-            loginTipView.setText(y2 ? "请登录新版延河，成功后自动返回" : "请登录老平台，成功后自动返回");
+            loginTipView.setText(y2 ? "选「北京理工大学」登录，或点右侧「北理工认证」" : "请登录老平台，成功后自动返回");
+        }
+        if (loginSsoBtn != null) {
+            loginSsoBtn.setVisibility(y2 ? android.view.View.VISIBLE : android.view.View.GONE);
         }
         if (loginBar != null) loginBar.setVisibility(android.view.View.VISIBLE);
-        web.loadUrl(y2 ? Y2_SITE + "/portal/" : OLD_SITE);
+        web.loadUrl(y2 ? (Y2_SITE + "/yjlogin/#/?tenant_code=21&forward=" + Uri.encode(Y2_SITE + "/portal/")) : OLD_SITE);
 
         // 后台持续轮询直到成功捕获有效登录态，然后自动跳回播放器
         new Thread(new Runnable() { public void run() {
@@ -672,6 +824,7 @@ public class MainActivity extends Activity {
     }
     /** 两边都失败时把诊断画在屏幕上（截图就能发出去） */
     private void showDiag(final String err) {
+        dismissSplash();
         new Thread(new Runnable() { public void run() {
             final String where = jsEval("location.href");
             final String keys = jsEval(KEYS_JS);
@@ -942,12 +1095,44 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
+    private void dismissSplash() {
+        if (splashDismissed || splashOverlay == null) return;
+        splashDismissed = true;
+        ui.post(new Runnable() { public void run() {
+            if (splashOverlay == null || splashOverlay.getVisibility() != android.view.View.VISIBLE) return;
+            splashOverlay.animate().alpha(0f).setDuration(260).withEndAction(new Runnable() {
+                @Override public void run() {
+                    if (splashOverlay != null) splashOverlay.setVisibility(android.view.View.GONE);
+                }
+            }).start();
+        }});
+    }
+
     private void applyNativeTheme() {
         applySystemBars();
         if (rootView != null) rootView.setBackgroundColor(Color.parseColor(darkTheme ? "#131314" : "#f8fafd"));
+        if (splashOverlay != null) splashOverlay.setBackgroundColor(Color.parseColor(darkTheme ? "#131314" : "#f8fafd"));
+        if (splashCard != null) {
+            android.graphics.drawable.GradientDrawable cardBg = new android.graphics.drawable.GradientDrawable();
+            cardBg.setColor(Color.parseColor(darkTheme ? "#1e2025" : "#ffffff"));
+            cardBg.setCornerRadius(dp(24));
+            cardBg.setStroke(dp(1), Color.parseColor(darkTheme ? "#2f333a" : "#e3e8ef"));
+            splashCard.setBackground(cardBg);
+        }
+        if (splashTitleView != null) splashTitleView.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#1f1f1f"));
+        if (splashSubView != null) splashSubView.setTextColor(Color.parseColor(darkTheme ? "#9aa0a6" : "#5f6368"));
+        if (splashPill != null) {
+            android.graphics.drawable.GradientDrawable pillBg = new android.graphics.drawable.GradientDrawable();
+            pillBg.setColor(Color.parseColor(darkTheme ? "#1e2025" : "#edf2fa"));
+            pillBg.setCornerRadius(dp(999));
+            splashPill.setBackground(pillBg);
+        }
+        if (splashStatusView != null) splashStatusView.setTextColor(Color.parseColor(darkTheme ? "#a8c7fa" : "#0b57d0"));
+        if (splashBrandView != null) splashBrandView.setTextColor(Color.parseColor(darkTheme ? "#747775" : "#8e918f"));
         if (loginBar != null) loginBar.setBackgroundColor(Color.parseColor(darkTheme ? "#1b1c1f" : "#f0f4f9"));
         if (loginTipView != null) loginTipView.setTextColor(Color.parseColor(darkTheme ? "#c4c7c5" : "#444746"));
         styleBtn(loginBackBtn, 2);
+        styleBtn(loginSsoBtn, 0);
         if (bar != null) {
             bar.setBackgroundColor(Color.parseColor(darkTheme ? "#24262b" : "#d3e3fd"));
             bar.setTextColor(Color.parseColor(darkTheme ? "#e3e3e3" : "#041e49"));
@@ -999,6 +1184,7 @@ public class MainActivity extends Activity {
     }
     private void say(final String msg) {
         Log.w(TAG, msg);
+        dismissSplash();
         ui.post(new Runnable() { public void run() { bar.setVisibility(TextView.VISIBLE); bar.setText(msg); } });
     }
 

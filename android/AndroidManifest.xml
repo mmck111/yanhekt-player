@@ -17,6 +17,7 @@
         android:label="延河课堂"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@style/LaunchTheme"
         android:usesCleartextTraffic="true"
         android:extractNativeLibs="true"
         android:hardwareAccelerated="true"
@@ -24,6 +25,7 @@
 
         <activity
             android:name=".MainActivity"
+            android:theme="@style/LaunchTheme"
             android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout"
             android:launchMode="singleTop">
