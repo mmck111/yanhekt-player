@@ -378,6 +378,10 @@
   .swipepill.on{display:flex}
   .swipepill b{font-size:15.5px;font-weight:700;letter-spacing:.01em}
   .swipepill span{font-size:12px;color:#a8c7fa;font-weight:600}
+  .swipepill .swbar{width:136px;height:4px;border-radius:999px;background:rgba(255,255,255,.22);overflow:hidden;margin-top:4px;display:none}
+  .swipepill.meter .swbar{display:block}
+  .swipepill .swbar i{display:block;height:100%;width:0;border-radius:999px;background:#a8c7fa}
+  .brightveil{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;z-index:4}
   .playerbox,.playerbox *,.stagewrap,.stagewrap *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
   .stagewrap,.stage{touch-action:none}
   .inpbox input[type="search"]::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;display:none}
@@ -723,9 +727,10 @@
           <div class="pane hide" id="paneSub"><video id="vSub" playsinline preload="metadata" muted></video><span class="tag">课件画面</span></div>
           <video id="vAudioAux" playsinline preload="auto" style="display:none"></video>
         </div>
+        <div class="brightveil" id="brightVeil"></div>
         <div class="spin" id="spin"><i></i><span>缓冲中…</span></div>
         <div class="speedpill" id="speedPill"><svg viewBox="0 0 24 24"><path d="M5.59 7.41 10.18 12l-4.59 4.59L7 18l6-6-6-6-1.41 1.41zM12 6l-1.41 1.41L15.17 12l-4.58 4.59L12 18l6-6-6-6z" fill="currentColor"/></svg><span>2.0× 倍速播放中</span></div>
-        <div class="swipepill" id="swipePill"><b>00:00 / 00:00</b><span>+0s</span></div>
+        <div class="swipepill" id="swipePill"><b>00:00 / 00:00</b><span>+0s</span><div class="swbar"><i></i></div></div>
       </div>
 
       <div class="ctrldeck" id="ctrldeck">
@@ -2611,6 +2616,53 @@ document.addEventListener('webkitfullscreenchange', wakeHud);
 
 let lastStageTouchMs = 0, lastStageTap = null, stageTouchPt = null, stageTouchWasIdle = false;
 let stageLongPressTimer = 0, stageLongPressActive = false, stageSingleTapTimer = 0;
+let stageScreenBrightness = 1;
+function readTouchBrightness(){
+  try {
+    if (window.yhktApp && typeof window.yhktApp.getScreenBrightness === 'function') {
+      const bv = Number(window.yhktApp.getScreenBrightness());
+      if (isFinite(bv) && bv >= 0) { stageScreenBrightness = Math.max(0.05, Math.min(1, bv)); return stageScreenBrightness; }
+    }
+  } catch(e){}
+  return stageScreenBrightness;
+}
+function applyTouchBrightness(val){
+  const b = Math.max(0.05, Math.min(1, val));
+  stageScreenBrightness = b;
+  try {
+    if (window.yhktApp && typeof window.yhktApp.setScreenBrightness === 'function') {
+      window.yhktApp.setScreenBrightness(b);
+      const veil = $('#brightVeil'); if (veil) veil.style.opacity = '0';
+      return;
+    }
+  } catch(e){}
+  const veil = $('#brightVeil');
+  if (veil) veil.style.opacity = String(((1 - b) * 0.72).toFixed(3));
+}
+function readTouchVolume(){
+  try {
+    if (window.yhktApp && typeof window.yhktApp.getMediaVolume === 'function') {
+      const mv = Number(window.yhktApp.getMediaVolume());
+      if (isFinite(mv) && mv >= 0) return Math.max(0, Math.min(1, mv));
+    }
+  } catch(e){}
+  const volEl = $('#vol');
+  return volEl ? Math.max(0, Math.min(1, Number(volEl.value))) : 1;
+}
+function applyTouchVolume(val){
+  const vol = Math.max(0, Math.min(1, val));
+  try {
+    if (window.yhktApp && typeof window.yhktApp.setMediaVolume === 'function') {
+      window.yhktApp.setMediaVolume(vol);
+      return;
+    }
+  } catch(e){}
+  const volEl = $('#vol');
+  if (volEl) {
+    volEl.value = vol.toFixed(2);
+    volEl.dispatchEvent(new Event('input'));
+  }
+}
 $('#stage').addEventListener('touchstart', e => {
   clearTimeout(stageLongPressTimer); stageLongPressTimer = 0;
   lastStageTouchMs = Date.now();
@@ -2622,7 +2674,7 @@ $('#stage').addEventListener('touchstart', e => {
     if (stageLongPressActive) { stageLongPressActive = false; stopSpeedBoost(); }
     if (stageSwipe) {
       stageSwipe = null;
-      const spw = $('#swipePill'); if (spw) spw.classList.remove('on');
+      const spw = $('#swipePill'); if (spw) spw.classList.remove('on', 'meter');
       updateProgressUI();
     }
     return;
@@ -2655,28 +2707,66 @@ $('#stage').addEventListener('touchmove', e => {
       clearTimeout(stageSingleTapTimer); stageSingleTapTimer = 0;
       lastStageTap = null;
       const baseTime = Math.max(0, Math.min(dur, v.currentTime || 0));
-      stageSwipe = { startX: stageTouchPt.x + (dx > 0 ? 14 : -14), baseTime, dur, targetTime: baseTime };
+      stageSwipe = { kind: 'seek', startX: stageTouchPt.x + (dx > 0 ? 14 : -14), baseTime, dur, targetTime: baseTime };
+    } else if (Math.abs(dy) > 16 && Math.abs(dy) > Math.abs(dx) * 1.35) {
+      clearTimeout(stageSingleTapTimer); stageSingleTapTimer = 0;
+      lastStageTap = null;
+      const rect = $('#stage').getBoundingClientRect();
+      const w = Math.max(240, (rect && rect.width) || 360);
+      const h = Math.max(180, (rect && rect.height) || 220);
+      const isRight = (stageTouchPt.x - ((rect && rect.left) || 0)) >= (w * 0.5);
+      const startVal = isRight ? readTouchVolume() : readTouchBrightness();
+      stageSwipe = {
+        kind: isRight ? 'vol' : 'bright',
+        startY: stageTouchPt.y + (dy > 0 ? 14 : -14),
+        spanY: Math.max(120, Math.min(240, h * 0.72)),
+        baseVal: startVal,
+        targetVal: startVal,
+        lastSent: startVal,
+      };
     }
   }
   if (stageSwipe) {
-    const rect = $('#stage').getBoundingClientRect();
-    const w = Math.max(240, (rect && rect.width) || 360);
-    const spanSec = Math.min(600, Math.max(150, stageSwipe.dur * 0.25));
-    const deltaSec = Math.round(((t.clientX - stageSwipe.startX) / w) * spanSec);
-    const target = Math.max(0, Math.min(stageSwipe.dur, stageSwipe.baseTime + deltaSec));
-    stageSwipe.targetTime = target;
-    const diff = Math.round(target - stageSwipe.baseTime);
-    const spw = $('#swipePill');
-    if (spw) {
-      const bEl = spw.querySelector('b'), sEl = spw.querySelector('span');
-      if (bEl) bEl.textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
-      if (sEl) sEl.textContent = (diff >= 0 ? '快进 +' : '快退 ') + diff + 's';
-      spw.classList.add('on');
+    if (stageSwipe.kind === 'seek') {
+      const rect = $('#stage').getBoundingClientRect();
+      const w = Math.max(240, (rect && rect.width) || 360);
+      const spanSec = Math.min(600, Math.max(150, stageSwipe.dur * 0.25));
+      const deltaSec = Math.round(((t.clientX - stageSwipe.startX) / w) * spanSec);
+      const target = Math.max(0, Math.min(stageSwipe.dur, stageSwipe.baseTime + deltaSec));
+      stageSwipe.targetTime = target;
+      const diff = Math.round(target - stageSwipe.baseTime);
+      const spw = $('#swipePill');
+      if (spw) {
+        const bEl = spw.querySelector('b'), sEl = spw.querySelector('span');
+        if (bEl) bEl.textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
+        if (sEl) sEl.textContent = (diff >= 0 ? '快进 +' : '快退 ') + diff + 's';
+        spw.classList.remove('meter');
+        spw.classList.add('on');
+      }
+      const pct = (target / stageSwipe.dur) * 100;
+      if ($('#scrubFill')) $('#scrubFill').style.width = pct + '%';
+      if ($('#scrubThumb')) $('#scrubThumb').style.left = pct + '%';
+      if ($('#timeTxt')) $('#timeTxt').textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
+    } else {
+      const minVal = stageSwipe.kind === 'bright' ? 0.05 : 0;
+      const delta = -(t.clientY - stageSwipe.startY) / stageSwipe.spanY;
+      const nextVal = Math.max(minVal, Math.min(1, stageSwipe.baseVal + delta));
+      stageSwipe.targetVal = nextVal;
+      if (Math.abs(nextVal - stageSwipe.lastSent) >= 0.015) {
+        stageSwipe.lastSent = nextVal;
+        if (stageSwipe.kind === 'bright') applyTouchBrightness(nextVal);
+        else applyTouchVolume(nextVal);
+      }
+      const pct = Math.round(nextVal * 100);
+      const spw = $('#swipePill');
+      if (spw) {
+        const bEl = spw.querySelector('b'), sEl = spw.querySelector('span'), bar = spw.querySelector('.swbar i');
+        if (bEl) bEl.textContent = (stageSwipe.kind === 'bright' ? '亮度 ' : '音量 ') + pct + '%';
+        if (sEl) sEl.textContent = stageSwipe.kind === 'bright' ? '左半屏上下滑动调节' : '右半屏上下滑动调节';
+        if (bar) bar.style.width = pct + '%';
+        spw.classList.add('on', 'meter');
+      }
     }
-    const pct = (target / stageSwipe.dur) * 100;
-    if ($('#scrubFill')) $('#scrubFill').style.width = pct + '%';
-    if ($('#scrubThumb')) $('#scrubThumb').style.left = pct + '%';
-    if ($('#timeTxt')) $('#timeTxt').textContent = fmt(target) + ' / ' + fmt(stageSwipe.dur);
   }
 }, { passive: true });
 const endStageTouch = e => {
@@ -2687,12 +2777,17 @@ const endStageTouch = e => {
     stageSwipe = null;
     stageTouchPt = null;
     lastStageTap = null;
-    const spw = $('#swipePill'); if (spw) spw.classList.remove('on');
-    if (e.type !== 'touchcancel' && sw.dur > 0) {
-      seekToFraction(sw.targetTime / sw.dur);
-      if (!stageTouchWasIdle) wakeHud();
-    } else {
-      updateProgressUI();
+    const spw = $('#swipePill'); if (spw) spw.classList.remove('on', 'meter');
+    if (sw.kind === 'seek') {
+      if (e.type !== 'touchcancel' && sw.dur > 0) {
+        seekToFraction(sw.targetTime / sw.dur);
+        if (!stageTouchWasIdle) wakeHud();
+      } else {
+        updateProgressUI();
+      }
+    } else if (e.type !== 'touchcancel') {
+      if (sw.kind === 'bright') applyTouchBrightness(sw.targetVal);
+      else applyTouchVolume(sw.targetVal);
     }
     return;
   }

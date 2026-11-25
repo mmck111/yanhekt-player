@@ -70,6 +70,7 @@ public class MainActivity extends Activity {
     private volatile boolean loginRedirecting = false;
     private volatile int ownedCount = -1;
     private volatile boolean darkTheme = false;
+    private volatile float appBrightness = -1f;
 
 
     private volatile String lastReqDump = "";
@@ -1535,6 +1536,62 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception ignored) {}
         }});
+    }
+
+    @JavascriptInterface
+    public float getScreenBrightness() {
+        if (appBrightness >= 0f) return appBrightness;
+        try {
+            int raw = android.provider.Settings.System.getInt(
+                getContentResolver(),
+                android.provider.Settings.System.SCREEN_BRIGHTNESS,
+                128);
+            float frac = raw > 255 ? (raw / 4095f) : (raw / 255f);
+            appBrightness = Math.max(0.05f, Math.min(1.0f, frac));
+            return appBrightness;
+        } catch (Exception e) {
+            return 0.5f;
+        }
+    }
+
+    @JavascriptInterface
+    public void setScreenBrightness(final float val) {
+        final float clamped = Math.max(0.01f, Math.min(1.0f, val));
+        appBrightness = clamped;
+        ui.post(new Runnable() { public void run() {
+            try {
+                android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.screenBrightness = clamped;
+                getWindow().setAttributes(lp);
+            } catch (Exception ignored) {}
+        }});
+    }
+
+    @JavascriptInterface
+    public float getMediaVolume() {
+        try {
+            android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+            if (am == null) return 0.5f;
+            int max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
+            int cur = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC);
+            if (max <= 0) return 0.5f;
+            return Math.max(0f, Math.min(1f, cur / (float) max));
+        } catch (Exception e) {
+            return 0.5f;
+        }
+    }
+
+    @JavascriptInterface
+    public void setMediaVolume(final float frac) {
+        final float clamped = Math.max(0f, Math.min(1f, frac));
+        try {
+            android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+            if (am == null) return;
+            int max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
+            if (max <= 0) return;
+            int target = Math.round(clamped * max);
+            am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, target, 0);
+        } catch (Exception ignored) {}
     }
 
     private void openDlPanel() {
